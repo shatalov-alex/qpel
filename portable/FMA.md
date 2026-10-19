@@ -14,10 +14,10 @@ A native negative test rejects an integer FMA argument. The valid model was rest
 
 ## Apple GPU
 
-Earlier native float32 scaling passed eight user-run GPU cases; its saved report is in ../qpel-mps-float32/gpu-report.json. The user ran the FMA GPU test successfully: 4 cases passed, including fused cancellation -2^-46; saved in outputs/qpel-fma32/gpu-report.json.
+Native float32 scaling (8 cases, `float32` fixture) and FMA (4 cases, including fused cancellation -2^-46) pass on the Apple GPU.
 
 ```sh
-sh <outputs>/qpel-fma32/run_metal.sh
+python3 portable/gpu_tests/run_gpu_tests.py fma32
 ```
 
-Expected: four native-qpel FMA GPU cases with the cancellation result -2^-46. Cases include masks, batch sizes 1/2, noncontiguous input and padded grids. A gpu-report.json is written only after success. No performance improvement is claimed.
+Expected: four native-qpel FMA GPU cases with the cancellation result -2^-46. Cases include masks, batch sizes 1/2, noncontiguous input and padded grids. No performance improvement is claimed.

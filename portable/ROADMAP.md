@@ -65,12 +65,12 @@ Backend differences live in two macro headers (`portable/backends/cuda.h`, `meta
 ## 3. Roadmap
 
 ### Phase 0: consolidate (≈1 week)
-- Declare `.qpel.json` the source of truth. ~~Regenerate `portable/generated/`~~ done 2026-10-19: `regenerate.py` rebuilds it from the components IR fixture (u32-modulo-v1, with `cuda_host.py`, relative manifest paths). The CPU host test still passes all 133 cases; **re-run the SAM 2 Apple GPU test** against the new package.
+- Declare `.qpel.json` the source of truth. ~~Regenerate `portable/generated/`~~ done 2026-10-19: `regenerate.py` rebuilds it from the components IR fixture (u32-modulo-v1, with `cuda_host.py`, relative manifest paths). The CPU host test still passes all 133 cases; The components kernel passes all 133 cases on the Apple GPU; full SAM 2 model inference has not been re-run.
 - ~~Metal compile check~~ done 2026-10-19: `metal_check.py` compiles all 12 fixtures plus the checked-in package with `xcrun metal -Werror`.
 - Turn MPS TextGen into a thin "export IR" step, or have MPS call the Python compiler. Drop the token cross-check once only one path exists.
-- Put the project under git and add CI (unit tests plus clang/UBSan numeric tests). Add `requirements.txt` (numpy, torch optional).
-- Remove hardcoded paths. Copy the GPU runners from `x20-2/outputs` into `portable/gpu_tests/` so they run in place.
-- Deduplicate identifier, block-size and type-name tables into one `qpel_schema` module.
+- ~~git, `requirements.txt`, one check script~~ done 2026-10-19: repo initialised; `check_all.py` runs unit tests, Metal and nvcc compile checks and (with `--gpu`) the Apple GPU tests. **CI is still open:** it needs a remote (e.g. GitHub, macOS runner for Metal, Ubuntu runner for nvcc).
+- ~~Hardcoded paths and GPU runners~~ done 2026-10-19: `gpu_tests/run_gpu_tests.py` replaces the Codex-folder runners and the unrunnable `tests/*_gpu.py` / `*_parity.cpp` copies; it builds each fixture fresh and passes all 12 on the Apple GPU. The removed CUDA-vs-original parity checks return as the Phase 1 round-trip matrix.
+- ~~Deduplicate identifier and block-size rules~~ done 2026-10-19: one `is_identifier`/`is_block_size` in `qpel_schema.py`. This fixed a bug: names such as `constant`, `threadgroup`, `class` or `switch` passed validation and then broke the generated Metal or CUDA. The MPS-side `QpelChecks` still has the old short list. (The host dtype and macro type tables map to different things and stay separate.)
 - Apply the 2026-10-19 `WorkgroupIndex`/`LocalIndex` work, which is still only in `x20-2/outputs/qpel-group-index/`.
 - ~~nvcc compile~~ done 2026-10-19: `nvcc_check.py` compiles all 12 fixtures plus the checked-in SAM 2 package with nvcc 12.6/ptxas for sm_75–sm_90 in Docker, warnings as errors, and links `tests/cuda.cu`.
 - Deferred until a major milestone (end of Phase 2): NVIDIA *execution* via GPGPU-Sim functional mode in Docker, then one real NVIDIA run (free Colab/Kaggle T4 or any card) for the CuPy host. Until then the nvcc check is the CUDA gate.
@@ -129,7 +129,7 @@ qpel exists to sit between CUDA and Metal, so both import directions come first.
 10. MLIR export, to plug into existing optimisation and SPIR-V/Vulkan as a third backend
 
 ## Verification baseline
-- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py'` — 128 run, 5 skipped (NumPy) on 2026-10-19.
+- `python3 check_all.py --gpu --python <venv with torch>`: all four steps pass on 2026-10-19 (128 unit tests with 0 skipped, 13 Metal files, 13 CUDA files plus host link, 12/12 fixtures on the Apple GPU).
 - `python3 metal_check.py`: all 13 Metal files compile with `-Werror` (2026-10-19).
 - `python3 nvcc_check.py`: all 13 CUDA files compile with nvcc 12.6 for sm_75–sm_90, and the host harness links (2026-10-19).
 - Phase 0 exit criterion: the unit tests, the nvcc check and the Metal check pass in CI, and the Apple GPU runners pass from inside the repo.

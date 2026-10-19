@@ -12,12 +12,11 @@ float_window_sum / float_window_sum_launch in qpel.sandbox computes masked windo
 
 101 tests pass, including eleven native fixtures. The packaged CUDA code ran on CPU with a shim and UBSan against an independent ordered float32 oracle. Tests cover all 261 output windows, padded invocations, empty and singleton slices and cancellation. For [2^24,1,-2^24,1], the specified left fold gives 1, distinguishing it from some tree sums. Pipeline tests reject reading an unwritten scratch buffer through the reduction. A native MPS negative check rejects a byte buffer; the valid model was restored and project rebuild succeeded. All five native model checks passed.
 
-## Apple GPU runner (not yet executed)
+## Apple GPU check
 
 ```sh
-sh <outputs>/qpel-reduce/run_metal.sh
+python3 portable/gpu_tests/run_gpu_tests.py reduce
 ```
 
-Expected six cases including singleton input, cancellation, masks, tail windows, batches and strided inputs. GPU result is not claimed until that run passes. The earlier mixed float16/float32 runner passed four user GPU cases, recorded in ../qpel-half/gpu-report.json.
+Expected six cases including singleton input, cancellation, masks, tail windows, batches and strided inputs. Passed on 2026-10-19 (torch 2.14, Apple GPU).
 
-User GPU confirmation: all six native ordered-sum cases passed, including cancellation-order verification; recorded in outputs/qpel-reduce/gpu-report.json.

@@ -16,4 +16,4 @@ program.qpel.json is a reproducible portable-core example; generated/ contains C
 
 ## GPU confirmation and FMA
 
-The user-run native float32 scaling runner passed all eight Metal GPU cases (torch 2.14.0); the saved report is in the task outputs/qpel-mps-float32 directory. This evidence covers the tested finite scaling cases only. Explicit F32Fma is now also available natively and in the common core; see FMA.md.
+All eight float32 scaling GPU cases pass (`python3 portable/gpu_tests/run_gpu_tests.py float32`, torch 2.14.0, 2026-10-19). This evidence covers the tested finite scaling cases only. Explicit F32Fma is now also available natively and in the common core; see FMA.md.

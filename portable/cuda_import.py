@@ -4,11 +4,12 @@ import json
 import re
 from pathlib import Path
 
+from qpel_schema import is_identifier
+
 class UnsupportedCUDA(ValueError): pass
 
 # Keep offsets for diagnostics; comments/includes are blanked, not deleted.
 TOKEN = re.compile(r'\s+|//[^\n]*|/\*[\s\S]*?\*/|[A-Za-z_][A-Za-z_0-9]*|[0-9]+[uU]?|>=|<=|==|!=|[{}()\[\],;.*+=?:<>&|^]|"C"')
-RESERVED = set('auto bool break case char class const continue default delete do double else enum extern false float for goto if inline int long namespace new nullptr operator private protected public register reinterpret_cast return short signed sizeof static struct switch template this throw true try typedef typename union unsigned using virtual void volatile while uint3 blockIdx blockDim threadIdx'.split())
 
 def parse(source):
     return Parser(source).parse()
@@ -40,7 +41,7 @@ class Parser:
         return False
     def name(self):
         value=self.take()
-        if not re.fullmatch('[A-Za-z][A-Za-z0-9_]*',value) or value in RESERVED or value.startswith('qpel_'):
+        if not is_identifier(value):
             self.fail('Unsupported/reserved identifier: '+value)
         return value
     def expression(self,minimum=0):

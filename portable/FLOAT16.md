@@ -19,9 +19,9 @@ Earlier user GPU results are confirmed: 8 native float32 scaling cases and 4 FMA
 ## Apple GPU check
 
 ```sh
-sh <outputs>/qpel-half/run_metal.sh
+python3 portable/gpu_tests/run_gpu_tests.py half
 ```
 
 Expected four cases: half input/output, float32 FMA, ties-to-even, masks, batches and strided inputs. Only normal-range values and zero are in the GPU smoke test. GPU subnormal handling, NaN payloads, overflow behavior, general cross-device reproducibility and performance have not been established. Float16 reduces storage size for these buffers; no model-level speedup is claimed.
 
-User GPU confirmation: all four native mixed float16/float32 cases passed, including ties-to-even. Saved report: outputs/qpel-half/gpu-report.json. This does not expand the GPU evidence to subnormal/exceptional values.
+All four mixed float16/float32 GPU cases pass, including ties-to-even (2026-10-19, `half` fixture). This does not expand the GPU evidence to subnormal/exceptional values.

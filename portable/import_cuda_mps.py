@@ -3,10 +3,10 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-import re
 import tempfile
 import urllib.request
-from cuda_import import parse, RESERVED
+from cuda_import import parse
+from qpel_schema import is_identifier, is_block_size, MAX_BLOCK_SIZE
 
 class MPS:
     def __init__(self, project, url):
@@ -103,8 +103,8 @@ if __name__=='__main__':
     p.add_argument('--model',default='qpel.sandbox');p.add_argument('--block',type=int,default=64)
     p.add_argument('--endpoint',default='http://127.0.0.1:64342/stream');p.add_argument('--report',type=Path,required=True)
     args=p.parse_args()
-    if not re.fullmatch('[A-Za-z][A-Za-z0-9_]*',args.module) or args.module in RESERVED or args.module.startswith('qpel_'):p.error('Invalid module name')
-    if not 1<=args.block<=256:p.error('Block size must be 1..256')
+    if not is_identifier(args.module):p.error('Invalid module name')
+    if not is_block_size(args.block):p.error(f'Block size must be 1..{MAX_BLOCK_SIZE}')
     if args.report.exists():p.error('Report already exists; inspect previous import before retrying')
     source=args.source.read_bytes();ir=parse(source.decode()) # Complete parse BEFORE contacting/mutating MPS.
     journal={'path':args.report,'status':'started','source':str(args.source.resolve()),'source_sha256':hashlib.sha256(source).hexdigest(),'module':args.module,'block_size':args.block,'ir':ir}

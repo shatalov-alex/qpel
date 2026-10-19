@@ -3,15 +3,15 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-import re
 from generate_metal_host import generate, validate_resources
 from generate_cuda_host import generate as generate_cuda
+from qpel_schema import is_identifier, is_block_size
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_INPUT = HERE.parent / 'languages/qpel.sandbox/source_gen/qpel/sandbox/components.qpel.h'
 
 def identifier(value):
-    if not isinstance(value,str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*',value):
+    if not is_identifier(value):
         raise ValueError('Invalid generated identifier: '+repr(value))
     return value
 
@@ -23,7 +23,7 @@ def launch_header(plan):
     lines = ['// Generated from the checked MPS Pipeline. Requires QPEL_STAGE.']
     for stage in plan['stages']:
         kernel=identifier(stage['kernel']); grid=identifier(stage['grid']); block=stage['blockSize']
-        if type(block) is not int or not 1 <= block <= 256: raise ValueError('Invalid block size')
+        if not is_block_size(block): raise ValueError('Invalid block size')
         if stage['completionBarrier'] is not True: raise ValueError('Stage completion is required')
         if grid not in resources or resources[grid]['kind'] != 'shape': raise ValueError('Invalid grid resource')
         args=[]

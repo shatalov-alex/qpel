@@ -78,6 +78,13 @@ class SchemaTests(unittest.TestCase):
             fn['attributes']['name'] = name
             self.rejected('identifier')
         fn['attributes']['name'] = original
+        # Names are emitted verbatim into CUDA C++ and MSL; backend keywords would not compile.
+        param = self.node('Parameter')
+        kept = param['attributes']['name']
+        for name in ('class', 'switch', 'constant', 'threadgroup', 'blockIdx', 'half'):
+            param['attributes']['name'] = name
+            self.rejected('identifier')
+        param['attributes']['name'] = kept
         self.node('Member')['attributes']['member'] = 'x; bad()'
         self.rejected('shape member')
 

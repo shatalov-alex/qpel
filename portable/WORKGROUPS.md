@@ -16,12 +16,11 @@ qpel.sandbox has float_group_sum / float_group_sum_launch. It masks and scales e
 
 106 tests pass, with twelve native fixtures. A threaded CPU CUDA shim executes generated source with real mutex/condition-variable barriers and UBSan: 18 kernel configurations (group sizes 1,3,8,32,64,256 and element counts 1,17,67), plus three consecutive-collective scratch-reuse cases. This is not nvcc, GPU scheduling, or a formal race proof. Common-core tests reject early return, conditional/nested collectives and missing capabilities. MPS rejects early return; the valid native model was restored and rebuilt. Five native models check cleanly.
 
-## Apple GPU (pending)
+## Apple GPU check
 
 ```sh
-sh <outputs>/qpel-workgroup/run_metal.sh
+python3 portable/gpu_tests/run_gpu_tests.py workgroup
 ```
 
-The runner covers 18 cases: generated host allocation/dispatch with strided inputs plus direct shader tests at group sizes 1,3,4,31,64,128,256. Tests include partial groups and a cancellation case distinguishing the tree from serial addition. Only a successful run creates gpu-report.json. Performance has not been benchmarked.
+The runner covers 18 cases: generated host allocation/dispatch with strided inputs plus direct shader tests at group sizes 1,3,4,31,64,128,256. Tests include partial groups and a cancellation case distinguishing the tree from serial addition. Passed on 2026-10-19 (torch 2.14, Apple GPU). Performance has not been benchmarked.
 
-Earlier ordered-sum GPU evidence: all six user-run cases passed; see ../qpel-reduce/gpu-report.json.

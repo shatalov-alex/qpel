@@ -6,7 +6,8 @@ from pathlib import Path
 import re
 import tempfile
 
-from cuda_import import parse, RESERVED
+from cuda_import import parse
+from qpel_schema import is_identifier, is_block_size, MAX_BLOCK_SIZE
 from import_cuda_mps import MPS, import_model
 from build_backends import build
 from qpel_ir import export as export_ir, validate as validate_ir, Lowering
@@ -19,9 +20,9 @@ def save(path, data):path.write_text(json.dumps(data,indent=2)+'\n')
 def translate(source,project,module,out,block=64,endpoint='http://127.0.0.1:64342/stream',check=False):
     # Every source/argument validation runs before creating a directory or contacting MPS.
     raw=source.read_bytes();ir=parse(raw.decode())
-    if not re.fullmatch('[A-Za-z][A-Za-z0-9_]*',module) or module in RESERVED or module.startswith('qpel_'):
+    if not is_identifier(module):
         raise ValueError('Invalid module name')
-    if type(block) is not int or not 1<=block<=256:raise ValueError('Block size must be 1..256')
+    if not is_block_size(block):raise ValueError(f'Block size must be 1..{MAX_BLOCK_SIZE}')
     summary={'status':'source_accepted','source_sha256':hashlib.sha256(raw).hexdigest(),
              'module':module,'kernel':ir['kernel'],'size_kind':ir['size_kind'],'block_size':block,
              'project':str(project.resolve()),'ir':ir}

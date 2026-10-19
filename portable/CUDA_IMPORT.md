@@ -24,10 +24,10 @@ Pipeline generation uses an explicit importer convention: every input/output has
 ## Real Apple GPU test
 
 ```sh
-sh <outputs>/qpel-cuda-import/run_metal.sh
+python3 portable/gpu_tests/run_gpu_tests.py import
 ```
 
-The runner compares 134 GPU cases to NumPy and saves gpu-report.json with shader, host, plan and original source hashes. CPU oracle transfers are test-only; CPU fallback is disabled.
+The runner builds the fixture with the current compiler and compares 134 GPU cases to NumPy; CPU fallback is disabled. Passed on 2026-10-19 (torch 2.14, Apple GPU).
 
 ## Use the importer
 

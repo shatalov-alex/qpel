@@ -32,13 +32,23 @@ CORE.md describes the graph, validation and native/common migration cross-check.
 
 ## Validation
 
-Run the compiler tests:
+Run everything that needs no NVIDIA hardware with one command:
+
+```sh
+python3 portable/check_all.py --gpu --python /path/to/venv/bin/python
+```
+
+This runs the unit tests, the Metal compile check, the nvcc compile check and the Apple GPU tests, then prints a summary. `--python` must be an interpreter with the packages in `requirements.txt` (NumPy, PyTorch). Without `--gpu`, or with `--no-nvcc`, the summary lists what was not run. To run only the compiler tests:
 
 ```sh
 python3 -m unittest discover -s portable/tests -p 'test_*.py'
 ```
 
-Numerical checks need clang++; CUDA host ABI tests need NumPy. Missing optional prerequisites produce skips, which must not be treated as release validation. The task workspace retains test outputs and frozen GPU evidence. Confirmed user-run Apple checks include SAM 2 integration and the float32/FMA/half/ordered-sum/workgroup examples. CUDA orchestration and CPU simulation are not proof of NVIDIA execution; nvcc compilation is covered by the check below.
+Numerical checks need clang++; CUDA host ABI tests need NumPy. Missing optional prerequisites produce skips, which must not be treated as release validation. CUDA orchestration and CPU simulation are not proof of NVIDIA execution; nvcc compilation is covered by the check below.
+
+### Apple GPU tests
+
+`gpu_tests/run_gpu_tests.py` builds every IR fixture with the current compiler and runs it on the Apple GPU against an independent CPU oracle, with CPU fallback disabled. It covers all 65536 uint8 pairs for the elementwise kernels, float32/FMA/float16 rounding, ordered and workgroup sums, and the SAM 2 connected-components kernel (133 masks against a flood-fill oracle). Pass fixture names to run a subset. Full SAM 2 model inference is not part of it.
 
 ### NVIDIA compile check without an NVIDIA GPU
 

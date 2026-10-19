@@ -72,7 +72,33 @@ ATTRIBUTES = {
     'Dispatch': {'blockSize': int, 'completionBarrier': bool},
 }
 DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer'}}
-RESERVED = set('void bool uint int float return if while for true false kernel device min max'.split())
+# Every qpel name is emitted verbatim into both CUDA C++ and Metal Shading Language, so it
+# must avoid qpel keywords, C++ keywords, CUDA built-ins and Metal keywords and type names.
+QPEL_KEYWORDS = set('void bool uint int float return if while for true false kernel device min max'.split())
+CPP_KEYWORDS = set('''alignas alignof and and_eq asm auto bitand bitor bool break case catch char char8_t char16_t
+    char32_t class compl concept const consteval constexpr constinit const_cast continue co_await co_return
+    co_yield decltype default delete do double dynamic_cast else enum explicit export extern false float for
+    friend goto if inline int long mutable namespace new noexcept not not_eq nullptr operator or or_eq private
+    protected public register reinterpret_cast requires return short signed sizeof static static_assert
+    static_cast struct switch template this thread_local throw true try typedef typeid typename union unsigned
+    using virtual void volatile wchar_t while xor xor_eq'''.split())
+CUDA_NAMES = set('blockIdx blockDim threadIdx gridDim warpSize dim3 uint3 int3 float3 half'.split())
+METAL_NAMES = set('''device constant threadgroup threadgroup_imageblock thread ray_data object_data kernel
+    vertex fragment visible metal half uchar ushort uint ulong bfloat size_t ptrdiff_t uint2 uint3 uint4
+    float2 float3 float4 half2 half3 half4 atomic_uint atomic_int'''.split())
+RESERVED = QPEL_KEYWORDS | CPP_KEYWORDS | CUDA_NAMES | METAL_NAMES
+IDENTIFIER = re.compile(r'[A-Za-z][A-Za-z0-9_]*')
+MAX_BLOCK_SIZE = 256
+
+
+def is_identifier(name):
+    """True for a name that is safe to emit unchanged into every backend."""
+    return (isinstance(name, str) and IDENTIFIER.fullmatch(name) is not None
+            and not name.startswith('qpel_') and name not in RESERVED)
+
+
+def is_block_size(value):
+    return type(value) is int and 1 <= value <= MAX_BLOCK_SIZE
 
 
 def validate_envelope(program):
@@ -126,7 +152,7 @@ def validate_structure(nodes):
         a = n['attributes']
         if 'name' in a:
             name = a['name']
-            if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', name) or name.startswith('qpel_') or name in RESERVED:
+            if not is_identifier(name):
                 fail('Invalid or reserved identifier')
         if kind == 'Literal':
             value = a['value']
@@ -146,7 +172,7 @@ def validate_structure(nodes):
             fail('Unsupported shape member')
         if kind == 'Resource' and a['kind'] not in ('input', 'output', 'scratch', 'shape'):
             fail('Unsupported resource kind')
-        if kind == 'Dispatch' and not 1 <= a['blockSize'] <= 256:
-            fail('Block size must be between 1 and 256')
+        if kind == 'Dispatch' and not is_block_size(a['blockSize']):
+            fail(f'Block size must be between 1 and {MAX_BLOCK_SIZE}')
         if kind == 'Parameter' and a.get('binding', 0) < 0:
             fail('Binding must be nonnegative')
