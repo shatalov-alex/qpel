@@ -1,0 +1,59 @@
+// qpel backend: device-scope relaxed unsigned 32-bit atomics.
+#include <metal_stdlib>
+using namespace metal;
+#define QPEL_KERNEL kernel
+#define QPEL_DEVICE
+#define QPEL_U8 uchar
+#define QPEL_U32 uint
+#define QPEL_READ_U8 device const uchar*
+#define QPEL_ATOMIC_U32 device atomic_uint*
+#define QPEL_WRITE_U32 device uint*
+#define QPEL_SHAPE constant uint3&
+#define QPEL_PARAM(type, name, binding) type name [[buffer(binding)]]
+#define QPEL_GRID_PARAM(name) , uint name [[thread_position_in_grid]]
+#define QPEL_GRID_LOCAL(name)
+#define QPEL_LOAD(address) atomic_load_explicit((address), memory_order_relaxed)
+#define QPEL_STORE(address, value) atomic_store_explicit((address), (value), memory_order_relaxed)
+#define QPEL_ADD(address, value) atomic_fetch_add_explicit((address), (value), memory_order_relaxed)
+#define QPEL_MIN(address, value) atomic_fetch_min_explicit((address), (value), memory_order_relaxed)
+
+#define QPEL_F32 float
+#define QPEL_READ_F32 device const float*
+#define QPEL_WRITE_F32 device float*
+
+#define QPEL_FMA_F32(a, b, c) metal::fma((a), (b), (c))
+
+#define QPEL_F16 half
+#define QPEL_READ_F16 device const half*
+#define QPEL_WRITE_F16 device half*
+#define QPEL_TO_F16(value) half((value))
+
+#ifdef QPEL_SUM_F32_ENABLED
+inline float qpel_sum_f32(device const float* values, uint start, uint count) {
+    float result = 0.0f;
+    for (uint offset = 0; offset < count; ++offset)
+        result = metal::fma(1.0f, values[start + offset], result);
+    return result;
+}
+#define QPEL_SUM_F32(values, start, count) qpel_sum_f32((values), (start), (count))
+#endif
+
+#ifdef QPEL_GROUP_SUM_F32_ENABLED
+#undef QPEL_GRID_PARAM
+#undef QPEL_GRID_LOCAL
+#define QPEL_GRID_PARAM(name) , uint name [[thread_position_in_grid]], uint qpel_lane [[thread_index_in_threadgroup]], uint qpel_group_size [[threads_per_threadgroup]]
+#define QPEL_GRID_LOCAL(name) threadgroup float qpel_group_scratch[256];
+inline float qpel_group_sum_f32(float value, threadgroup float* scratch, uint lane, uint width) {
+    scratch[lane] = value;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint stride = 1; stride < width; stride *= 2) {
+        if (lane % (stride * 2) == 0 && lane + stride < width)
+            scratch[lane] = metal::fma(1.0f, scratch[lane + stride], scratch[lane]);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    float result = scratch[0];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    return result;
+}
+#define QPEL_GROUP_SUM_F32(value) qpel_group_sum_f32((value), qpel_group_scratch, qpel_lane, qpel_group_size)
+#endif

@@ -1,0 +1,164 @@
+// Generated backend package. Edit the MPS model or backend support.
+// qpel backend: device-scope relaxed unsigned 32-bit atomics.
+#include <cuda_runtime.h>
+struct alignas(16) QpelShape { unsigned int x, y, z, padding; };
+static_assert(sizeof(unsigned int) == 4, "qpel requires 32-bit unsigned int");
+static_assert(sizeof(QpelShape) == 16, "qpel shape ABI must be 16 bytes");
+#define QPEL_KERNEL extern "C" __global__
+#define QPEL_DEVICE __device__ __forceinline__
+#define QPEL_U8 unsigned char
+#define QPEL_U32 unsigned int
+#define QPEL_READ_U8 const unsigned char*
+#define QPEL_ATOMIC_U32 unsigned int*
+#define QPEL_WRITE_U32 unsigned int*
+#define QPEL_SHAPE QpelShape
+#define QPEL_PARAM(type, name, binding) type name
+#define QPEL_GRID_PARAM(name)
+#define QPEL_GRID_LOCAL(name) const unsigned int name = blockIdx.x * blockDim.x + threadIdx.x;
+// Legacy CUDA atomics have relaxed ordering at device scope. A zero-add is an
+// atomic read implemented as an RMW: correct, but potentially slower than load.
+#define QPEL_LOAD(address) atomicAdd((address), 0u)
+#define QPEL_STORE(address, value) atomicExch((address), (value))
+#define QPEL_ADD(address, value) atomicAdd((address), (value))
+#define QPEL_MIN(address, value) atomicMin((address), (value))
+
+#define QPEL_F32 float
+#define QPEL_READ_F32 const float*
+#define QPEL_WRITE_F32 float*
+
+#define QPEL_FMA_F32(a, b, c) __fmaf_rn((a), (b), (c))
+
+#ifdef QPEL_F16_ENABLED
+#include <cuda_fp16.h>
+#endif
+#define QPEL_F16 __half
+#define QPEL_READ_F16 const __half*
+#define QPEL_WRITE_F16 __half*
+#define QPEL_TO_F16(value) __float2half_rn((value))
+
+#ifdef QPEL_SUM_F32_ENABLED
+__device__ __forceinline__ float qpel_sum_f32(const float* values, unsigned int start, unsigned int count) {
+    float result = 0.0f;
+    for (unsigned int offset = 0; offset < count; ++offset)
+        result = __fadd_rn(result, values[start + offset]);
+    return result;
+}
+#define QPEL_SUM_F32(values, start, count) qpel_sum_f32((values), (start), (count))
+#endif
+
+#ifdef QPEL_GROUP_SUM_F32_ENABLED
+#undef QPEL_GRID_LOCAL
+#define QPEL_GRID_LOCAL(name) const unsigned int name = blockIdx.x * blockDim.x + threadIdx.x; __shared__ float qpel_group_scratch[256];
+__device__ __forceinline__ float qpel_group_sum_f32(float value, float* scratch, unsigned int lane, unsigned int width) {
+    scratch[lane] = value;
+    __syncthreads();
+    for (unsigned int stride = 1; stride < width; stride *= 2) {
+        if (lane % (stride * 2) == 0 && lane + stride < width)
+            scratch[lane] = __fadd_rn(scratch[lane], scratch[lane + stride]);
+        __syncthreads();
+    }
+    float result = scratch[0];
+    __syncthreads(); // All readers finish before a later collective reuses scratch.
+    return result;
+}
+#define QPEL_GROUP_SUM_F32(value) qpel_group_sum_f32((value), qpel_group_scratch, threadIdx.x, blockDim.x)
+#endif
+
+// Generated from qpel IR. Do not edit.
+// qpel numeric contract: u32-modulo-v1
+QPEL_KERNEL void initialize(QPEL_PARAM(QPEL_READ_U8, mask, 0), QPEL_PARAM(QPEL_ATOMIC_U32, parent, 1), QPEL_PARAM(QPEL_ATOMIC_U32, counts, 2), QPEL_PARAM(QPEL_SHAPE, shape, 3) QPEL_GRID_PARAM(qpel_index)) {
+QPEL_GRID_LOCAL(qpel_index)
+{
+if (((QPEL_U32)(qpel_index) >= (QPEL_U32)(((QPEL_U32)(((QPEL_U32)(shape.x) * (QPEL_U32)(shape.y))) * (QPEL_U32)(shape.z))))) {
+return ;
+ }
+QPEL_STORE((parent + (QPEL_U32)(qpel_index)), qpel_index);
+QPEL_STORE((counts + (QPEL_U32)(qpel_index)), 0u);
+ }
+}
+
+QPEL_DEVICE QPEL_U32 root(QPEL_ATOMIC_U32 p, QPEL_U32 i) {
+{
+QPEL_U32 next = QPEL_LOAD((p + (QPEL_U32)(i)));
+while (((QPEL_U32)(next) != (QPEL_U32)(i))) {
+i = next;
+next = QPEL_LOAD((p + (QPEL_U32)(i)));
+ }
+return i;
+ }
+}
+
+QPEL_DEVICE void unite(QPEL_ATOMIC_U32 p, QPEL_U32 a, QPEL_U32 b) {
+{
+while (true) {
+a = root(p, a);
+b = root(p, b);
+if (((QPEL_U32)(a) == (QPEL_U32)(b))) {
+return ;
+ }
+QPEL_U32 lo = min((QPEL_U32)(a), (QPEL_U32)(b));
+QPEL_U32 hi = max((QPEL_U32)(a), (QPEL_U32)(b));
+QPEL_U32 old = QPEL_MIN((p + (QPEL_U32)(hi)), lo);
+if (((QPEL_U32)(old) == (QPEL_U32)(hi))) {
+return ;
+ }
+a = old;
+b = lo;
+ }
+ }
+}
+
+QPEL_KERNEL void merge(QPEL_PARAM(QPEL_READ_U8, mask, 0), QPEL_PARAM(QPEL_ATOMIC_U32, parent, 1), QPEL_PARAM(QPEL_ATOMIC_U32, counts, 2), QPEL_PARAM(QPEL_SHAPE, shape, 3) QPEL_GRID_PARAM(qpel_index)) {
+QPEL_GRID_LOCAL(qpel_index)
+{
+QPEL_U32 w = shape.x;
+QPEL_U32 h = shape.y;
+if ((((QPEL_U32)(qpel_index) >= (QPEL_U32)(((QPEL_U32)(((QPEL_U32)(w) * (QPEL_U32)(h))) * (QPEL_U32)(shape.z)))) || (!mask[qpel_index]))) {
+return ;
+ }
+QPEL_U32 x = ((QPEL_U32)(qpel_index) % (QPEL_U32)(w));
+QPEL_U32 y = ((QPEL_U32)(((QPEL_U32)(qpel_index) / (QPEL_U32)(w))) % (QPEL_U32)(h));
+if ((((QPEL_U32)(x) > (QPEL_U32)(0u)) && mask[((QPEL_U32)(qpel_index) - (QPEL_U32)(1u))])) {
+unite(parent, qpel_index, ((QPEL_U32)(qpel_index) - (QPEL_U32)(1u)));
+ }
+if (((QPEL_U32)(y) > (QPEL_U32)(0u))) {
+if (mask[((QPEL_U32)(qpel_index) - (QPEL_U32)(w))]) {
+unite(parent, qpel_index, ((QPEL_U32)(qpel_index) - (QPEL_U32)(w)));
+ }
+if ((((QPEL_U32)(x) > (QPEL_U32)(0u)) && mask[((QPEL_U32)(((QPEL_U32)(qpel_index) - (QPEL_U32)(w))) - (QPEL_U32)(1u))])) {
+unite(parent, qpel_index, ((QPEL_U32)(((QPEL_U32)(qpel_index) - (QPEL_U32)(w))) - (QPEL_U32)(1u)));
+ }
+if ((((QPEL_U32)(((QPEL_U32)(x) + (QPEL_U32)(1u))) < (QPEL_U32)(w)) && mask[((QPEL_U32)(((QPEL_U32)(qpel_index) - (QPEL_U32)(w))) + (QPEL_U32)(1u))])) {
+unite(parent, qpel_index, ((QPEL_U32)(((QPEL_U32)(qpel_index) - (QPEL_U32)(w))) + (QPEL_U32)(1u)));
+ }
+ }
+ }
+}
+
+QPEL_KERNEL void label_count(QPEL_PARAM(QPEL_READ_U8, mask, 0), QPEL_PARAM(QPEL_ATOMIC_U32, parent, 1), QPEL_PARAM(QPEL_ATOMIC_U32, counts, 2), QPEL_PARAM(QPEL_SHAPE, shape, 3), QPEL_PARAM(QPEL_WRITE_U32, labels, 4) QPEL_GRID_PARAM(qpel_index)) {
+QPEL_GRID_LOCAL(qpel_index)
+{
+if (((QPEL_U32)(qpel_index) >= (QPEL_U32)(((QPEL_U32)(((QPEL_U32)(shape.x) * (QPEL_U32)(shape.y))) * (QPEL_U32)(shape.z))))) {
+return ;
+ }
+if ((!mask[qpel_index])) {
+labels[qpel_index] = 0u;
+return ;
+ }
+QPEL_U32 r = root(parent, qpel_index);
+labels[qpel_index] = ((QPEL_U32)(((QPEL_U32)(r) % (QPEL_U32)(((QPEL_U32)(shape.x) * (QPEL_U32)(shape.y))))) + (QPEL_U32)(1u));
+QPEL_ADD((counts + (QPEL_U32)(r)), 1u);
+ }
+}
+
+QPEL_KERNEL void areas(QPEL_PARAM(QPEL_READ_U8, mask, 0), QPEL_PARAM(QPEL_ATOMIC_U32, parent, 1), QPEL_PARAM(QPEL_ATOMIC_U32, counts, 2), QPEL_PARAM(QPEL_SHAPE, shape, 3), QPEL_PARAM(QPEL_WRITE_U32, labels, 4), QPEL_PARAM(QPEL_WRITE_U32, output, 5) QPEL_GRID_PARAM(qpel_index)) {
+QPEL_GRID_LOCAL(qpel_index)
+{
+QPEL_U32 plane = ((QPEL_U32)(shape.x) * (QPEL_U32)(shape.y));
+if (((QPEL_U32)(qpel_index) >= (QPEL_U32)(((QPEL_U32)(plane) * (QPEL_U32)(shape.z))))) {
+return ;
+ }
+QPEL_U32 label = labels[qpel_index];
+output[qpel_index] = (label ? QPEL_LOAD((((counts + (QPEL_U32)(((QPEL_U32)(((QPEL_U32)(qpel_index) / (QPEL_U32)(plane))) * (QPEL_U32)(plane)))) + (QPEL_U32)(label)) - (QPEL_U32)(1u))) : 0u);
+ }
+}

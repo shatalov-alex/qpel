@@ -1,0 +1,136 @@
+# qpel: platform evaluation, code assessment, and roadmap — 2026-10-19
+
+Supersedes the "Additional language work" list in [RELEASE.md](RELEASE.md); that file remains the release-readiness checklist.
+
+## Context
+qpel is meant to be a neutral intermediate language between CUDA and Apple Metal, so that applications and libraries can move in either direction. The language was started in JetBrains MPS 2026.1. Over roughly four weeks a Codex agent added a Python toolchain, `portable/`, next to the MPS project. This document answers three questions: (1) is MPS the right platform, (2) what does the existing code actually do and how well, and (3) what should come next. Part (4), the history, is reconstructed from `~/.codex/sessions` (one long conversation starting 2026-09-23; the other log files are approval checks or unrelated work).
+
+---
+
+## 1. Is JetBrains MPS the right platform?
+
+**Verdict: good for designing and editing the language, wrong as the compiler and the source of truth. The repo already moved that way without saying so.**
+
+What MPS is good for here:
+- Language design: concepts, a projectional editor, checks while editing, and textual output from the model. That is how 59 concepts, 9 check rules and output went from zero to working in one day.
+- It cannot produce syntactically invalid programs, and it gives you a structural model for free.
+- "JetBrains MPS" has nothing to do with Apple's Metal Performance Shaders. The name clash is still worth avoiding in docs (call it "JetBrains MPS" and "Metal").
+
+What is wrong for the stated goal of migrating entire applications or libraries:
+- **Migration means reading existing source code.** CUDA C++, Metal Shading Language and host C++ are all text. MPS is projectional, so parsing large real codebases into it is awkward. The CUDA importer today has to drive a *running IDE* over MCP JSON-RPC (`portable/import_cuda_mps.py`), and those edits are not transactional.
+- **A compiler has to run headless, in CI and at scale.** Codex already moved all checking and lowering into Python (`portable/qpel_ir.py`, `qpel_types.py`, `qpel_pipeline.py`, `qpel_bounds.py`) for exactly this reason. MPS TextGen and the Python lowering now **disagree**: Python adds the u32-modulo casts, MPS TextGen does not.
+- **The "typesystem" in MPS is a string-matching validator** (`QpelChecks.java`, 696 lines). It re-checks the whole root for every node. Behavior, constraints, the generator and the runtime aspects are empty. The MPS side is mostly a form-based editor.
+- **The ecosystem is elsewhere.** Real GPU portability stacks are built on MLIR (gpu, nvvm, spirv dialects), SPIR-V with SPIRV-Cross (which produces MSL), Slang (CUDA and Metal backends), and Clang's CUDA frontend. MPS can't reuse any of them.
+
+**Recommendation:**
+- Make the **qpel IR (`.qpel.json`, `portable/CORE.md`) the single source of truth**, with the Python core as the reference compiler.
+- Keep MPS only as an **optional authoring and visualisation frontend** that exports IR. MPS TextGen should be removed, or reduced to IR export.
+- Add a **text syntax** (small grammar, e.g. Lark or a hand-written parser) so people and tools can write qpel without the IDE.
+- Longer term, look at lowering qpel IR to **MLIR**, or reusing Clang to import CUDA, rather than growing hand-written regex/descent importers.
+
+## 2. What the existing code does
+
+### Working and verified
+- **128 Python tests pass** (5 skipped because NumPy is missing). Numeric tests compile the generated CUDA as CPU C++ with UBSan.
+- **SAM 2 connected-components:** written in qpel, turned into Metal, run on an M4 Pro. 133 GPU cases pass, and SAM 2.1 Tiny gives a 0-pixel diff (user-run).
+- **GPU confirmation (user-run) for:** threshold, float32, FMA, float16, ordered sum and workgroup sum.
+- **Numeric rules are deliberately specified and versioned:** u32-modulo integers, explicit casts, FMA separate from `a*b+c`, float16 for storage with float32 math, ordered and tree reductions.
+- **Build is defensive:** `qpel.py check|build` publishes atomically, records hashes and fails closed.
+
+### Architecture as built
+```
+CUDA (tiny subset) ──cuda_import.py──▶ live MPS IDE (MCP) ──▶ MPS model ──export──▶ .qpel.json IR
+                                                                 │                        │
+                                                         MPS TextGen (.qpel.h)   Python validate + Lowering
+                                                                 └──── token cross-check ─┘
+                                                                              │
+                                              neutral macro body + backends/{cuda,metal}.h
+                                                    ▼                         ▼
+                                        components.cu + CuPy host   components.metal + torch.mps host
+```
+Backend differences live in two macro headers (`portable/backends/cuda.h`, `metal.h`). The approach is sound for a kernel-level language.
+
+### Gaps and defects (ranked)
+1. **Not bidirectional.** There is no Metal importer. "CUDA ↔ Metal" is really "qpel → CUDA and Metal" plus a toy CUDA → qpel.
+2. **The CUDA importer handles one fixed kernel shape.** It rejects common idioms (`if (i < n) {…}`, `int i`, operand order swapped in the index line, `+ - << >>`, loops, floats, shared memory). Everything beyond the four examples was written natively in MPS.
+3. **CUDA output has never been compiled with nvcc or run on NVIDIA hardware.** The CuPy host is tested only against a fake driver.
+4. **Two compilers have drifted apart.** MPS TextGen and Python Lowering produce different numeric code. `portable/generated/` (which ships `sam2_adapter.py`) is stale: it predates the u32 rules, has no `cuda_host.py`, and its manifest has absolute paths.
+5. **IR is MPS-shaped.** Node kinds are MPS concept names (`U32BufferType`, `ReadOnlyF16BufferType`), and types are a fixed set of combined concepts instead of a type constructor (`buffer<T, access>`). This will not scale to i32, i64, bf16, vectors or tiles.
+6. **Language coverage is narrow.** 1D grid only. No `else`, no `for`, no signed integers, no 64-bit types, no vector types, no general shared memory, no explicit barriers, no structs. Operators are strings, not enums.
+7. **MPS-side quality.** Empty constraints means no reference scoping. Redundant properties (`isBuffer`, `completionBarrier`, `Grid1D`). Bare default editors. `MODULE_INVALID` false positive (`QpelChecks.pipeline()` around lines 443–451). textGen components misleadingly named `*_Metal`. Duplicate sandbox modules.
+8. **Python-side quality.** Identifier rules and reserved words duplicated in 5 places. Backend features detected by string search (`build_backends.py:51-53`, `qpel_ir.py:67-69`). Identical backend profiles. Validation runs 3–4 times per build. GPU runner scripts in `tests/` can't run in place. Docs point to `~/Documents/Codex/.../outputs`.
+9. **Host side is minimal.** Python-only hosts (torch.mps, CuPy). No C++, Swift or ObjC host, no streams, no buffer reuse, a sync after every stage. Nothing about speed has been measured.
+10. **Scope mismatch with the goal.** Migrating whole apps or libraries needs host-API mapping (cudaMalloc, streams and events → MTLBuffer, MTLCommandQueue, MTLEvent) and library mapping (cuBLAS, cuDNN, CUB, Thrust → MPS, MPSGraph, Accelerate). None of that exists, and that is where most migration effort goes.
+
+## 3. Roadmap
+
+### Phase 0: consolidate (≈1 week)
+- Declare `.qpel.json` the source of truth. ~~Regenerate `portable/generated/`~~ done 2026-10-19: `regenerate.py` rebuilds it from the components IR fixture (u32-modulo-v1, with `cuda_host.py`, relative manifest paths). The CPU host test still passes all 133 cases; **re-run the SAM 2 Apple GPU test** against the new package.
+- ~~Metal compile check~~ done 2026-10-19: `metal_check.py` compiles all 12 fixtures plus the checked-in package with `xcrun metal -Werror`.
+- Turn MPS TextGen into a thin "export IR" step, or have MPS call the Python compiler. Drop the token cross-check once only one path exists.
+- Put the project under git and add CI (unit tests plus clang/UBSan numeric tests). Add `requirements.txt` (numpy, torch optional).
+- Remove hardcoded paths. Copy the GPU runners from `x20-2/outputs` into `portable/gpu_tests/` so they run in place.
+- Deduplicate identifier, block-size and type-name tables into one `qpel_schema` module.
+- Apply the 2026-10-19 `WorkgroupIndex`/`LocalIndex` work, which is still only in `x20-2/outputs/qpel-group-index/`.
+- ~~nvcc compile~~ done 2026-10-19: `nvcc_check.py` compiles all 12 fixtures plus the checked-in SAM 2 package with nvcc 12.6/ptxas for sm_75–sm_90 in Docker, warnings as errors, and links `tests/cuda.cu`.
+- Deferred until a major milestone (end of Phase 2): NVIDIA *execution* via GPGPU-Sim functional mode in Docker, then one real NVIDIA run (free Colab/Kaggle T4 or any card) for the CuPy host. Until then the nvcc check is the CUDA gate.
+
+### Phase 1: bidirectional importers and the round-trip matrix (3–5 weeks)
+qpel exists to sit between CUDA and Metal, so both import directions come first. The IR grows only as far as the importers need it.
+
+- **CUDA → qpel, offline.** Replace the fixed-shape parser and the live-IDE MCP path with a Clang-based frontend: libclang or `clang -x cuda -Xclang -ast-dump=json`, with `-nocudainc` plus a small header of CUDA declarations. The output is `program.qpel.json` directly. MPS can open it afterwards, but MPS is not in the import path.
+- **Metal → qpel.** MSL is based on C++14, so parse it the same way: through `xcrun metal -Xclang -ast-dump=json`, or Clang with a header of Metal declarations. Map `[[buffer(n)]]`, `[[thread_position_in_grid]]`, `threadgroup` memory, `atomic_uint` and `metal::fma`/`min`/`max` onto the existing qpel concepts. Local prerequisite: `xcodebuild -downloadComponent MetalToolchain`, because the Metal compiler is installed but the toolchain isn't downloaded.
+- **Report unsupported constructs.** Every construct that is rejected or not portable gets a diagnostic with its source position and a reason code. Examples: dynamic shared memory, cooperative groups, textures, argument buffers, warp intrinsics. Nothing is dropped silently.
+- **Minimum IR extensions the importers need:** `else`, `for`, signed `i32`, the `if (i < n) {…}` guard shape, any index-line operand order, scalar (non-buffer) kernel parameters, and 2D/3D grid indices (building on the 10-19 `WorkgroupIndex`/`LocalIndex` work). Each extension gets a version bump and the rules in NUMERICS.md.
+- **Round-trip test matrix** (in CI). Every corpus kernel runs through:
+
+  | Path | Requirement |
+  |---|---|
+  | CUDA → qpel → CUDA | nvcc accepts it (`nvcc_check.py`). Behaviour matches the original on the CPU simulator. |
+  | Metal → qpel → Metal | `xcrun metal` accepts it. Behaviour matches the original on the Apple GPU (user-run). |
+  | CUDA → qpel → Metal | Metal compiles, and outputs match the CUDA original on shared test vectors. |
+  | Metal → qpel → CUDA | nvcc compiles, and outputs match the Metal original on shared test vectors. |
+  | qpel → X → qpel | Re-importing the generated CUDA or Metal gives back the same qpel graph, modulo normalisation. |
+
+- **Starting corpus:** the four `cuda_examples/`, hand-written MSL equivalents of the same kernels, the SAM 2 connected-components kernel (CUDA original and the Metal port), plus the float32/FMA/half/reduction/workgroup fixtures written out as CUDA and MSL source.
+- **Exit criterion:** every corpus kernel passes all five rows of the matrix, and the MCP/IDE import path is retired.
+
+### Phase 2: IR v2, text syntax and real-world coverage (3–6 weeks)
+- Redesign types as constructors: scalars `u8/u16/u32/u64/i8…i64/f16/bf16/f32`, `vec<T,N>`, `buffer<T, read|write|atomic>`, `shared<T,N>`. Add an IR migration from v1.
+- Add `break`/`continue` and explicit `barrier(workgroup)`, and generalise the existing uniformity checks.
+- **Text syntax** (`.qpel`) with a parser to IR and a printer from IR that round-trip. This becomes the main way of writing qpel; MPS stays optional.
+- Replace substring capability detection with a declared feature set per program and per backend profile (CUDA sm_XX, Metal version).
+- Grow the corpus to real code: llama.cpp `ggml-cuda` and `ggml-metal` element-wise and reduction kernels, and PyTorch MPS custom kernels. Publish a **coverage metric** (% importable, % round-trip-clean) per corpus and direction.
+- Add differential fuzzing across backends to the round-trip matrix.
+- **Milestone gate:** at the end of this phase, run the deferred NVIDIA execution tests (GPGPU-Sim, then one real card).
+
+### Phase 3: performance-capable core (4–8 weeks)
+- Shared-memory tiling, warp/simdgroup ops (`shuffle`, `ballot`, `simd_sum`), and subgroup size as a queried capability.
+- Matrix tiles mapped to WMMA/mma.sync on CUDA and `simdgroup_matrix` on Metal: the minimum for GEMM and attention.
+- Atomics beyond u32 (f32 add, i32/u64 where supported), with capability gating.
+- Optimisation passes kept separate from portability lowering, as Codex already argued: constant folding, CSE, vectorised loads.
+- A benchmark harness reporting time per kernel against the native original on both platforms.
+
+### Phase 4: host and library layer, for "migrate apps" (ongoing)
+- A host API IR: buffers, queues/streams, events, launch, copies. Backends for CUDA runtime C++, Metal (Swift/ObjC++/metal-cpp), and the existing Python hosts.
+- A library-mapping table and shims: cuBLAS GEMM → MPSMatrixMultiplication/MPSGraph; CUB/Thrust reductions and scans → qpel library kernels; cuDNN conv → MPSGraph. Unmappable calls are reported, not silently dropped.
+- A Triton frontend (the user's original stated priority). Triton's block/tile model needs Phase 3 tiles. Importing Triton TTIR/TTGIR is likely easier than CUDA C++.
+
+### Feature wish-list (good additions, roughly by value)
+1. Clang-based CUDA and MSL importers with coverage reports
+2. Text syntax and LSP, for editor support outside MPS
+3. Workgroup memory, barriers, subgroup ops
+4. Matrix tiles (WMMA ↔ simdgroup_matrix)
+5. bf16, i32 and i64 types, vector types
+6. Differential testing / fuzzing harness across backends
+7. Host IR plus C++/Swift host generation
+8. Library mapping (BLAS, conv, reductions)
+9. Triton TTIR import
+10. MLIR export, to plug into existing optimisation and SPIR-V/Vulkan as a third backend
+
+## Verification baseline
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py'` — 128 run, 5 skipped (NumPy) on 2026-10-19.
+- `python3 metal_check.py`: all 13 Metal files compile with `-Werror` (2026-10-19).
+- `python3 nvcc_check.py`: all 13 CUDA files compile with nvcc 12.6 for sm_75–sm_90, and the host harness links (2026-10-19).
+- Phase 0 exit criterion: the unit tests, the nvcc check and the Metal check pass in CI, and the Apple GPU runners pass from inside the repo.
+- Phase 1 exit criterion: every corpus kernel passes all five rows of the round-trip matrix.
