@@ -1,6 +1,6 @@
 """Run every check that needs no NVIDIA hardware; exit nonzero if any of them fails.
 
-    python3 portable/check_all.py                 # unit tests, Metal compile, nvcc compile
+    python3 portable/check_all.py                 # unit tests, round trips, Metal and nvcc compile
     python3 portable/check_all.py --gpu           # also run gpu_tests/ on the Apple GPU
     python3 portable/check_all.py --gpu --python .venv/bin/python   # interpreter with torch
 
@@ -24,6 +24,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     env = {'PYTHONDONTWRITEBYTECODE': '1'}
     steps = [('unit tests', [args.python, '-m', 'unittest', 'discover', '-s', str(HERE/'tests'), '-p', 'test_*.py']),
+             ('round trips', [sys.executable, '-m', 'frontends.roundtrip']),
              ('Metal compile', [sys.executable, str(HERE/'metal_check.py')])]
     if not args.no_nvcc:
         steps.append(('nvcc compile', [sys.executable, str(HERE/'nvcc_check.py')]))

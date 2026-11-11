@@ -52,16 +52,63 @@ def compile_program(source, out=None):
     return report
 
 
+def import_program(source, plan=None, module=None, block=64):
+    """Import a CUDA (.cu) or Metal (.metal) source; return (program, report)."""
+    from frontends.c_import import import_source
+    from qpel_schema import is_identifier, is_block_size, MAX_BLOCK_SIZE
+    if module is not None and not is_identifier(module):
+        raise ValueError('Invalid module name')
+    if not is_block_size(block):
+        raise ValueError(f'Block size must be 1..{MAX_BLOCK_SIZE}')
+    plan_data = json.loads(plan.read_text()) if plan else None
+    program, report = import_source(source, module=module, plan=plan_data, block_size=block)
+    report['checks'] = {target: validate(program, target) for target in ('metal', 'cuda')}
+    report['source_sha256'] = hashlib.sha256(source.read_bytes()).hexdigest()
+    return program, report
+
+
+def translate(source, out, plan=None, module=None, block=64):
+    """Import a source and build the CUDA and Metal package from it."""
+    program, report = import_program(source, plan, module, block)
+    with tempfile.TemporaryDirectory(prefix='.qpel-import-') as temp:
+        saved = Path(temp)/'program.qpel.json'
+        save(saved, program)
+        build_report = compile_program(saved, out)
+    save(out/'package/import-report.json', report)
+    (out/'package'/('original' + source.suffix)).write_bytes(source.read_bytes())
+    return dict(build_report, imported=report)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('check', 'build'))
-    parser.add_argument('source', type=Path, help='Exported program.qpel.json')
-    parser.add_argument('--out', type=Path, help='New output directory (build only)')
+    commands = parser.add_subparsers(dest='command', required=True)
+    check = commands.add_parser('check', help='Validate a program.qpel.json')
+    check.add_argument('source', type=Path)
+    build = commands.add_parser('build', help='Build CUDA and Metal from a program.qpel.json')
+    build.add_argument('source', type=Path)
+    build.add_argument('--out', type=Path, required=True, help='New output directory')
+    for name, text in (('import', 'Import a CUDA or Metal source into qpel IR'),
+                       ('translate', 'Import a CUDA or Metal source and build both backends')):
+        command = commands.add_parser(name, help=text)
+        command.add_argument('source', type=Path, help='.cu or .metal file')
+        command.add_argument('--out', type=Path, required=True,
+                             help='program.qpel.json to write' if name == 'import' else 'New output directory')
+        command.add_argument('--plan', type=Path, help='Launch plan (pipeline.json); default: one dispatch per kernel')
+        command.add_argument('--module', help='Module name; default: the plan module or the file name')
+        command.add_argument('--block', type=int, default=64, help='Block size when there is no plan')
     args = parser.parse_args(argv)
-    if args.command == 'build' and args.out is None: parser.error('build requires --out')
-    if args.command == 'check' and args.out is not None: parser.error('check does not accept --out')
     try:
-        report = compile_program(args.source, args.out)
+        if args.command == 'check':
+            report = compile_program(args.source)
+        elif args.command == 'build':
+            report = compile_program(args.source, args.out)
+        elif args.command == 'import':
+            if args.out.exists():
+                raise ValueError('Output already exists; choose a new file')
+            program, report = import_program(args.source, args.plan, args.module, args.block)
+            save(args.out, program)
+        else:
+            report = translate(args.source, args.out, args.plan, args.module, args.block)
     except (ValueError, OSError, RuntimeError) as error:
         parser.exit(1, f'qpel: {error}\n')
     print(json.dumps(report, indent=2))

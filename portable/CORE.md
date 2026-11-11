@@ -39,7 +39,7 @@ Use the Pipeline root's name for PIPELINE (for example `components_launch`).
 
 MPS stores the editable qpel AST in `.mps` XML model files; `.mpl` files describe language modules. These are persistence and project formats, not the syntax users should author by hand. Model changes should use the MPS editor or its model API. The portable `program.qpel.json` graph is a separate compiler representation with local references. Neither XML nor JSON is executed by the GPU; the backends emit Metal/CUDA source and launch metadata.
 
-A plain-text qpel frontend is possible later and would parse into this same graph. It has not been implemented. The shared grammar validation is a prerequisite for accepting graphs from additional frontends, and shared scalar type/scope validation now follows it. Whole-resource pipeline/effect checks are now shared too. Per-element initialization, numeric promotion/overflow lowering and memory safety remain incomplete. The CUDA import CLI still runs the native MPS checks, then reads the program that MPS exported as qpel IR.
+A plain-text qpel frontend is possible later and would parse into this same graph. It has not been implemented. The shared grammar validation is a prerequisite for accepting graphs from additional frontends, and shared scalar type/scope validation now follows it. Whole-resource pipeline/effect checks are now shared too. Per-element initialization, numeric promotion/overflow lowering and memory safety remain incomplete. The CUDA and Metal importers (IMPORT.md) are such frontends: they build this graph from clang's AST and then run the same validation.
 
 ## Shared scalar typing (core v0)
 

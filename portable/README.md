@@ -24,11 +24,16 @@ python3 portable/qpel.py build /path/to/program.qpel.json --out /tmp/qpel-build
 
 An exported graph is required. `check` writes nothing. `build` checks both backend profiles, then creates `/tmp/qpel-build/package/` with the original graph, neutral source, generated CUDA/Metal source, both host modules, launch metadata and a hash report. Existing output paths are rejected. Complete contents are published inside an exclusively reserved output directory. A failed build removes only its own empty reservation. Build reports distinguish source generation from compilation and GPU testing.
 
-Checking/building requires only Python's standard library, without MPS, PyTorch, CuPy or GPU access. Native model authoring/export and CUDA-to-MPS import still use the IDE. The graph's shared semantic validation runs offline; it does not rerun native editor checks. The generated hosts require their platform dependencies at execution time. See CUDA_HOST.md for the CUDA API and restrictions.
+Checking/building requires only Python's standard library, without MPS, PyTorch, CuPy or GPU access. Native model authoring/export uses the IDE; importing CUDA or Metal source needs only clang and Xcode's `metal` (see IMPORT.md). The graph's shared semantic validation runs offline; it does not rerun native editor checks. The generated hosts require their platform dependencies at execution time. See CUDA_HOST.md for the CUDA API and restrictions.
 
 ## Authoring and import
 
-CORE.md describes the graph, the MPS export and validation. CUDA_IMPORT.md and TRANSLATE.md describe the restricted source importer and IDE-dependent workflow.
+CORE.md describes the graph, the MPS export and validation. IMPORT.md describes the CUDA and Metal importers and the round-trip matrix:
+
+```sh
+python3 portable/qpel.py import kernels.cu --out program.qpel.json      # or a .metal file
+python3 portable/qpel.py translate kernels.cu --out /tmp/qpel-translated  # import, then build both backends
+```
 
 ## Validation
 

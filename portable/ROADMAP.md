@@ -17,7 +17,7 @@ What MPS is good for here:
 - "JetBrains MPS" has nothing to do with Apple's Metal Performance Shaders. The name clash is still worth avoiding in docs (call it "JetBrains MPS" and "Metal").
 
 What is wrong for the stated goal of migrating entire applications or libraries:
-- **Migration means reading existing source code.** CUDA C++, Metal Shading Language and host C++ are all text. MPS is projectional, so parsing large real codebases into it is awkward. The CUDA importer today has to drive a *running IDE* over MCP JSON-RPC (`portable/import_cuda_mps.py`), and those edits are not transactional.
+- **Migration means reading existing source code.** CUDA C++, Metal Shading Language and host C++ are all text. MPS is projectional, so parsing large real codebases into it is awkward. The CUDA importer at the time had to drive a *running IDE* over MCP JSON-RPC, and those edits were not transactional (replaced by the offline clang importers, see Phase 1).
 - **A compiler has to run headless, in CI and at scale.** Codex already moved all checking and lowering into Python (`portable/qpel_ir.py`, `qpel_types.py`, `qpel_pipeline.py`, `qpel_bounds.py`) for exactly this reason. MPS TextGen and the Python lowering now **disagree**: Python adds the u32-modulo casts, MPS TextGen does not.
 - **The "typesystem" in MPS is a string-matching validator** (`QpelChecks.java`, 696 lines). It re-checks the whole root for every node. Behavior, constraints, the generator and the runtime aspects are empty. The MPS side is mostly a form-based editor.
 - **The ecosystem is elsewhere.** Real GPU portability stacks are built on MLIR (gpu, nvvm, spirv dialects), SPIR-V with SPIRV-Cross (which produces MSL), Slang (CUDA and Metal backends), and Clang's CUDA frontend. MPS can't reuse any of them.
@@ -77,6 +77,8 @@ Backend differences live in two macro headers (`portable/backends/cuda.h`, `meta
 
 ### Phase 1: bidirectional importers and the round-trip matrix (3–5 weeks)
 qpel exists to sit between CUDA and Metal, so both import directions come first. The IR grows only as far as the importers need it.
+
+**Status 2026-11-11:** importers and the matrix are in (see IMPORT.md). `frontends/` imports CUDA and Metal through clang's JSON AST, offline. The fixed-shape parser and the MCP/IDE import path are removed. The matrix passes for all 12 fixtures in both qpel → X → qpel rows, and for the four examples in both CUDA → qpel and Metal → qpel. The guard shape and any index operand order work now. Still open: the IR extensions (`else`, `for`, `i32`, scalar parameters, 2D/3D), the SAM 2 CUDA original in the corpus, and execution-based comparison against original sources.
 
 - **CUDA → qpel, offline.** Replace the fixed-shape parser and the live-IDE MCP path with a Clang-based frontend: libclang or `clang -x cuda -Xclang -ast-dump=json`, with `-nocudainc` plus a small header of CUDA declarations. The output is `program.qpel.json` directly. MPS can open it afterwards, but MPS is not in the import path.
 - **Metal → qpel.** MSL is based on C++14, so parse it the same way: through `xcrun metal -Xclang -ast-dump=json`, or Clang with a header of Metal declarations. Map `[[buffer(n)]]`, `[[thread_position_in_grid]]`, `threadgroup` memory, `atomic_uint` and `metal::fma`/`min`/`max` onto the existing qpel concepts. Local prerequisite: `xcodebuild -downloadComponent MetalToolchain`, because the Metal compiler is installed but the toolchain isn't downloaded.

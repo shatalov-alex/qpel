@@ -1,0 +1,259 @@
+"""CUDA and Metal importers (clang JSON AST -> qpel IR) and the round-trip matrix."""
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+HERE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(HERE))
+from frontends.c_import import import_source, Unsupported
+from frontends.clang_ast import SourceError
+from frontends import roundtrip
+from qpel_ir import validate
+import qpel
+
+
+def available(*command):
+    try:
+        return subprocess.run(list(command), capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+
+HAS_CLANG = shutil.which('clang') is not None
+HAS_METAL = available('xcrun', '--find', 'metal')
+THRESHOLD_CU = (HERE/'cuda_examples/threshold.cu').read_text()
+THRESHOLD_METAL = (HERE/'metal_examples/threshold.metal').read_text()
+
+
+class Sources(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def write(self, text, suffix):
+        path = Path(self.tmp.name)/('sample' + suffix)
+        path.write_text(text)
+        return path
+
+    def program(self, text, suffix='.cu', **options):
+        program, report = import_source(self.write(text, suffix), **options)
+        validate(program)
+        return program, report
+
+    def kinds(self, program):
+        return [n['kind'] for n in program['nodes']]
+
+
+@unittest.skipUnless(HAS_CLANG and HAS_METAL, 'needs clang and xcrun metal')
+class RoundTripMatrix(unittest.TestCase):
+    def test_every_row_matches(self):
+        results = list(roundtrip.rows())
+        self.assertEqual(len(results), 2*len(list(roundtrip.FIXTURES.iterdir())) + 2*len(roundtrip.EXAMPLES))
+        failures = [(row, case, error) for row, case, error in results if error]
+        self.assertEqual(failures, [])
+
+    def test_difference_reports_a_path(self):
+        a = roundtrip.fixture('threshold')
+        b = json.loads(json.dumps(a))
+        next(n for n in b['nodes'] if n['kind'] == 'Binary')['attributes']['operator'] = '>'
+        self.assertIn('operator', roundtrip.difference(a, b))
+        self.assertIsNone(roundtrip.difference(a, a))
+
+
+@unittest.skipUnless(HAS_CLANG, 'needs clang')
+class CudaIdioms(Sources):
+    KERNEL = '''__global__ void scale(const float* x, float* y, unsigned int n) {{
+        {index}
+        {body}
+    }}'''
+
+    def kernel(self, body, index='unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;'):
+        return self.KERNEL.format(index=index, body=body)
+
+    def test_guard_block_and_any_index_order(self):
+        for index in ['unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;',
+                      'const unsigned i = threadIdx.x + blockDim.x * blockIdx.x;',
+                      'unsigned int i = threadIdx.x + blockIdx.x * blockDim.x;']:
+            with self.subTest(index=index):
+                program, report = self.program(self.kernel('if (i < n) { y[i] = x[i] * 2.0f; }', index))
+                self.assertIn('GridIndex', self.kinds(program))
+                self.assertEqual(report['adaptations'], ['scale: count n became a shape (count, 1, 1)'])
+
+    def test_missing_guard_is_reported(self):
+        _, report = self.program(THRESHOLD_CU.replace('return;', 'binary[i] = 0u;').replace('if (', 'if (0u * '))
+        self.assertEqual(report['warnings'], ['apply_threshold: no bounds guard on the thread index'])
+        self.assertEqual(self.program(THRESHOLD_CU)[1]['warnings'], [])
+
+    def test_index_used_inline(self):
+        program, _ = self.program(self.kernel(
+            'if (blockIdx.x * blockDim.x + threadIdx.x < n) y[blockIdx.x * blockDim.x + threadIdx.x] = 1.0f;', ''))
+        self.assertEqual(self.kinds(program).count('GridIndex'), 2)
+
+    def test_float_operations(self):
+        program, _ = self.program(self.kernel('if (i >= n) return; y[i] = fmaf(x[i], 0.5f, (float)i);'))
+        self.assertIn('F32Fma', self.kinds(program))
+        self.assertIn('F32Cast', self.kinds(program))
+
+    def test_helpers_atomics_and_compound_assignment(self):
+        program, report = self.program('''
+            __device__ unsigned int bump(unsigned int* counts, unsigned int i) {
+                return atomicAdd(&counts[i], 1u);
+            }
+            __global__ void clear(unsigned int* counts, uint3 shape) {
+                unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+                if (i < shape.x * shape.y * shape.z) atomicExch(&counts[i], 0u);
+            }
+            __global__ void count(const unsigned char* mask, unsigned int* counts, uint3 shape) {
+                unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+                if (i >= shape.x * shape.y * shape.z) return;
+                unsigned int steps = 0u;
+                while (steps < 3u) { steps += 1u; ++steps; }
+                if (mask[i]) bump(counts, i);
+                atomicMin(counts + i, steps);
+            }''')
+        kinds = self.kinds(program)
+        for kind in ['Call', 'AtomicAdd', 'AtomicMin', 'While', 'Assign']:
+            self.assertIn(kind, kinds)
+        types = {n['attributes'].get('name'): program['nodes'][int(n['children']['type'][0][1:])]['kind']
+                 for n in program['nodes'] if n['kind'] == 'Parameter'}
+        self.assertEqual(types['counts'], 'AtomicU32BufferType')  # inferred from atomic use
+        self.assertEqual(report['helpers'], ['bump'])
+
+    def test_atomic_read_idiom(self):
+        program, _ = self.program('''
+            __global__ void clear(unsigned int* c, uint3 s) {
+                unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+                if (i < s.x * s.y * s.z) atomicExch(c + i, 7u);
+            }
+            __global__ void k(unsigned int* c, unsigned int* out, uint3 s) {
+                unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+                if (i >= s.x * s.y * s.z) return;
+                out[i] = atomicAdd(&c[i], 0u);
+            }''')
+        self.assertIn('AtomicLoad', self.kinds(program))
+
+    def test_macros_are_expanded(self):
+        program, _ = self.program('#define LIMIT(d) (d.x * d.y * d.z)\n' +
+                                  THRESHOLD_CU.replace('dimensions.x * dimensions.y * dimensions.z', 'LIMIT(dimensions)'))
+        self.assertIsNone(roundtrip.difference(self.program(THRESHOLD_CU)[0], program))
+
+    def test_rejections_name_the_construct(self):
+        cases = {
+            'for-loop': THRESHOLD_CU.replace('binary[i] =', 'for (unsigned j = 0; j < 2u; j++) {} binary[i] ='),
+            'else': THRESHOLD_CU.replace('return;', 'return; else {}'),
+            'signed-integer': THRESHOLD_CU.replace('intensity[i] >= cutoff[i]', '(int)i - 2 > 0'),
+            'shift': THRESHOLD_CU.replace('1u :', '(1u << 2u) :'),
+            'double': THRESHOLD_CU.replace('intensity[i] >= cutoff[i]', '0.5 > 0.25'),
+            'thread-builtin': THRESHOLD_CU.replace('blockIdx.x', 'blockIdx.y'),
+            'call': THRESHOLD_CU.replace('binary[i] =', '__syncthreads(); binary[i] ='),
+            'buffer-type': THRESHOLD_CU.replace('unsigned int* binary', 'int* binary'),
+            'local-type': THRESHOLD_CU.replace('binary[i] =', '__shared__ unsigned int cache[64]; binary[i] ='),
+            'scalar-kernel-argument': THRESHOLD_CU.replace('uint3 dimensions', 'uint3 dimensions, unsigned int extra'),
+            'literal-range': THRESHOLD_CU.replace('1u :', '4294967296u :'),
+            'bitwise-not': THRESHOLD_CU.replace('1u :', '~1u :'),
+        }
+        for code, source in cases.items():
+            with self.subTest(code=code):
+                with self.assertRaises(Unsupported) as caught:
+                    self.program(source)
+                self.assertEqual(caught.exception.code, code)
+                self.assertRegex(str(caught.exception), r'sample\.cu:\d+:\d+: \[')
+
+    def test_qpel_checks_still_apply(self):
+        for label, source in [('write input', THRESHOLD_CU.replace('binary[i] =', 'binary[i] = 0u; intensity[i] =')),
+                              ('duplicate name', THRESHOLD_CU.replace('cutoff', 'intensity'))]:
+            with self.subTest(label=label), self.assertRaises((ValueError, SourceError)):
+                self.program(source)
+
+    def test_clang_errors_are_reported(self):
+        with self.assertRaisesRegex(SourceError, 'clang rejected'):
+            self.program(THRESHOLD_CU[:-2])
+
+
+@unittest.skipUnless(HAS_METAL, 'needs xcrun metal')
+class MetalIdioms(Sources):
+    def test_matches_cuda_equivalent(self):
+        if not HAS_CLANG:
+            self.skipTest('needs clang')
+        cuda, _ = self.program(THRESHOLD_CU, module='threshold')
+        metal, _ = self.program(THRESHOLD_METAL, '.metal', module='threshold')
+        self.assertIsNone(roundtrip.difference(cuda, metal))
+
+    def test_buffer_indices_become_bindings(self):
+        source = THRESHOLD_METAL.replace('buffer(0)', 'buffer(5)')
+        program, _ = self.program(source, '.metal')
+        bindings = {n['attributes']['name']: n['attributes']['binding'] for n in program['nodes'] if n['kind'] == 'Parameter'}
+        self.assertEqual(bindings['intensity'], 5)
+
+    def test_atomics_and_half(self):
+        program, _ = self.program('''
+            #include <metal_stdlib>
+            using namespace metal;
+            kernel void clear(device atomic_uint* c [[buffer(0)]], constant uint3& s [[buffer(1)]],
+                              uint i [[thread_position_in_grid]]) {
+                if (i < s.x * s.y * s.z) atomic_store_explicit(c + i, 0u, memory_order_relaxed);
+            }
+            kernel void k(device const half* x [[buffer(0)]], device atomic_uint* c [[buffer(1)]],
+                          device half* y [[buffer(2)]], constant uint3& s [[buffer(3)]],
+                          uint i [[thread_position_in_grid]]) {
+                if (i >= s.x * s.y * s.z) return;
+                atomic_fetch_add_explicit(c + i, 1u, memory_order_relaxed);
+                y[i] = half(fma(float(x[i]), 2.0f, 1.0f));
+            }''', '.metal')
+        for kind in ['AtomicAdd', 'F16Cast', 'F32Cast', 'F32Fma']:
+            self.assertIn(kind, self.kinds(program))
+
+    def test_rejections(self):
+        cases = {
+            'thread-builtin': ('uint i [[thread_position_in_grid]]',
+                               'uint i [[thread_position_in_grid]], uint t [[thread_index_in_threadgroup]]'),
+        }
+        base = '''#include <metal_stdlib>
+            using namespace metal;
+            kernel void k(device atomic_uint* c [[buffer(0)]], constant uint3& s [[buffer(1)]],
+                          uint i [[thread_position_in_grid]]) {
+                if (i >= s.x * s.y * s.z) return;
+                atomic_fetch_add_explicit(c + i, 1u, memory_order_relaxed);
+            }'''
+        for code, (old, new) in cases.items():
+            source = base.replace(old, new)
+            if code == 'thread-builtin':
+                source = source.replace('1u, memory', 't, memory')
+            with self.subTest(code=code), self.assertRaises(Unsupported) as caught:
+                self.program(source, '.metal')
+            self.assertEqual(caught.exception.code, code)
+
+
+@unittest.skipUnless(HAS_CLANG and HAS_METAL, 'needs clang and xcrun metal')
+class Command(Sources):
+    def test_translate_builds_both_backends(self):
+        out = Path(self.tmp.name)/'pkg'
+        report = qpel.translate(HERE/'cuda_examples/masked_copy.cu', out, block=32)
+        self.assertEqual(report['status'], 'generated')
+        generated = out/'package/generated'
+        for suffix in ('.cu', '.metal'):
+            self.assertTrue((generated/('masked_copy' + suffix)).is_file())
+        self.assertEqual(json.loads((generated/'pipeline.json').read_text())['stages'][0]['blockSize'], 32)
+        self.assertTrue((out/'package/original.cu').is_file())
+        self.assertIn('adaptations', json.loads((out/'package/import-report.json').read_text()))
+
+    def test_rejected_source_writes_nothing(self):
+        out = Path(self.tmp.name)/'pkg'
+        source = self.write(THRESHOLD_CU.replace('return;', 'return; else {}'), '.cu')
+        with self.assertRaises(Unsupported):
+            qpel.translate(source, out)
+        self.assertFalse(out.exists())
+
+    def test_import_command_refuses_existing_output(self):
+        out = self.write('{}', '.json')
+        with self.assertRaises(SystemExit):
+            qpel.main(['import', str(HERE/'cuda_examples/threshold.cu'), '--out', str(out)])
+        self.assertEqual(out.read_text(), '{}')
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)
