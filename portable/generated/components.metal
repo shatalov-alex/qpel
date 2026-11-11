@@ -83,6 +83,49 @@ inline int qpel_i32_rem(int a, int b) { return b == -1 ? 0 : a % b; }
 #define QPEL_THREAD_INDEX(axis) qpel_position.axis
 #endif
 
+#ifdef QPEL_INT_WIDTHS_ENABLED
+// IR version 3: 8-, 16- and 64-bit integers and buffers of any element type.
+#define QPEL_I8 char
+#define QPEL_U16 ushort
+#define QPEL_I16 short
+#define QPEL_U64 ulong
+#define QPEL_I64 long
+#define QPEL_READ(type) device const type*
+#define QPEL_WRITE(type) device type*
+// As for i32: LONG_MIN / -1 wraps to LONG_MIN and LONG_MIN % -1 is 0. Divisors must be nonzero.
+inline long qpel_i64_div(long a, long b) { return b == -1 ? (long)(0ul - (ulong)a) : a / b; }
+inline long qpel_i64_rem(long a, long b) { return b == -1 ? 0 : a % b; }
+#define QPEL_I64_DIV(a, b) qpel_i64_div((a), (b))
+#define QPEL_I64_REM(a, b) qpel_i64_rem((a), (b))
+#endif
+
+#ifdef QPEL_BF16_ENABLED
+#define QPEL_BF16 bfloat
+#define QPEL_TO_BF16(value) bfloat((value))
+#endif
+
+#ifdef QPEL_F32_TO_INT_ENABLED
+// float32 -> integer truncates toward zero, saturates out of range and maps NaN to 0.
+#define QPEL_F32_TO_INT_FUNCTION(name, T, low, high, lowest, highest) \
+    inline T name(float x) { return isnan(x) ? (T)0 : x < (low) ? (T)(lowest) : x >= (high) ? (T)(highest) : (T)x; }
+QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_u8, uchar, 0.0f, 256.0f, 0, 255)
+QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i8, char, -128.0f, 128.0f, -128, 127)
+QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_u16, ushort, 0.0f, 65536.0f, 0, 65535)
+QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i16, short, -32768.0f, 32768.0f, -32768, 32767)
+QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_u32, uint, 0.0f, 4294967296.0f, 0u, 4294967295u)
+QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i32, int, -2147483648.0f, 2147483648.0f, (-2147483647 - 1), 2147483647)
+QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_u64, ulong, 0.0f, 18446744073709551616.0f, 0ul, 18446744073709551615ul)
+QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long, -9223372036854775808.0f, 9223372036854775808.0f, (-9223372036854775807l - 1), 9223372036854775807l)
+#define QPEL_F32_TO_U8(x) qpel_f32_to_u8((x))
+#define QPEL_F32_TO_I8(x) qpel_f32_to_i8((x))
+#define QPEL_F32_TO_U16(x) qpel_f32_to_u16((x))
+#define QPEL_F32_TO_I16(x) qpel_f32_to_i16((x))
+#define QPEL_F32_TO_U32(x) qpel_f32_to_u32((x))
+#define QPEL_F32_TO_I32(x) qpel_f32_to_i32((x))
+#define QPEL_F32_TO_U64(x) qpel_f32_to_u64((x))
+#define QPEL_F32_TO_I64(x) qpel_f32_to_i64((x))
+#endif
+
 // Generated from qpel IR. Do not edit.
 // qpel numeric contract: u32-modulo-v1
 QPEL_KERNEL void initialize(QPEL_PARAM(QPEL_READ_U8, mask, 0), QPEL_PARAM(QPEL_ATOMIC_U32, parent, 1), QPEL_PARAM(QPEL_ATOMIC_U32, counts, 2), QPEL_PARAM(QPEL_SHAPE, shape, 3) QPEL_GRID_PARAM(qpel_index)) {

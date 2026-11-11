@@ -64,7 +64,7 @@ class PipelineTests(unittest.TestCase):
         self.reject('READ_BEFORE_WRITE')
 
     def test_readonly_must_be_input(self):
-        next(r for r in self.resources if self.c.declared(r) == 'ReadOnlyU8BufferType')['attributes']['kind'] = 'scratch'
+        next(r for r in self.resources if self.c.declared(r) == 'buffer<u8, read>')['attributes']['kind'] = 'scratch'
         self.reject('RESOURCE_ACCESS')
 
     def test_extent_must_be_shape(self):

@@ -19,16 +19,37 @@ import struct
 import subprocess
 import tempfile
 
+import sys
+
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from qpel_types import NUMPY_DTYPES, element, is_buffer, normalize_plan, term  # noqa: E402
+
 INCLUDE = HERE/'include'
-DTYPES = {'ReadOnlyU8BufferType': np.uint8, 'U32BufferType': np.uint32, 'AtomicU32BufferType': np.uint32,
-          'ReadOnlyI32BufferType': np.int32, 'I32BufferType': np.int32, 'AtomicI32BufferType': np.int32,
-          'ReadOnlyF32BufferType': np.float32, 'F32BufferType': np.float32,
-          'ReadOnlyF16BufferType': np.float16, 'F16BufferType': np.float16}
-VALUE_TYPES = {'U32Type': 'u32', 'I32Type': 'i32', 'F32Type': 'f32'}
-C_VALUE = {'u32': 'qpel_sim_u32', 'i32': 'qpel_sim_i32', 'f32': 'qpel_sim_f32'}
+
+
+class _Types(dict):
+    """type (term or concept name) -> numpy dtype of a buffer element or value."""
+    def __missing__(self, key):
+        t = term(key)
+        return np.dtype(NUMPY_DTYPES[element(t) if is_buffer(t) else t]).type
+
+
+class _Values(dict):
+    """value type (term or concept name) -> its term; the simulator passes 32-bit words."""
+    def __missing__(self, key):
+        t = term(key)
+        if t not in C_VALUE:
+            raise ValueError(f'the simulator has no scalar arguments of type {t}')
+        return t
+
+
+DTYPES = _Types()
+VALUE_TYPES = _Values()
+C_VALUE = {'u32': 'qpel_sim_u32', 'i32': 'qpel_sim_i32', 'f32': 'qpel_sim_f32', 'u64': 'qpel_sim_u64', 'i64': 'qpel_sim_i64'}
+WIDE = {'u64', 'i64'}  # passed as two 32-bit words, low word first
 
 
 class Case:
@@ -75,6 +96,7 @@ class Program:
     def __init__(self, source, plan, work, original=None, include=(), grids=None):
         """original: the import report when `source` is the original (not qpel-generated) source.
         grids: {kernel: [x, y, z]} grid expressions transcribed from the original host code."""
+        plan = normalize_plan(plan)
         self.plan, self.work, self.original, self.grids = plan, Path(work), original, grids or {}
         self.resources = {r['name']: r for r in plan['resources']}
         self.scalars = []  # names of the 32-bit words in scalars.bin, in order
@@ -102,14 +124,16 @@ class Program:
         return f'S[{self.scalars.index(name)}]'
 
     def program(self, source):
-        lines = ['#include "cuda_runtime.h"', f'#include "{source}"', '#include <vector>', '#include <string>',
+        lines = ['#include "cuda_runtime.h"', '#include "cuda_fp16.h"', '#include "cuda_bf16.h"', f'#include "{source}"', '#include <vector>', '#include <string>',
                  '#include <cstring>', '#include <fstream>',
                  'struct Ptr { void* p; template <class T> operator T*() const { return (T*)p; } };',
                  'static std::vector<char> load(const std::string& path) {',
                  '  std::ifstream f(path, std::ios::binary); return std::vector<char>((std::istreambuf_iterator<char>(f)), {}); }',
                  'static unsigned int qpel_sim_u32(unsigned int w) { return w; }',
                  'static int qpel_sim_i32(unsigned int w) { int v; std::memcpy(&v, &w, 4); return v; }',
-                 'static float qpel_sim_f32(unsigned int w) { float v; std::memcpy(&v, &w, 4); return v; }']
+                 'static float qpel_sim_f32(unsigned int w) { float v; std::memcpy(&v, &w, 4); return v; }',
+                 'static unsigned long long qpel_sim_u64(unsigned int lo, unsigned int hi) { return (unsigned long long)hi << 32 | lo; }',
+                 'static long long qpel_sim_i64(unsigned int lo, unsigned int hi) { return (long long)qpel_sim_u64(lo, hi); }']
         namespaces = sorted({q.rpartition('::')[0] for q in (self.original or {}).get('qualified', {}).values()} - {''})
         lines += [f'using namespace {n};' for n in namespaces]
         lines += ['int main(int argc, char** argv) {', '  std::string dir = argv[1];',
@@ -138,7 +162,9 @@ class Program:
                     return f'({dims[0]} * {dims[1]} * {dims[2]})'
                 return 'QpelShape{' + ', '.join(dims) + ', 0u}' if not self.original else 'uint3{' + ', '.join(dims) + '}'
             if r['kind'] == 'value':
-                return f'{C_VALUE[VALUE_TYPES[r["type"]]]}({self.word("value." + name)})'
+                kind = VALUE_TYPES[r['type']]
+                words = [self.word('value.' + name)] + ([self.word('value.' + name + '.hi')] if kind in WIDE else [])
+                return f'{C_VALUE[kind]}({", ".join(words)})'
             return f'Ptr{{b_{name}.data()}}'
         if self.original:
             args = []
@@ -175,7 +201,11 @@ class Program:
                     words[f'{name}.{a}'] = v
             for name, value in case.values.items():
                 kind = VALUE_TYPES[self.resources[name]['type']]
-                words['value.' + name] = struct.unpack('<I', struct.pack('<f' if kind == 'f32' else '<i' if kind == 'i32' else '<I', value))[0]
+                if kind in WIDE:
+                    bits = value % 2**64
+                    words['value.' + name], words['value.' + name + '.hi'] = bits % 2**32, bits >> 32
+                else:
+                    words['value.' + name] = struct.unpack('<I', struct.pack('<f' if kind == 'f32' else '<i' if kind == 'i32' else '<I', value))[0]
             for s in self.plan['stages']:
                 shape = case.shapes[s['grid']]
                 grid, block = geometry(s, shape)

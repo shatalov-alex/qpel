@@ -100,7 +100,7 @@ class TypeTests(unittest.TestCase):
         assignment = self.node('Assign')
         index = self.c.child(assignment, 'target')
         base = self.c.child(index, 'base')
-        readonly = next(n for n in self.ir['nodes'] if n['kind'] == 'Parameter' and self.c.declared(n) == 'ReadOnlyU8BufferType')
+        readonly = next(n for n in self.ir['nodes'] if n['kind'] == 'Parameter' and self.c.declared(n) == 'buffer<u8, read>')
         base['links']['declaration'] = readonly['id']
         self.reject('READ_ONLY')
 

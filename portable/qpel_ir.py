@@ -5,21 +5,45 @@ and whole-resource pipeline effects, not numerical lowering, bounds or races.
 """
 import json
 from qpel_schema import validate_envelope, validate_structure
-from qpel_types import validate_types, TypeChecker, NUMBERS
+from qpel_types import validate_types, TypeChecker, LEGACY, term, is_buffer, element, access, is_signed, bits, unsigned_of, arithmetic, INTEGER_TERMS
 from qpel_pipeline import validate_pipeline
 from qpel_bounds import validate_static_bounds
 
-TYPES={'F16Type':'QPEL_F16','ReadOnlyF16BufferType':'QPEL_READ_F16','F16BufferType':'QPEL_WRITE_F16','F32Type':'QPEL_F32','ReadOnlyF32BufferType':'QPEL_READ_F32','F32BufferType':'QPEL_WRITE_F32','VoidType':'void','BoolType':'bool','U8Type':'QPEL_U8','U32Type':'QPEL_U32',
-       'ReadOnlyU8BufferType':'QPEL_READ_U8','U32BufferType':'QPEL_WRITE_U32',
-       'AtomicU32BufferType':'QPEL_ATOMIC_U32','AtomicI32BufferType':'QPEL_ATOMIC_I32','Shape3DType':'QPEL_SHAPE',
-       'I32Type':'QPEL_I32','ReadOnlyI32BufferType':'QPEL_READ_I32','I32BufferType':'QPEL_WRITE_I32'}
-KINDS=set(TYPES)|set('Grid3D ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin Pipeline Resource Dispatch Binding'.split())
-COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32'}
+# Type terms whose macros predate version 3 keep them, so earlier programs generate the same code.
+LEGACY_MACROS={'void':'void','bool':'bool','u8':'QPEL_U8','u32':'QPEL_U32','i32':'QPEL_I32','f32':'QPEL_F32','f16':'QPEL_F16',
+       'shape3':'QPEL_SHAPE','buffer<u8, read>':'QPEL_READ_U8','buffer<u32, write>':'QPEL_WRITE_U32',
+       'buffer<u32, atomic>':'QPEL_ATOMIC_U32','buffer<i32, atomic>':'QPEL_ATOMIC_I32','buffer<i32, read>':'QPEL_READ_I32',
+       'buffer<i32, write>':'QPEL_WRITE_I32','buffer<f32, read>':'QPEL_READ_F32','buffer<f32, write>':'QPEL_WRITE_F32',
+       'buffer<f16, read>':'QPEL_READ_F16','buffer<f16, write>':'QPEL_WRITE_F16'}
+TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType'}
+KINDS=TYPE_KINDS|set('Grid3D ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin Pipeline Resource Dispatch Binding'.split())
+COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage'}
 PROFILES={'metal':COMMON_FEATURES,'cuda':COMMON_FEATURES}
-SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2'}
+SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3'}
 # Version 2 adds else, for/do/break/continue, signed 32-bit integers and their atomics,
 # shifts, ~, conversion to u8, scalar arguments and 2D/3D kernels.
 V2_KINDS={'Grid3D','ThreadIndex','For','DoWhile','Break','Continue','I32Type','ReadOnlyI32BufferType','I32BufferType','AtomicI32BufferType','I32Literal','I32Cast','U32Cast','U8Cast'}
+# Version 3 writes types as terms (ScalarType, BufferType) and adds 8-, 16- and 64-bit
+# integers, bf16 storage, writable u8 buffers, Cast and Constant.
+V3_KINDS={'ScalarType','BufferType','Cast','Constant'}
+def type_macro(t):
+    """Backend macro spelling a type term."""
+    if t in LEGACY_MACROS:return LEGACY_MACROS[t]
+    if is_buffer(t):return ('QPEL_READ(' if access(t)=='read' else 'QPEL_WRITE(')+type_macro(element(t))+')'
+    return 'QPEL_'+t.upper()
+
+
+def constant(scalar,value):
+    """C spelling of an integer constant of a given type."""
+    size,signed=bits(scalar),is_signed(scalar)
+    if signed and value==-2**(size-1):
+        text='(-'+str(2**(size-1)-1)+('ll' if size==64 else '')+' - 1)'
+    else:
+        text=str(value)+('' if signed else 'u')+('ll' if size==64 else '')
+        if value<0:text='('+text+')'
+    return text if scalar in ('u32','i32') else '(('+type_macro(scalar)+')'+text+')'
+
+
 BINARY_OPERATORS={'+','-','*','/','%','&','|','^','==','!=','<','>','<=','>=','&&','||','<<','>>'}
 UNARY_OPERATORS={'!','-','~'}
 INT32_KINDS={'I32Type','ReadOnlyI32BufferType','I32BufferType','AtomicI32BufferType','I32Literal','I32Cast'}
@@ -39,8 +63,12 @@ def version_2_features(nodes):
     return used
 
 
+def version_3_features(nodes):
+    return {n['kind'] for n in nodes if n['kind'] in V3_KINDS}
+
+
 def minimum_version(program):
-    return 2 if version_2_features(program['nodes']) else 1
+    return 3 if version_3_features(program['nodes']) else 2 if version_2_features(program['nodes']) else 1
 
 
 def validate(program, backend=None):
@@ -49,6 +77,8 @@ def validate(program, backend=None):
         raise ValueError('Unsupported qpel IR version/semantics')
     if program['version']<2 and version_2_features(program['nodes']):
         raise ValueError('IR version 1 cannot use: '+', '.join(sorted(version_2_features(program['nodes'])))+'; declare version 2')
+    if program['version']<3 and version_3_features(program['nodes']):
+        raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_3_features(program['nodes'])))+'; declare version 3')
     nodes={n['id']:n for n in program['nodes']}
     if len(nodes)!=len(program['nodes']):raise ValueError('Duplicate IR node id')
     required={'integer_buffers','grid_1d'}
@@ -63,6 +93,12 @@ def validate(program, backend=None):
         if n['kind'] in ('If','While','DoWhile','For'):required.add('control_flow')
         if n['kind'] in INT32_KINDS:required.add('int32')
         if n['kind']=='Grid3D':required.add('grid_3d')
+        if n['kind'] in TYPE_KINDS|{'Cast','Constant'}:
+            used=term(n) if n['kind'] in TYPE_KINDS else n['attributes'].get('to') or n['attributes'].get('scalar')
+            item=element(used) if is_buffer(used) else used
+            if item in ('u8','i8','u16','i16') and n['kind'] not in LEGACY:required.add('int8_16')
+            if item in ('u64','i64'):required.add('int64')
+            if item=='bf16':required.add('bfloat16_storage')
         targets=list(n['links'].values())+[v for values in n['children'].values() for v in values]
         if any(t not in nodes for t in targets):raise ValueError('Dangling IR reference')
         if n['kind']=='Binary' and n['attributes'].get('operator') not in BINARY_OPERATORS:
@@ -107,10 +143,11 @@ class Lowering:
         k=n['kind'];a=n['attributes']
         e=lambda role:self.emit(self.child(n,role))
         joined=lambda role,sep:sep.join(self.emit(x) for x in self.children(n,role))
-        if k in TYPES:return TYPES[k]
+        if k in TYPE_KINDS:return type_macro(term(n))
         if k=='GpuModule':
             signed='// qpel numeric contract: i32-wrap-v1\n' if any(x['kind'] in INT32_KINDS for x in self.nodes.values()) else ''
-            return '// Generated from qpel IR. Do not edit.\n// qpel numeric contract: u32-modulo-v1\n'+signed+joined('functions','\n')
+            widths='// qpel numeric contract: integers-v3\n' if version_3_features(self.nodes.values()) else ''
+            return '// Generated from qpel IR. Do not edit.\n// qpel numeric contract: u32-modulo-v1\n'+signed+widths+joined('functions','\n')
         if k=='Function':
             kernel=a.get('isKernel',False);args=joined('parameters',', ')
             if kernel and self.child(n,'domain')['kind']=='Grid3D':
@@ -118,7 +155,8 @@ class Lowering:
             return ('QPEL_KERNEL ' if kernel else 'QPEL_DEVICE ')+e('resultType')+' '+a['name']+'('+args+(' QPEL_GRID_PARAM(qpel_index)' if kernel else '')+') {\n'+('QPEL_GRID_LOCAL(qpel_index)\n' if kernel else '')+e('body')+'\n}\n'
         if k=='Parameter':
             if not a.get('isBuffer',False):return e('type')+' '+a['name']
-            macro='QPEL_VALUE(' if self.child(n,'type')['kind'] in ('U32Type','I32Type','F32Type') else 'QPEL_PARAM('
+            declared=term(self.child(n,'type'))
+            macro='QPEL_PARAM(' if is_buffer(declared) or declared=='shape3' else 'QPEL_VALUE('
             return macro+e('type')+', '+a['name']+', '+str(a.get('binding',0))+')'
         if k=='Name':return self.link(n,'declaration')['attributes']['name']
         if k=='GridIndex':return 'qpel_index'
@@ -127,6 +165,8 @@ class Lowering:
             value = a['value']
             return value if value in ('true','false') else str(int(value.rstrip('uU'))) + 'u'
         if k=='I32Literal':return a['value']
+        if k=='Constant':return constant(a['scalar'],int(a['value']))
+        if k=='Cast':return self.cast(e('operand'),self.expression_types[self.child(n,'operand')['id']],a['to'])
         if k=='I32Cast':return '((QPEL_I32)('+e('operand')+'))'
         if k=='U32Cast':return '((QPEL_U32)('+e('operand')+'))'
         if k=='U8Cast':return '((QPEL_U8)('+e('operand')+'))'
@@ -141,37 +181,51 @@ class Lowering:
         if k=='Binary':
             left, right = e('left'), e('right')
             op = a['operator']
-            left_type = self.expression_types[self.child(n,'left')['id']]
+            lt = self.expression_types[self.child(n,'left')['id']]
+            rt = self.expression_types[self.child(n,'right')['id']]
             if op in ('<<','>>'):
-                # The count is taken modulo 32: C leaves larger counts undefined.
-                count = '((QPEL_U32)('+right+') & 31u)'
-                if left_type == 'I32Type':
-                    if op == '<<':return '((QPEL_I32)((QPEL_U32)('+left+') << '+count+'))'
-                    return '(('+left+') >> '+count+')'
-                return '((QPEL_U32)('+left+') '+op+' '+count+')'
-            if left_type == 'I32Type':
-                if op in ('+','-','*'):return '((QPEL_I32)((QPEL_U32)('+left+') '+op+' (QPEL_U32)('+right+')))'
-                if op in ('/','%'):return ('QPEL_I32_DIV(' if op=='/' else 'QPEL_I32_REM(')+left+', '+right+')'
-                return '('+left+' '+op+' '+right+')'
-            if a['operator'] not in ('&&','||'):
-                if self.expression_types[self.child(n,'left')['id']] in NUMBERS:left = '(QPEL_U32)('+left+')'
-                if self.expression_types[self.child(n,'right')['id']] in NUMBERS:right = '(QPEL_U32)('+right+')'
-            return '('+left+' '+a['operator']+' '+right+')'
+                # The count is taken modulo the width: C leaves larger counts undefined.
+                t = arithmetic(lt)
+                count = '((QPEL_U32)('+right+') & '+str(bits(t)-1)+'u)'
+                if is_signed(t):
+                    if op == '<<':return '(('+type_macro(t)+')(('+type_macro(unsigned_of(t))+')('+left+') << '+count+'))'
+                    return '(('+left+') >> '+count+')' if t == lt else '((('+type_macro(t)+')('+left+')) >> '+count+')'
+                return '(('+type_macro(t)+')('+left+') '+op+' '+count+')'
+            if op not in ('&&','||') and lt in INTEGER_TERMS and rt in INTEGER_TERMS:
+                t = self.common(n)
+                if is_signed(t):
+                    s_, u_ = type_macro(t), type_macro(unsigned_of(t))
+                    if op in ('+','-','*'):return '(('+s_+')(('+u_+')('+left+') '+op+' ('+u_+')('+right+')))'
+                    if op in ('/','%'):
+                        helper = ('QPEL_I32_DIV(' if op=='/' else 'QPEL_I32_REM(') if t=='i32' else ('QPEL_I64_DIV(' if op=='/' else 'QPEL_I64_REM(')
+                        return helper+self.widen(left,lt,t)+', '+self.widen(right,rt,t)+')'
+                    return '('+self.widen(left,lt,t)+' '+op+' '+self.widen(right,rt,t)+')'
+                if t == 'u32':  # the version 1 spelling: every unsigned operand is converted
+                    return '((QPEL_U32)('+left+') '+op+' (QPEL_U32)('+right+'))'
+                return '(('+type_macro(t)+')('+left+') '+op+' ('+type_macro(t)+')('+right+'))'
+            if op not in ('&&','||') and rt in ('u8','u32'):
+                right = '(QPEL_U32)('+right+')'  # a pointer offset
+            return '('+left+' '+op+' '+right+')'
         if k=='Unary':
             operand = e('operand')
             operand_type = self.expression_types[self.child(n,'operand')['id']]
-            if operand_type == 'I32Type':
-                return '((QPEL_I32)(0u - (QPEL_U32)('+operand+')))' if a['operator']=='-' else '('+a['operator']+operand+')'
-            if a['operator']=='~':return '(~(QPEL_U32)('+operand+'))'
-            if a['operator']=='-' and self.expression_types[self.child(n,'operand')['id']] in NUMBERS:operand = '(QPEL_U32)('+operand+')'
+            if operand_type in INTEGER_TERMS and a['operator']!='!':
+                t = arithmetic(operand_type)
+                if is_signed(t):
+                    if a['operator']=='-':return '(('+type_macro(t)+')(('+type_macro(unsigned_of(t))+')0u - ('+type_macro(unsigned_of(t))+')('+operand+')))' if t!='i32' else '((QPEL_I32)(0u - (QPEL_U32)('+operand+')))'
+                    return '('+a['operator']+operand+')' if t == operand_type else '(('+type_macro(t)+')('+a['operator']+'('+type_macro(t)+')('+operand+')))'
+                return '('+a['operator']+'('+type_macro(t)+')('+operand+'))'
             return '('+a['operator']+operand+')'
         if k=='Index':return e('base')+'['+e('index')+']'
         if k=='Member':return e('base')+'.'+a['member']
         if k=='Call':return self.link(n,'function')['attributes']['name']+'('+joined('arguments',', ')+')'
         if k in ('Minimum','Maximum'):
             left, right = e('left'), e('right')
-            if self.expression_types[n['id']] != 'I32Type':
-                left, right = '(QPEL_U32)('+left+')', '(QPEL_U32)('+right+')'
+            t = self.expression_types[n['id']]
+            lt = self.expression_types[self.child(n,'left')['id']]
+            rt = self.expression_types[self.child(n,'right')['id']]
+            if t != 'i32' or lt != t or rt != t:
+                left, right = '('+type_macro(t)+')('+left+')', '('+type_macro(t)+')('+right+')'
             return ('min' if k=='Minimum' else 'max')+'('+left+', '+right+')'
         if k=='Select':return '('+e('condition')+' ? '+e('yes')+' : '+e('no')+')'
         if k=='Block':return '{\n'+joined('statements','')+' }'
@@ -191,11 +245,27 @@ class Lowering:
             macro={'AtomicLoad':'QPEL_LOAD','AtomicStore':'QPEL_STORE','AtomicAdd':'QPEL_ADD','AtomicMin':'QPEL_MIN'}[k]
             return macro+'('+e('address')+('' if k=='AtomicLoad' else ', '+e('value'))+')'
         raise ValueError('Not a source expression/statement: '+k)
+    def common(self,n):
+        """The arithmetic type both integer operands of n are converted to."""
+        from qpel_types import join
+        return join(self.expression_types[self.child(n,'left')['id']],self.expression_types[self.child(n,'right')['id']])
+    @staticmethod
+    def widen(text,source,target):
+        return text if source==target else '(('+type_macro(target)+')('+text+'))'
+    @staticmethod
+    def cast(text,source,target):
+        if target in INTEGER_TERMS:
+            if source=='f32':return 'QPEL_F32_TO_'+target.upper()+'('+text+')'  # saturating, see NUMERICS.md
+            return '(('+type_macro(target)+')('+text+'))'
+        if target=='f32':return '(QPEL_F32)('+text+')'
+        if target=='f16':return 'QPEL_TO_F16('+text+')'
+        if target=='bf16':return 'QPEL_TO_BF16('+text+')'
+        raise ValueError('Unsupported conversion target '+target)
     def plan(self):
         p=self.nodes[self.program['roots']['pipeline']];module=self.nodes[self.program['roots']['module']]
         resources=[]
         for r in self.children(p,'resources'):
-            resources.append(dict(name=r['attributes']['name'],kind=r['attributes']['kind'],type=self.child(r,'type')['kind'],extent=self.link(r,'extent')['attributes']['name'] if 'extent' in r['links'] else None))
+            resources.append(dict(name=r['attributes']['name'],kind=r['attributes']['kind'],type=term(self.child(r,'type')),extent=self.link(r,'extent')['attributes']['name'] if 'extent' in r['links'] else None))
         stages=[]
         for s in self.children(p,'stages'):
             stage=dict(kernel=self.link(s,'kernel')['attributes']['name'],grid=self.link(s,'grid')['attributes']['name'],blockSize=s['attributes']['blockSize'],completionBarrier=s['attributes']['completionBarrier'],bindings=[dict(parameter=self.link(b,'parameter')['attributes']['name'],resource=self.link(b,'resource')['attributes']['name']) for b in self.children(s,'bindings')])
@@ -203,7 +273,7 @@ class Lowering:
                 # A 3D stage runs one thread per shape element, in (x, y, z) blocks.
                 stage.update(domain='grid3d',blockShape=[s['attributes']['blockSize'],s['attributes'].get('blockHeight',1),s['attributes'].get('blockDepth',1)])
             stages.append(stage)
-        return dict(schema=1,module=module['attributes']['name'],resources=resources,stages=stages)
+        return dict(schema=2,module=module['attributes']['name'],resources=resources,stages=stages)
     def write(self,directory):
         directory.mkdir(parents=True,exist_ok=True);plan=self.plan();name=plan['module']
         source=directory/(name+'.qpel.h');source.write_text(self.emit(self.nodes[self.program['roots']['module']]))

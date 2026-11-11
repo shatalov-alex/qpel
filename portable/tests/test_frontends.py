@@ -149,17 +149,17 @@ class CudaIdioms(Sources):
             'atomic-update': THRESHOLD_CU.replace('binary[i] =', 'atomicAdd(binary, 1u); binary[i] +='),
             'template': '''template <typename T> __device__ T twice(T v) { return v + v; }
 ''' + THRESHOLD_CU.replace('1u :', 'twice(1u) + twice(1) :'),
-            'conversion': THRESHOLD_CU.replace('1u :', '(unsigned int)(0.5f) :'),
+            'conversion': THRESHOLD_CU.replace('1u :', '(unsigned int)(float)(i > 0u) :'),
             'for-init': THRESHOLD_CU.replace('binary[i] =', 'for (unsigned j = 0, k = 1; j < 2u; ++j) {} binary[i] ='),
             'double': THRESHOLD_CU.replace('intensity[i] >= cutoff[i]', '0.5 > 0.25'),
             'thread-builtin': THRESHOLD_CU.replace('blockIdx.x', 'blockIdx.y'),
             'call': THRESHOLD_CU.replace('binary[i] =', '__syncthreads(); binary[i] ='),
-            'buffer-type': THRESHOLD_CU.replace('unsigned int* binary', 'short* binary'),
+            'buffer-type': THRESHOLD_CU.replace('unsigned int* binary', 'double* binary'),
             'local-type': THRESHOLD_CU.replace('binary[i] =', '__shared__ unsigned int cache[64]; binary[i] ='),
             'scalar-kernel-argument': THRESHOLD_CU.replace('uint3 dimensions', 'uint3 dimensions, bool extra'),
             'no-extent': THRESHOLD_CU.replace('uint3 dimensions', 'unsigned int n, unsigned int m').replace(
                 'dimensions.x * dimensions.y * dimensions.z', 'n || i >= m'),
-            'literal-range': THRESHOLD_CU.replace('1u :', '4294967296u :'),
+            'literal-range': THRESHOLD_CU.replace('binary[i] =', 'unsigned int big = 4294967296u; binary[i] ='),
         }
         for code, source in cases.items():
             with self.subTest(code=code):

@@ -3,7 +3,7 @@
 A write marks a resource produced, not every element initialized. This is not a
 bounds, path-coverage or race proof. Every stage must complete before the next.
 """
-from qpel_types import BUFFERS, READ_ONLY, VALUES, TypeChecker
+from qpel_types import VALUE_TERMS, TypeChecker, access, is_buffer
 
 READ, WRITE = 1, 2
 
@@ -75,15 +75,15 @@ class PipelineChecker(TypeChecker):
             kind, typ = resource['attributes']['kind'], self.declared(resource)
             extent = resource['links'].get('extent')
             if kind == 'shape':
-                self.require(resource, typ == 'Shape3DType' and extent is None, 'RESOURCE_TYPE', 'Shape requires Shape3D without extent')
+                self.require(resource, typ == 'shape3' and extent is None, 'RESOURCE_TYPE', 'Shape requires Shape3D without extent')
                 ready.add(resource['id'])
             elif kind == 'value':
-                self.require(resource, typ in VALUES and extent is None, 'RESOURCE_TYPE', 'A value is a u32, i32 or f32 scalar without extent')
+                self.require(resource, typ in VALUE_TERMS and extent is None, 'RESOURCE_TYPE', 'A value is an integer or f32 scalar without extent')
                 ready.add(resource['id'])
             else:
-                self.require(resource, typ in BUFFERS, 'RESOURCE_TYPE', 'Data resource requires buffer type')
-                self.require(resource, extent in local and self.nodes[extent]['attributes']['kind'] == 'shape' and self.declared(self.nodes[extent]) == 'Shape3DType', 'EXTENT', 'Extent must reference a local shape')
-                self.require(resource, typ not in READ_ONLY or kind == 'input', 'RESOURCE_ACCESS', 'Read-only buffers must be inputs')
+                self.require(resource, is_buffer(typ), 'RESOURCE_TYPE', 'Data resource requires buffer type')
+                self.require(resource, extent in local and self.nodes[extent]['attributes']['kind'] == 'shape' and self.declared(self.nodes[extent]) == 'shape3', 'EXTENT', 'Extent must reference a local shape')
+                self.require(resource, not is_buffer(typ) or access(typ) != 'read' or kind == 'input', 'RESOURCE_ACCESS', 'Read-only buffers must be inputs')
                 if kind in ('input', 'zeroed'):  # zeroed scratch is filled with zeros before the first stage
                     ready.add(resource['id'])
         for stage in self.children(self.pipeline, 'stages'):
@@ -104,11 +104,11 @@ class PipelineChecker(TypeChecker):
                 self.require(binding, rid not in seen, 'ALIAS', 'Aliasing within a dispatch is unsupported')
                 seen.add(rid)
                 self.require(binding, typ == self.declared(param), 'BIND_TYPE', 'Resource and parameter types must match')
-                if typ in BUFFERS:
+                if is_buffer(typ):
                     self.require(binding, resource['links'].get('extent') == grid['id'], 'GRID_EXTENT', 'Buffer extent must match grid')
-                if typ in VALUES:
+                if typ in VALUE_TERMS:
                     self.require(binding, resource['attributes']['kind'] == 'value', 'VALUE_BINDING', 'Scalar parameters bind value resources')
-                if typ == 'Shape3DType':
+                if typ == 'shape3':
                     self.require(binding, rid == grid['id'], 'GRID_SHAPE', 'Shape parameter must match grid')
                 flags = effects.get(param['id'], 0)
                 self.require(binding, not flags & READ or rid in ready, 'READ_BEFORE_WRITE', 'Read requires input or a write by an earlier stage')

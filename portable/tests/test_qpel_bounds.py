@@ -72,7 +72,7 @@ class BoundsTests(unittest.TestCase):
             while n['kind'] != 'Function': n=c.parents[n['id']]
             return n
         atomic=next(n for n in self.ir['nodes'] if n['kind'] in {'AtomicLoad','AtomicStore','AtomicAdd','AtomicMin'} and kernel_of(n)['attributes'].get('isKernel'))
-        param=next(p for p in c.children(kernel_of(atomic),'parameters') if c.declared(p)=='AtomicU32BufferType')
+        param=next(p for p in c.children(kernel_of(atomic),'parameters') if c.declared(p)=='buffer<u32, atomic>')
         address=c.child(atomic,'address')
         self.replace(address,'Binary',{'operator':'+'},{'left':['atomic_base'],'right':['atomic_offset']})
         self.ir['nodes'] += [dict(id='atomic_base',kind='Name',attributes={},children={},links={'declaration':param['id']}),dict(id='atomic_offset',kind='Literal',attributes={'value':str(MAX_ELEMENTS)},children={},links={})]

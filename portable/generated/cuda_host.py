@@ -37,20 +37,21 @@ def _grid3d(shape, block):
 
 def _value(value, kind):
     """A scalar kernel argument, checked against its qpel type."""
-    if kind == 'F32Type':
+    if kind == 'f32':
         if type(value) not in (int, float):
             raise ValueError("Float argument must be a Python number")
         return float(value)
     if type(value) is not int:
         raise ValueError("Integer argument must be a Python int")
-    low, high = (0, 2**32 - 1) if kind == 'U32Type' else (-2**31, 2**31 - 1)
+    bits = int(kind[1:])
+    low, high = (0, 2**bits - 1) if kind[0] == 'u' else (-2**(bits - 1), 2**(bits - 1) - 1)
     if not low <= value <= high:
         raise ValueError("Integer argument is out of range for " + kind)
     return value
 
 
 SHADER_FILE = 'components.cu'
-SHADER_SHA256 = '934af49cbac98c75c3d7f2d5cbb9cf49bcdb791e7400cef67928854cd26c9d14'
+SHADER_SHA256 = 'a3a4c4a6f61d6a556f283cafe527c52eefcd40119e8e7697a3790aff8d67ca57'
 
 def run(inputs, shapes, values=None, *, device=0):
     """CuPy arrays in/out; shapes are (W,H,N); values are scalars; each stage completes before the next."""

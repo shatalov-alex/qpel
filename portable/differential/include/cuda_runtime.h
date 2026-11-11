@@ -53,6 +53,10 @@ inline unsigned int min(int a, unsigned int b) { return min((unsigned int)a, b);
 inline unsigned int min(unsigned int a, int b) { return min(a, (unsigned int)b); }
 inline unsigned int max(int a, unsigned int b) { return max((unsigned int)a, b); }
 inline unsigned int max(unsigned int a, int b) { return max(a, (unsigned int)b); }
+inline long long min(long long a, long long b) { return a < b ? a : b; }
+inline long long max(long long a, long long b) { return a > b ? a : b; }
+inline unsigned long long min(unsigned long long a, unsigned long long b) { return a < b ? a : b; }
+inline unsigned long long max(unsigned long long a, unsigned long long b) { return a > b ? a : b; }
 inline float min(float a, float b) { return std::fmin(a, b); }
 inline float max(float a, float b) { return std::fmax(a, b); }
 inline unsigned int umin(unsigned int a, unsigned int b) { return min(a, b); }

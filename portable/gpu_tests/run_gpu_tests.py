@@ -355,6 +355,35 @@ def run_window_sum(name, host, plan):
     return cases
 
 
+# --- IR version 3 integer widths, bf16 and saturating conversions (oracle next to the fixture) ---
+
+def run_int_widths(name, host, plan):
+    spec = importlib.util.spec_from_file_location('int_widths_oracle', FIXTURES/'int_widths'/'oracle.py')
+    oracle = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(oracle)
+    torch_types = {np.uint16: torch.int16, np.uint64: torch.int64}  # MPS lacks unsigned 16/64-bit tensors
+    cases = 0
+    for shape, inputs, k in oracle.cases():
+        tensors = {}
+        for n, values in inputs.items():
+            if n == 'h':
+                tensors[n] = torch.from_numpy(values.view(np.int16).copy()).view(torch.bfloat16).to('mps')
+            elif values.dtype.type in torch_types:
+                tensors[n] = torch.from_numpy(values.view(values.dtype.str.replace('u', 'i')).copy()).to('mps')
+            else:
+                tensors[n] = torch.from_numpy(values.copy()).to('mps')
+        result = host.run(tensors, {'count': shape}, {'k': k})
+        actual = {}
+        for n, t in result.items():
+            t = t.cpu()
+            actual[n] = (t.view(torch.int16) if t.dtype == torch.bfloat16 else t).numpy().view(oracle.OUTPUTS[n])
+        error = oracle.compare(oracle.expected(inputs, k), actual)
+        if error:
+            raise AssertionError(f'{shape}, k={k}: {error}')
+        cases += 1
+    return cases
+
+
 # --- SAM 2 connected components, imported from the unmodified CUDA original ---
 
 def sam2_oracle(mask, w, h):
@@ -417,7 +446,7 @@ def run_sam2_cc(name, host, plan):
 TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fma32': run_fma32,
          'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components,
          'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset, 'box_sum': run_box_sum,
-         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum}
+         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths}
 
 
 def main(argv=None):

@@ -23,16 +23,19 @@ def _shape(value):
 
 def _value(value, kind):
     """A scalar kernel argument, checked against its qpel type."""
-    if kind == 'F32Type':
+    if kind == 'f32':
         if type(value) not in (int, float):
             raise ValueError("Float argument must be a Python number")
         return float(value)
     if type(value) is not int:
         raise ValueError("Integer argument must be a Python int")
-    low, high = (0, 2**32 - 1) if kind == 'U32Type' else (-2**31, 2**31 - 1)
+    bits = int(kind[1:])
+    low, high = (0, 2**bits - 1) if kind[0] == 'u' else (-2**(bits - 1), 2**(bits - 1) - 1)
     if not low <= value <= high:
         raise ValueError("Integer argument is out of range for " + kind)
-    return value - 2**32 if value >= 2**31 else value  # u32 travels as its int32 bit pattern
+    if kind[0] == 'u' and kind != 'u8' and value >= 2**(bits - 1):
+        return value - 2**bits  # unsigned values travel as the bit pattern of the signed type
+    return value
 
 def _input(value, dtype, count, device):
     if value.device != device or value.dtype != dtype or value.numel() != count:
@@ -41,7 +44,7 @@ def _input(value, dtype, count, device):
 
 
 SHADER_FILE = 'components.metal'
-SHADER_SHA256 = 'fb84e485845362bbcad3a7f1a0c9ea4b3ca8fae5d5806534181337ddfae7c4e9'
+SHADER_SHA256 = '958ed49afcf8d90245ca5f3d2848f7dbc4754cad2c17d3137c8471b5e573dcba'
 
 def run(inputs, shapes, values=None, *, device="mps"):
     """Inputs are tensors; shapes map names to (W,H,N); values are scalars; outputs are flat tensors."""

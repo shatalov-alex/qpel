@@ -2,28 +2,32 @@
 import hashlib
 import keyword
 
-BUFFER_TYPES = {'ReadOnlyF16BufferType': 'float16', 'F16BufferType': 'float16', 'ReadOnlyF32BufferType': 'float32', 'F32BufferType': 'float32', 'ReadOnlyU8BufferType': 'uint8', 'U32BufferType': 'int32', 'AtomicU32BufferType': 'int32', 'AtomicI32BufferType': 'int32', 'ReadOnlyI32BufferType': 'int32', 'I32BufferType': 'int32'}
-VALUE_TYPES = {'U32Type': 'int32', 'I32Type': 'int32', 'F32Type': 'float32'}
-READ_ONLY = {'ReadOnlyU8BufferType', 'ReadOnlyI32BufferType', 'ReadOnlyF32BufferType', 'ReadOnlyF16BufferType'}
+from qpel_types import TORCH_DTYPES, VALUE_TERMS, access, element, is_buffer, normalize_plan
+
+# Buffer element type -> torch dtype of the tensors the CuPy host historically shared (u32 as int32).
+BUFFER_TYPES = {'u8': 'uint8', 'i8': 'int8', 'u16': 'int16', 'i16': 'int16', 'u32': 'int32', 'i32': 'int32',
+                'u64': 'int64', 'i64': 'int64', 'f16': 'float16', 'bf16': 'bfloat16', 'f32': 'float32'}
+VALUE_TYPES = {t: TORCH_DTYPES[t] for t in VALUE_TERMS}
 
 
 def validate_resources(plan):
+    plan = normalize_plan(plan)
     resources = {r['name']: r for r in plan['resources']}
     for r in resources.values():
         kind, typ = r['kind'], r['type']
         if kind == 'shape':
-            if typ != 'Shape3DType' or r.get('extent') is not None:
-                raise ValueError('Shape requires Shape3DType and no extent')
+            if typ != 'shape3' or r.get('extent') is not None:
+                raise ValueError('Shape requires shape3 and no extent')
         elif kind == 'value':
             if typ not in VALUE_TYPES or r.get('extent') is not None:
-                raise ValueError('A value requires U32Type, I32Type or F32Type and no extent')
+                raise ValueError('A value requires an integer or f32 type and no extent')
         elif kind in ('input', 'output', 'scratch', 'zeroed'):
-            if typ not in BUFFER_TYPES:
+            if not is_buffer(typ) or element(typ) not in BUFFER_TYPES:
                 raise ValueError('Unsupported buffer type: ' + typ)
             extent = resources.get(r.get('extent'))
             if extent is None or extent['kind'] != 'shape':
                 raise ValueError('Buffer requires a shape extent')
-            if kind != 'input' and typ in READ_ONLY:
+            if kind != 'input' and access(typ) == 'read':
                 raise ValueError('Read-only buffers must be inputs')
         else:
             raise ValueError('Unsupported resource kind: ' + kind)
@@ -57,16 +61,19 @@ def _shape(value):
 
 def _value(value, kind):
     """A scalar kernel argument, checked against its qpel type."""
-    if kind == 'F32Type':
+    if kind == 'f32':
         if type(value) not in (int, float):
             raise ValueError("Float argument must be a Python number")
         return float(value)
     if type(value) is not int:
         raise ValueError("Integer argument must be a Python int")
-    low, high = (0, 2**32 - 1) if kind == 'U32Type' else (-2**31, 2**31 - 1)
+    bits = int(kind[1:])
+    low, high = (0, 2**bits - 1) if kind[0] == 'u' else (-2**(bits - 1), 2**(bits - 1) - 1)
     if not low <= value <= high:
         raise ValueError("Integer argument is out of range for " + kind)
-    return value - 2**32 if value >= 2**31 else value  # u32 travels as its int32 bit pattern
+    if kind[0] == 'u' and kind != 'u8' and value >= 2**(bits - 1):
+        return value - 2**bits  # unsigned values travel as the bit pattern of the signed type
+    return value
 
 def _input(value, dtype, count, device):
     if value.device != device or value.dtype != dtype or value.numel() != count:
@@ -77,6 +84,7 @@ def _input(value, dtype, count, device):
 
 
 def generate(plan, shader):
+    plan = normalize_plan(plan)
     validate_resources(plan)
     resources = plan['resources']
     inputs = [r['name'] for r in resources if r['kind'] == 'input']
@@ -104,7 +112,7 @@ def generate(plan, shader):
     # Validate all inputs before compiling or allocating GPU resources.
     for r in resources:
         if r['kind'] == 'input':
-            lines.append(f"    buffers[{r['name']!r}] = _input(inputs[{r['name']!r}], torch.{BUFFER_TYPES[r['type']]}, sizes[{r['extent']!r}], device)")
+            lines.append(f"    buffers[{r['name']!r}] = _input(inputs[{r['name']!r}], torch.{BUFFER_TYPES[element(r['type'])]}, sizes[{r['extent']!r}], device)")
     lines.append('    lib = _library()')
     for r in resources:
         name = r['name']
@@ -114,7 +122,7 @@ def generate(plan, shader):
             lines.append(f"    buffers[{name!r}] = torch.tensor([scalar_{name}], device=device, dtype=torch.{VALUE_TYPES[r['type']]})")
         elif r['kind'] != 'input':
             allocate = 'zeros' if r['kind'] == 'zeroed' else 'empty'  # zeroed scratch starts at zero
-            lines.append(f"    buffers[{name!r}] = torch.{allocate}(sizes[{r['extent']!r}], device=device, dtype=torch.{BUFFER_TYPES[r['type']]})")
+            lines.append(f"    buffers[{name!r}] = torch.{allocate}(sizes[{r['extent']!r}], device=device, dtype=torch.{BUFFER_TYPES[element(r['type'])]})")
     for s in plan['stages']:
         args = ', '.join(f"buffers[{b['resource']!r}]" for b in s['bindings'])
         if s.get('domain') == 'grid3d':

@@ -6,8 +6,10 @@ import re
 import math
 import struct
 
-TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType'.split())
-EXPRESSIONS = set('Name Literal I32Literal I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin'.split())
+from qpel_types import INTEGER_TERMS, INTEGERS_BITS, SCALAR_TERMS, buffer, is_valid
+
+TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType'.split())
+EXPRESSIONS = set('Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin'.split())
 STATEMENTS = set('Block Variable Assign Evaluate If While DoWhile For Break Continue Return'.split())
 
 # Child role -> (allowed concepts, minimum count, maximum count or None).
@@ -28,6 +30,7 @@ CHILDREN = {
     'I32Cast': {'operand': one(EXPRESSIONS)},
     'U32Cast': {'operand': one(EXPRESSIONS)},
     'U8Cast': {'operand': one(EXPRESSIONS)},
+    'Cast': {'operand': one(EXPRESSIONS)},
     'WorkgroupSumF32': {'value': one(EXPRESSIONS)},
     'ReduceSumF32': {role: one(EXPRESSIONS) for role in ('buffer','start','count')},
     'F16Cast': {'operand': one(EXPRESSIONS)},
@@ -79,6 +82,9 @@ ATTRIBUTES = {
     'Resource': {'name': str, 'kind': str},
     'Dispatch': {'blockSize': int, 'blockHeight': int, 'blockDepth': int, 'completionBarrier': bool},
     'ThreadIndex': {'axis': str},
+    # IR version 3
+    'ScalarType': {'scalar': str}, 'BufferType': {'element': str, 'access': str},
+    'Cast': {'to': str}, 'Constant': {'value': str, 'scalar': str},
 }
 DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer'}, 'Dispatch': {'blockHeight', 'blockDepth'}}
 # Every qpel name is emitted verbatim into both CUDA C++ and Metal Shading Language, so it
@@ -181,6 +187,19 @@ def validate_structure(nodes):
                 if not math.isfinite(rounded):raise OverflowError()
             except (ValueError, OverflowError):
                 fail('Float32 literal is out of range')
+        if kind == 'ScalarType' and a['scalar'] not in SCALAR_TERMS | {'void'}:
+            fail('Unknown scalar type ' + a['scalar'])
+        if kind == 'BufferType' and not is_valid(buffer(a['element'], a['access'])):
+            fail(f"Invalid buffer type buffer<{a['element']}, {a['access']}>")
+        if kind == 'Cast' and a['to'] not in SCALAR_TERMS - {'bool'}:
+            fail('Unsupported conversion target ' + a['to'])
+        if kind == 'Constant':
+            if a['scalar'] not in INTEGER_TERMS or not re.fullmatch(r'-?[0-9]{1,20}', a['value']):
+                fail('Expected a decimal integer constant')
+            size, signed = INTEGERS_BITS[a['scalar']]
+            low, high = (-2**(size - 1), 2**(size - 1) - 1) if signed else (0, 2**size - 1)
+            if not low <= int(a['value']) <= high:
+                fail(f"Constant {a['value']} is out of range for {a['scalar']}")
         if kind == 'Member' and a['member'] not in ('x', 'y', 'z'):
             fail('Unsupported shape member')
         if kind == 'Resource' and a['kind'] not in ('input', 'output', 'scratch', 'zeroed', 'shape', 'value'):

@@ -2,7 +2,9 @@
 
 Two programs are equal when their trees match after normalising spelling that
 carries no meaning: node ids, literal suffixes (7 vs 7u), float spelling (0.5 vs
-5E-1) and attributes left at their defaults.
+5E-1), attributes left at their defaults, and the IR version 1/2 spellings of
+types, casts and literals (U32Type is ScalarType u32, I32Cast is Cast to i32,
+I32Literal 3 is Constant i32 3).
 
 CUDA -> Metal and Metal -> CUDA follow from these rows: a source that imports to
 a fixture's IR lowers to exactly that fixture's CUDA and Metal, which the nvcc,
@@ -14,6 +16,9 @@ import struct
 import tempfile
 
 from .c_import import import_source
+from qpel_types import LEGACY, LEGACY_CASTS, term
+
+TYPE_KINDS = set(LEGACY) | {'ScalarType', 'BufferType'}
 
 HERE = Path(__file__).resolve().parents[1]
 FIXTURES = HERE/'tests/fixtures/qpel_ir'
@@ -40,6 +45,14 @@ def canonical(program):
     def tree(ident):
         n = nodes[ident]
         a = dict(n['attributes'])
+        kind = n['kind']
+        if kind in TYPE_KINDS:  # U32Type and ScalarType{u32} are the same type
+            return ['Type', {'term': term(n)}, {}, {}]
+        if kind in LEGACY_CASTS:  # I32Cast is Cast{to: i32}
+            kind, a = 'Cast', {'to': LEGACY_CASTS[kind]}
+        if kind in ('Literal', 'I32Literal', 'Constant') and a['value'] not in ('true', 'false'):
+            scalar = a.get('scalar', 'i32' if kind == 'I32Literal' else 'u32')
+            return ['Constant', {'scalar': scalar, 'value': int(a['value'].rstrip('uU'))}, {}, {}]
         if n['kind'] == 'Literal' and a['value'] not in ('true', 'false'):
             a['value'] = int(a['value'].rstrip('uU'))
         if n['kind'] == 'F32Literal':
@@ -49,7 +62,7 @@ def canonical(program):
         if n['kind'] == 'Parameter':
             a.setdefault('isBuffer', False)
             a.setdefault('binding', 0)
-        return [n['kind'], a, {r: label(t) for r, t in sorted(n['links'].items())},
+        return [kind, a, {r: label(t) for r, t in sorted(n['links'].items())},
                 {r: [tree(c) for c in cs] for r, cs in sorted(n['children'].items())}]
     return {k: tree(v) for k, v in sorted(program['roots'].items())}
 

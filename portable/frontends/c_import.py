@@ -9,6 +9,9 @@ the normal qpel checks, which decide types, scopes and pipeline effects.
 from pathlib import Path
 
 from qpel_schema import is_identifier
+from qpel_types import (SCALAR_TERMS, VALUE_TERMS, access, buffer as type_buffer, fits, is_buffer as type_is_buffer,
+                        is_signed, node_spec, normalize_plan, term as type_term)
+from qpel_types import access as type_access, bits as type_bits, INTEGER_TERMS
 from . import clang_ast
 from .clang_ast import position
 
@@ -34,15 +37,19 @@ SCALARS = {'unsigned int': 'u32', 'unsigned': 'u32', 'uint': 'u32', 'uint32_t': 
            'unsigned char': 'u8', 'uchar': 'u8', 'uint8_t': 'u8', 'bool': 'bool', 'float': 'f32',
            '__half': 'f16', 'half': 'f16', 'int': 'i32', 'signed int': 'i32', 'signed': 'i32', 'int32_t': 'i32',
            'void': 'void', 'double': 'f64',
-           'atomic_uint': 'atomic', 'atomic_int': 'atomic_i32'}
+           'atomic_uint': 'atomic', 'atomic_int': 'atomic_i32',
+           # IR version 3. Plain char is signed on every CUDA and Metal target.
+           'signed char': 'i8', 'char': 'i8', 'int8_t': 'i8',
+           'unsigned short': 'u16', 'ushort': 'u16', 'uint16_t': 'u16', 'unsigned short int': 'u16',
+           'short': 'i16', 'short int': 'i16', 'signed short': 'i16', 'int16_t': 'i16',
+           'long long': 'i64', 'long long int': 'i64', 'long': 'i64', 'long int': 'i64', 'int64_t': 'i64',
+           'ptrdiff_t': 'i64', 'signed long long': 'i64',
+           'unsigned long long': 'u64', 'unsigned long long int': 'u64', 'unsigned long': 'u64', 'ulong': 'u64',
+           'unsigned long int': 'u64', 'uint64_t': 'u64', 'size_t': 'u64',
+           '__nv_bfloat16': 'bf16', 'nv_bfloat16': 'bf16', 'bfloat': 'bf16'}
 SHAPES = {'uint3', 'QpelShape', 'dim3'}
-SCALAR_KIND = {'u32': 'U32Type', 'u8': 'U8Type', 'i32': 'I32Type', 'bool': 'BoolType', 'f32': 'F32Type',
-               'f16': 'F16Type', 'void': 'VoidType'}
-BUFFER_KIND = {('u8', True): 'ReadOnlyU8BufferType', ('u32', False): 'U32BufferType',
-               ('atomic', False): 'AtomicU32BufferType', ('atomic_i32', False): 'AtomicI32BufferType', ('i32', True): 'ReadOnlyI32BufferType',
-               ('i32', False): 'I32BufferType', ('f32', True): 'ReadOnlyF32BufferType',
-               ('f32', False): 'F32BufferType', ('f16', True): 'ReadOnlyF16BufferType',
-               ('f16', False): 'F16BufferType'}
+ATOMIC_SCALARS = {'atomic': 'u32', 'atomic_i32': 'i32'}  # Metal atomic element -> qpel element
+NEW_INTEGERS = {'i8', 'u16', 'i16', 'u64', 'i64'}  # spelled with Constant and Cast (IR version 3)
 
 
 def words(text):
@@ -77,7 +84,7 @@ PASSTHROUGH = {'ParenExpr', 'ImplicitCastExpr', 'CStyleCastExpr', 'CXXFunctional
                'CXXStaticCastExpr', 'MaterializeTemporaryExpr', 'ExprWithCleanups',
                'CXXBindTemporaryExpr', 'ConstantExpr'}
 EXPLICIT_CASTS = {'CStyleCastExpr', 'CXXFunctionalCastExpr', 'CXXStaticCastExpr'}
-VALUE_CASTS = {'NoOp', 'LValueToRValue', 'IntegralCast', 'IntegralToBoolean', 'FloatingCast',
+VALUE_CASTS = {'NoOp', 'LValueToRValue', 'IntegralCast', 'IntegralToBoolean', 'FloatingCast', 'FloatingToIntegral',
                'IntegralToFloating', 'UserDefinedConversion', 'ArrayToPointerDecay',
                'FunctionToPointerDecay', 'BuiltinFnToFnPtr', 'ConstructorConversion'}
 
@@ -245,12 +252,13 @@ class Metal(Dialect):
 DIALECT = {'cuda': Cuda(), 'metal': Metal()}
 ATOMIC_ELEMENTS = {'u32': 'atomic', 'i32': 'atomic_i32'}  # element -> scalar of its atomic buffer
 ZERO = {'bool': ('Literal', 'false'), 'u32': ('Literal', '0u'), 'i32': ('I32Literal', '0'), 'f32': ('F32Literal', '0.0')}
-VALUE_KINDS = {'U32Type', 'I32Type', 'F32Type'}
 GRID3D_BLOCK = (16, 16, 1)  # default block for 2D/3D kernels without a launch plan
 MINIMUM = {'min', 'umin'}
 MAXIMUM = {'max', 'umax'}
 FMA = {'__fmaf_rn', 'fmaf', 'fma'}
 TO_F16 = {'__float2half_rn', '__float2half'}
+TO_BF16 = {'__float2bfloat16_rn', '__float2bfloat16'}
+SATURATE = {f'qpel_f32_to_{t}': t for t in ('u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64')}
 TO_F32 = {'__half2float'}
 COMPARISONS = {'==', '!=', '<', '>', '<=', '>='}
 BINARY = {'+', '-', '*', '/', '%', '&', '|', '^', '&&', '||', '<<', '>>'} | COMPARISONS
@@ -447,23 +455,20 @@ class Importer:
         t = describe(p['type']['qualType'])
         if t[0] == 'pointer':
             if find((decl['name'], i)) in atomic_groups or t[2] in ATOMIC_ELEMENTS.values():
-                scalar = ATOMIC_ELEMENTS.get(t[2], t[2] if t[2] in ATOMIC_ELEMENTS.values() else None)
+                scalar = t[2] if t[2] in ATOMIC_ELEMENTS else ATOMIC_SCALARS.get(t[2])
                 if scalar is None:
                     raise Unsupported(p, 'atomic-type', f'atomics on {p["type"]["qualType"]} are not in qpel; only on unsigned int and int')
-                return BUFFER_KIND[(scalar, False)]
-            if t[2] == 'u8' and not t[1]:
-                if p['name'] in written_buffers(body_of(decl)):
-                    raise Unsupported(p, 'buffer-type', 'writable unsigned char buffers are not in qpel yet')
-                self.adaptations.append(f'{decl["name"]}: {p["name"]} is never written, so it became read-only')
-                return 'ReadOnlyU8BufferType'
-            kind = BUFFER_KIND.get((t[2], t[1]))
-            if kind is None:
+                return type_buffer(scalar, 'atomic')
+            if t[2] not in SCALAR_TERMS or t[2] == 'bool':
                 raise Unsupported(p, 'buffer-type', f'{p["type"]["qualType"]} buffers are not in qpel yet')
-            return kind
+            if t[2] == 'u8' and not t[1] and p['name'] not in written_buffers(body_of(decl)):
+                self.adaptations.append(f'{decl["name"]}: {p["name"]} is never written, so it became read-only')
+                return 'buffer<u8, read>'
+            return type_buffer(t[2], 'read' if t[1] else 'write')
         if t[0] == 'shape':
-            return 'Shape3DType'
-        if t[0] == 'scalar' and t[1] in SCALAR_KIND and t[1] != 'void':
-            return SCALAR_KIND[t[1]]
+            return 'shape3'
+        if t[0] == 'scalar' and t[1] in SCALAR_TERMS:
+            return t[1]
         raise Unsupported(p, 'parameter-type', f'parameter type {p["type"]["qualType"]} is not in qpel yet')
 
     # -- functions --
@@ -553,15 +558,15 @@ class Importer:
             attrs = {'name': p['name']}
             if kernel:
                 attrs.update(binding=self.dialect.binding(p, position), isBuffer=True)
-                if kind == 'Shape3DType':
+                if kind == 'shape3':
                     shape_param = p
                 elif count is not None and p['id'] == count['id']:
-                    kind = 'Shape3DType'
-                elif kind not in BUFFER_KIND.values() and kind not in VALUE_KINDS:
+                    kind = 'shape3'
+                elif not type_is_buffer(kind) and kind not in VALUE_TERMS:
                     self.attempt(lambda: self.reject(Unsupported(
-                        p, 'scalar-kernel-argument', 'kernel arguments can be unsigned int, int or float')))
+                        p, 'scalar-kernel-argument', 'kernel arguments can be integers or float')))
             position += 1
-            ir = self.graph.add('Parameter', attrs, {'type': self.graph.add(kind)})
+            ir = self.graph.add('Parameter', attrs, {'type': self.type_node(kind)})
             self.scope[p['id']] = ('param', ir, kind)
             params.append(ir)
         if kernel and self.grid3d and shape_param is None and not any(
@@ -581,7 +586,7 @@ class Importer:
             self.kernel_params[name] = {self.graph.nodes[p]['attributes']['name']: p for p in params}
             self.arguments[name] = self.argument_map(decl)
         result = describe(decl['type']['qualType'].split('(')[0])
-        if result[0] != 'scalar' or result[1] not in SCALAR_KIND:
+        if result[0] != 'scalar' or result[1] not in SCALAR_TERMS | {'void'}:
             self.attempt(lambda: self.reject(Unsupported(decl, 'result-type', 'unsupported result type ' + decl['type']['qualType'])))
             result = ('scalar', 'void')
         body = self.block(body_of(decl))
@@ -589,7 +594,7 @@ class Importer:
         if len(statements) == 1 and self.graph.nodes[statements[0]]['kind'] == 'Block':
             body = statements[0]  # `{ { ... } }`, the shape qpel's own output has
         attrs = {'name': name, 'isKernel': True} if kernel else {'name': name}
-        children = {'parameters': params, 'resultType': self.graph.add(SCALAR_KIND[result[1]]), 'body': body}
+        children = {'parameters': params, 'resultType': self.type_node(result[1]), 'body': body}
         if kernel:
             children['domain'] = self.graph.add('Grid3D' if self.grid3d else 'Grid1D')
             self.domains[name] = 'grid3d' if self.grid3d else 'grid1d'
@@ -647,7 +652,7 @@ class Importer:
                 if len(axes) == 1:
                     derived[node['id']] = axes.pop()
         scalars = {self.graph.nodes[ir]['attributes']['name']: ir for ir in params
-                   if self.graph.nodes[self.graph.nodes[ir]['children']['type'][0]]['kind'] in ('U32Type', 'I32Type')}
+                   if type_term(self.graph.nodes[self.graph.nodes[ir]['children']['type'][0]]) in ('u32', 'i32')}
         ids = {p['id']: p['name'] for p in params_of(decl) if p['name'] in scalars}
 
         def axis(node):
@@ -684,7 +689,7 @@ class Importer:
         shape_name = next(n for n in ('shape', 'grid_shape', 'qshape') if n not in taken)
         binding = self.graph.nodes[params[first]]['attributes']['binding']
         shape = self.graph.add('Parameter', {'name': shape_name, 'binding': binding, 'isBuffer': True},
-                               {'type': self.graph.add('Shape3DType')})
+                               {'type': self.type_node('shape3')})
         for p in params_of(decl):
             for a, n in extents.items():
                 if p['name'] == n:
@@ -713,10 +718,10 @@ class Importer:
         (`if (i >= n) return;`, `if (i < n) {...}`). qpel turns it into a shape
         (n, 1, 1); every other scalar stays an ordinary kernel argument."""
         params = params_of(decl)
-        if any(types.get((decl['name'], i)) == 'Shape3DType' for i in range(len(params))):
+        if any(types.get((decl['name'], i)) == 'shape3' for i in range(len(params))):
             return None
         unsigned = {p['id']: p for i, p in enumerate(params)
-                    if types.get((decl['name'], i)) == 'U32Type' and not self.dialect.builtin(p)}
+                    if types.get((decl['name'], i)) == 'u32' and not self.dialect.builtin(p)}
         grid = {p['id'] for p in params if self.dialect.builtin(p) == 'grid'}
         body = body_of(decl)
         for node in walk(body):
@@ -831,18 +836,19 @@ class Importer:
             return []
         self.scope[decl['id']] = ('untyped', name)  # until it is read, so later uses are not reported again
         t = describe(decl['type']['qualType'])
-        if t[0] != 'scalar' or t[1] not in SCALAR_KIND or t[1] == 'void':
+        if t[0] != 'scalar' or t[1] not in SCALAR_TERMS:
             raise Unsupported(decl, 'local-type', f'local {name} of type {decl["type"]["qualType"]} is not in qpel yet')
         init = decl['inner'][0] if 'init' in decl else None
         if init is None:
-            if t[1] not in ZERO:
+            if t[1] not in ZERO and t[1] not in NEW_INTEGERS:
                 raise Unsupported(decl, 'uninitialized-local', f'local {name} needs an initializer')
             # Reading an uninitialized local is undefined in C, so any value is a faithful start.
             self.adaptations.append(f'{self.current}: local {name} had no initializer; qpel starts it at zero')
             name = self.unique_name(name)
-            ir = self.graph.add('Variable', {'name': name}, {'type': self.graph.add(SCALAR_KIND[t[1]]),
-                                                               'value': self.graph.add(*ZERO[t[1]][:1], {'value': ZERO[t[1]][1]})})
-            self.scope[decl['id']] = ('local', ir, SCALAR_KIND[t[1]])
+            zero = (self.graph.add(ZERO[t[1]][0], {'value': ZERO[t[1]][1]}) if t[1] in ZERO
+                    else self.graph.add('Constant', {'scalar': t[1], 'value': '0'}))
+            ir = self.graph.add('Variable', {'name': name}, {'type': self.type_node(t[1]), 'value': zero})
+            self.scope[decl['id']] = ('local', ir, t[1])
             return [ir]
         axis = grid_axis(init) or (self.axis_of(init) if peel(init)['kind'] in ('MemberExpr', 'ExtVectorElementExpr') else None)
         if self.kernel and axis and decl['id'] not in self.assigned:
@@ -851,8 +857,8 @@ class Importer:
         value = self.expr(init)
         name = self.unique_name(name)
         ir = self.graph.add('Variable', {'name': name},
-                            {'type': self.graph.add(SCALAR_KIND[t[1]]), 'value': value})
-        self.scope[decl['id']] = ('local', ir, SCALAR_KIND[t[1]])
+                            {'type': self.type_node(t[1]), 'value': value})
+        self.scope[decl['id']] = ('local', ir, t[1])
         return [ir]
 
     def unique_name(self, name):
@@ -900,11 +906,15 @@ class Importer:
             return add('Assign', children={'target': self.lvalue(node['inner'][1]), 'value': self.expr(node['inner'][2])})
         if kind == 'UnaryOperator' and node['opcode'] in ('++', '--'):
             target = node['inner'][0]
-            one = {'u32': ('Literal', '1u'), 'i32': ('I32Literal', '1')}.get(scalar_of(target))
+            scalar = scalar_of(target)
+            one = {'u32': ('Literal', {'value': '1u'}), 'i32': ('I32Literal', {'value': '1'})}.get(scalar)
+            if one is None and scalar in NEW_INTEGERS | {'u8'}:
+                one = ('Constant', {'scalar': scalar, 'value': '1'})
             if one is None:
-                raise Unsupported(node, 'increment', 'only 32-bit integers can be incremented')
-            step = add('Binary', {'operator': node['opcode'][0]},
-                       {'left': self.expr(target), 'right': add(one[0], {'value': one[1]})})
+                raise Unsupported(node, 'increment', 'only integers can be incremented')
+            step = add('Binary', {'operator': node['opcode'][0]}, {'left': self.expr(target), 'right': add(*one)})
+            if scalar in ('u8', 'i8', 'u16', 'i16'):  # the sum is in 32 bits; C stores it back narrowed
+                step = add('Cast', {'to': scalar}, {'operand': step})
             return add('Assign', children={'target': self.lvalue(target), 'value': step})
         return add('Evaluate', children={'value': self.expr(node, statement=True)})
 
@@ -927,8 +937,15 @@ class Importer:
             wrapped = self.converted_wrapping(node)
         if wrapped is not None:
             return wrapped
-        core = peel(node)
         target = scalar_of(node)
+        if target in NEW_INTEGERS:
+            folded = integer_constant(node)
+            if folded is not None:
+                return self.constant(node, target, folded)
+        step = conversion_step(node)
+        if step is not None:  # a chain of conversions: convert one step at a time
+            return self.convert_types(self.expr(step), scalar_of(step), target, node)
+        core = peel(node)
         if core['kind'] == 'IntegerLiteral':
             return self.literal(core, 'u32' if self.unsigned else target)
         if target in ('u32', 'bool') and scalar_of(core) == 'i32' and nonnegative_int(core):
@@ -941,12 +958,13 @@ class Importer:
         generated code gives the original program:
         (int)((unsigned)a op (unsigned)b) is a op b, and (int)(0u - (unsigned)a) is -a."""
         n = strip_parens(node)
-        if n['kind'] not in EXPLICIT_CASTS or scalar_of(n) != 'i32':
+        if n['kind'] not in EXPLICIT_CASTS or scalar_of(n) not in ('i32', 'i64'):
             return None
+        unsigned = 'u' + scalar_of(n)[1:]
         inner = strip_parens(cast_operand(n))
-        if inner['kind'] != 'BinaryOperator' or scalar_of(inner) != 'u32' or inner['opcode'] not in ('+', '-', '*', '<<'):
+        if inner['kind'] != 'BinaryOperator' or scalar_of(inner) != unsigned or inner['opcode'] not in ('+', '-', '*', '<<'):
             return None
-        left, right = (signed_operand(x) for x in inner['inner'])
+        left, right = (signed_operand(x, unsigned) for x in inner['inner'])
         op = inner['opcode']
         if op == '<<' and left is not None:
             return self.graph.add('Binary', {'operator': '<<'}, {'left': self.expr(left), 'right': self.shift_count(inner['inner'][1])})
@@ -973,7 +991,7 @@ class Importer:
         """qpel masks shift counts as ((unsigned)(c) & 31u); masking again changes nothing."""
         n = strip_parens(node)
         if n['kind'] == 'BinaryOperator' and n['opcode'] == '&' and peel(n['inner'][1])['kind'] == 'IntegerLiteral' \
-                and int(peel(n['inner'][1])['value']) == 31:
+                and int(peel(n['inner'][1])['value']) in (31, 63):
             count = strip_parens(n['inner'][0])
             if count['kind'] in EXPLICIT_CASTS and scalar_of(count) == 'u32':
                 count = cast_operand(count)
@@ -991,6 +1009,8 @@ class Importer:
 
     def literal(self, n, target):
         value = int(n['value'])
+        if target in NEW_INTEGERS:
+            return self.constant(n, target, value)
         if value > U32_MAX:
             raise Unsupported(n, 'literal-range', 'integer literal does not fit in 32 bits')
         if target == 'f32':
@@ -1001,6 +1021,14 @@ class Importer:
             return self.graph.add('U8Cast', children={'operand': self.literal(n, 'u32')})
         unsigned = scalar_of(n) == 'u32' or value >= 2**31
         return self.graph.add('Literal', {'value': str(value) + ('u' if unsigned else '')})
+
+    def constant(self, n, target, value):
+        """A Constant of `target`, with C's conversion of value to it (wrapping)."""
+        size, signed = type_bits(target), is_signed(target)
+        value %= 2**size
+        if signed and value >= 2**(size - 1):
+            value -= 2**size
+        return self.graph.add('Constant', {'scalar': target, 'value': str(value)})
 
     def convert_types(self, value, source, target, outer):
         add = self.graph.add
@@ -1029,7 +1057,23 @@ class Importer:
             return add('F16Cast', children={'operand': value})
         if target == 'u8' and source in ('u32', 'i32'):
             return add('U8Cast', children={'operand': value})  # keeps the low 8 bits, as C does
+        if source in INTEGER_TERMS and target in INTEGER_TERMS:
+            # A widening that keeps signedness changes nothing qpel computes (its integer
+            # arithmetic joins lossless types as C does); any other conversion is explicit.
+            if fits(target, source) and is_signed(source) == is_signed(target):
+                return value
+            return add('Cast', {'to': target}, {'operand': value})
+        if target in INTEGER_TERMS and source == 'f32':
+            return add('Cast', {'to': target}, {'operand': value})  # C leaves out-of-range undefined; qpel saturates
+        if target == 'f32' and source in INTEGER_TERMS | {'bf16'}:
+            return add('Cast', {'to': 'f32'}, {'operand': value})
+        if target == 'bf16' and source == 'f32':
+            return add('Cast', {'to': 'bf16'}, {'operand': value})
         raise Unsupported(outer, 'conversion', f'conversion from {source} to {target} is not in qpel')
+
+    def type_node(self, t):
+        kind, attributes = node_spec(t)
+        return self.graph.add(kind, attributes)
 
     def name(self, ident):
         return self.graph.add('Name', links={'declaration': ident})
@@ -1056,7 +1100,7 @@ class Importer:
                 raise Unsupported(n, 'thread-builtin', 'use the .x, .y and .z components of the thread position')
             if entry[0] == 'extent':
                 member = add('Member', {'member': entry[2]}, {'base': self.name(entry[1])})
-                return add('I32Cast', children={'operand': member}) if entry[3] == 'I32Type' else member
+                return add('I32Cast', children={'operand': member}) if entry[3] == 'i32' else member
             if entry[0] == 'count':
                 member = lambda m: add('Member', {'member': m}, {'base': self.name(entry[1])})
                 xy = add('Binary', {'operator': '*'}, {'left': member('x'), 'right': member('y')})
@@ -1103,6 +1147,12 @@ class Importer:
             raise Unsupported(n, 'operator', f'operator {op} is not supported here')
         if kind in EXPLICIT_CASTS:  # explicit cast to float or half, see peel()
             operand = peel(n['inner'][0])
+            source = scalar_of(operand)
+            allowed = INTEGER_TERMS | {'f32', 'f16', 'bf16'} if scalar_of(n) == 'f32' else {'f32'}
+            if source == scalar_of(n) == 'f16':
+                return self.core(operand, False, False)  # (half)h is h
+            if source not in allowed:
+                raise Unsupported(n, 'conversion', f'conversion from {source} to {scalar_of(n)} is not in qpel')
             value = self.core(operand, False, False)
             return add('F32Cast' if scalar_of(n) == 'f32' else 'F16Cast', children={'operand': value})
         if kind == 'ConditionalOperator':
@@ -1116,7 +1166,7 @@ class Importer:
             entry = self.scope.get(base.get('referencedDecl', {}).get('id')) if base['kind'] == 'DeclRefExpr' else None
             if entry and entry[0] == 'position' and field in ('x', 'y', 'z'):
                 return self.thread_index(field, n)
-            if entry and entry[0] == 'param' and entry[2] == 'Shape3DType' and field in ('x', 'y', 'z'):
+            if entry and entry[0] == 'param' and entry[2] == 'shape3' and field in ('x', 'y', 'z'):
                 return add('Member', {'member': field}, {'base': self.name(entry[1])})
             if decl_name(base) in ('threadIdx', 'blockIdx', 'blockDim', 'gridDim'):
                 raise Unsupported(n, 'thread-builtin', 'only blockIdx.x * blockDim.x + threadIdx.x is supported')
@@ -1136,7 +1186,7 @@ class Importer:
         core = peel(node)
         entry = self.scope.get(core.get('referencedDecl', {}).get('id')) if core['kind'] == 'DeclRefExpr' else None
         self.typed(entry, node)
-        if not entry or entry[0] != 'param' or entry[2] not in BUFFER_KIND.values():
+        if not entry or entry[0] != 'param' or not type_is_buffer(entry[2]):
             raise Unsupported(node, 'buffer', 'only buffer parameters can be indexed')
         return entry[2]
 
@@ -1156,7 +1206,7 @@ class Importer:
 
     def is_atomic_element(self, node):
         node = peel(node)
-        return node['kind'] == 'ArraySubscriptExpr' and self.buffer_kind(node['inner'][0]).startswith('Atomic')
+        return node['kind'] == 'ArraySubscriptExpr' and type_access(self.buffer_kind(node['inner'][0])) == 'atomic'
 
     def index(self, node):
         base, index = node['inner']
@@ -1196,10 +1246,16 @@ class Importer:
         if callee in TO_F16 or callee in TO_F32:
             need(1)
             return add('F16Cast' if callee in TO_F16 else 'F32Cast', children={'operand': self.expr(args[0])})
-        if callee in ('qpel_i32_div', 'qpel_i32_rem'):  # qpel's defined signed / and %
+        if callee in ('qpel_i32_div', 'qpel_i32_rem', 'qpel_i64_div', 'qpel_i64_rem'):  # qpel's defined signed / and %
             need(2)
-            return add('Binary', {'operator': '/' if callee == 'qpel_i32_div' else '%'},
+            return add('Binary', {'operator': '/' if callee.endswith('div') else '%'},
                        {'left': self.expr(args[0]), 'right': self.expr(args[1])})
+        if callee in SATURATE:  # qpel's saturating float -> integer conversion
+            need(1)
+            return add('Cast', {'to': SATURATE[callee]}, {'operand': self.expr(args[0])})
+        if callee in TO_BF16:
+            need(1)
+            return add('Cast', {'to': 'bf16'}, {'operand': self.expr(args[0])})
         if callee == 'qpel_sum_f32':
             need(3)
             return add('ReduceSumF32', children={'buffer': self.expr(args[0], address=True),
@@ -1277,7 +1333,8 @@ class Importer:
         add = self.graph.add
         resources, ids = [], {}
         for r in plan['resources']:
-            ids[r['name']] = add('Resource', {'name': r['name'], 'kind': r['kind']}, {'type': add(r['type'])})
+            kind, attributes = node_spec(r['type'])
+            ids[r['name']] = add('Resource', {'name': r['name'], 'kind': r['kind']}, {'type': add(kind, attributes)})
             resources.append((r, ids[r['name']]))
         for r, ident in resources:
             if r.get('extent'):
@@ -1308,9 +1365,9 @@ class Importer:
             grid = None
             bindings = []
             for name, ident in self.kernel_params[kernel].items():
-                kind = self.graph.nodes[self.graph.nodes[ident]['children']['type'][0]]['kind']
-                role = ('shape' if kind == 'Shape3DType' else 'value' if kind in VALUE_KINDS else 'input' if kind.startswith('ReadOnly')
-                        else 'scratch' if kind.startswith('Atomic') else 'output')
+                kind = type_term(self.graph.nodes[self.graph.nodes[ident]['children']['type'][0]])
+                role = ('shape' if kind == 'shape3' else 'value' if kind in VALUE_TERMS else 'input' if access(kind) == 'read'
+                        else 'scratch' if access(kind) == 'atomic' else 'output')
                 previous = resources.setdefault(name, {'name': name, 'kind': role, 'type': kind})
                 if previous['type'] != kind:
                     raise Unsupported(None, 'resource-type', f'{name} has type {previous["type"]} and {kind} in different kernels')
@@ -1343,11 +1400,65 @@ def cast_operand(cast):
     return inner
 
 
-def signed_operand(node):
-    """x when node is an explicit (unsigned) cast of an int expression x."""
+def signed_operand(node, unsigned='u32'):
+    """x when node is an explicit (unsigned) cast of x, an integer expression whose value the
+    cast keeps modulo 2^width: a signed integer at most as wide, or a narrower unsigned one."""
     n = strip_parens(node)
-    if n['kind'] in EXPLICIT_CASTS and scalar_of(n) == 'u32' and scalar_of(cast_operand(n)) == 'i32':
-        return cast_operand(n)
+    if n['kind'] in EXPLICIT_CASTS and scalar_of(n) == unsigned:
+        inner = scalar_of(cast_operand(n))
+        width = 32 if unsigned == 'u32' else 64
+        if inner in INTEGER_TERMS and (is_signed(inner) and type_bits(inner) <= width
+                                       or not is_signed(inner) and type_bits(inner) < width) and \
+                (unsigned == 'u64' or inner in ('i32', 'i16', 'i8')):
+            return cast_operand(n)
+    return None
+
+
+def conversion_step(node):
+    """The node just below the first type change, when a chain of casts changes type
+    more than once (`(long long)(unsigned char)x`); converting through every type keeps
+    each truncation. None for zero or one change."""
+    chain = [node]
+    while chain[-1]['kind'] in PASSTHROUGH and chain[-1].get('inner'):
+        n = chain[-1]
+        if n['kind'] in EXPLICIT_CASTS and scalar_of(n) in ('f32', 'f16') and n is not node:
+            break  # peel() stops at explicit float casts too
+        if n['kind'] == 'ImplicitCastExpr' and n.get('castKind') not in VALUE_CASTS:
+            break
+        chain.append(n['inner'][0])
+    types = [scalar_of(n) for n in chain]
+    numeric = INTEGER_TERMS | {'f32', 'bf16'}
+    changes = [i for i in range(1, len(types)) if types[i] != types[i - 1]]
+    if len(changes) < 2 or not all(types[i] in numeric for i in [0] + changes + [c - 1 for c in changes]):
+        return None
+    return chain[changes[0]]
+
+
+def integer_constant(node):
+    """The value of an integer expression made only of literals, + - * and casts, with C's
+    conversions applied (wrapping), or None."""
+    n = strip_parens(node)
+    kind = n['kind']
+    t = scalar_of(n)
+    def fit(v):
+        if t not in INTEGER_TERMS:
+            return None if t != 'bool' else v
+        size, signed = type_bits(t), is_signed(t)
+        v %= 2**size
+        return v - 2**size if signed and v >= 2**(size - 1) else v
+    if kind == 'IntegerLiteral':
+        return fit(int(n['value']))
+    if kind in PASSTHROUGH and n.get('inner'):
+        inner = integer_constant(n['inner'][0])
+        return None if inner is None else fit(inner)
+    if kind == 'UnaryOperator' and n['opcode'] in ('-', '+'):
+        inner = integer_constant(n['inner'][0])
+        return None if inner is None else fit(-inner if n['opcode'] == '-' else inner)
+    if kind == 'BinaryOperator' and n['opcode'] in ('+', '-', '*'):
+        a, b = (integer_constant(x) for x in n['inner'])
+        if a is None or b is None:
+            return None
+        return fit(a + b if n['opcode'] == '+' else a - b if n['opcode'] == '-' else a * b)
     return None
 
 
@@ -1414,6 +1525,7 @@ def import_source(path, dialect=None, module=None, plan=None, block_size=64, inc
     module = module or (plan or {}).get('module') or path.stem
     if not is_identifier(module):
         raise ValueError(f'{module!r} cannot be a qpel module name; pass one explicitly')
+    plan = normalize_plan(plan) if plan else plan
     importer = Importer(unit, source, path, dialect, module)
     program = importer.run(plan, block_size)
     report = {'source': str(path), 'dialect': dialect, 'module': module,

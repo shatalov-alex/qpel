@@ -1,7 +1,9 @@
 """Generate a synchronous CuPy/CUDA host from the same checked Pipeline as Metal."""
 import hashlib
 from generate_metal_host import BUFFER_TYPES, validate_resources
-NUMPY_VALUES = {'U32Type': 'uint32', 'I32Type': 'int32', 'F32Type': 'float32'}
+from qpel_types import NUMPY_DTYPES, VALUE_TERMS, element, normalize_plan
+NUMPY_VALUES = {t: NUMPY_DTYPES[t] for t in VALUE_TERMS}
+CUPY_BUFFERS = dict(BUFFER_TYPES, bf16='uint16')  # CuPy has no bfloat16: bf16 buffers hold its bits
 
 PRELUDE = '''# Generated from qpel Pipeline. Edit the model or generator, not this file.
 from functools import lru_cache
@@ -42,13 +44,14 @@ def _grid3d(shape, block):
 
 def _value(value, kind):
     """A scalar kernel argument, checked against its qpel type."""
-    if kind == 'F32Type':
+    if kind == 'f32':
         if type(value) not in (int, float):
             raise ValueError("Float argument must be a Python number")
         return float(value)
     if type(value) is not int:
         raise ValueError("Integer argument must be a Python int")
-    low, high = (0, 2**32 - 1) if kind == 'U32Type' else (-2**31, 2**31 - 1)
+    bits = int(kind[1:])
+    low, high = (0, 2**bits - 1) if kind[0] == 'u' else (-2**(bits - 1), 2**(bits - 1) - 1)
     if not low <= value <= high:
         raise ValueError("Integer argument is out of range for " + kind)
     return value
@@ -57,6 +60,7 @@ def _value(value, kind):
 
 
 def generate(plan, shader):
+    plan = normalize_plan(plan)
     validate_resources(plan)
     resources = plan['resources']
     inputs = [r['name'] for r in resources if r['kind'] == 'input']
@@ -82,7 +86,7 @@ def generate(plan, shader):
         if r['kind'] == 'input':
             name = r['name']
             lines += [f'    value = inputs[{name!r}]',
-                      f"    if not isinstance(value, cp.ndarray) or value.device.id != device or value.dtype != cp.{BUFFER_TYPES[r['type']]} or value.size != sizes[{r['extent']!r}]:",
+                      f"    if not isinstance(value, cp.ndarray) or value.device.id != device or value.dtype != cp.{CUPY_BUFFERS[element(r['type'])]} or value.size != sizes[{r['extent']!r}]:",
                       '        raise ValueError("Input device, dtype or element count does not match Pipeline")']
     lines += ['    with cp.cuda.Device(device):', '        stream = cp.cuda.get_current_stream()',
               '        lib = _library(device)']
@@ -92,7 +96,7 @@ def generate(plan, shader):
             lines.append(f'        buffers[{name!r}] = cp.ascontiguousarray(inputs[{name!r}]).reshape(-1)')
         elif r['kind'] not in ('shape', 'value'):
             allocate = 'zeros' if r['kind'] == 'zeroed' else 'empty'  # zeroed scratch starts at zero
-            lines.append(f"        buffers[{name!r}] = cp.{allocate}(sizes[{r['extent']!r}], dtype=cp.{BUFFER_TYPES[r['type']]})")
+            lines.append(f"        buffers[{name!r}] = cp.{allocate}(sizes[{r['extent']!r}], dtype=cp.{CUPY_BUFFERS[element(r['type'])]})")
     for s in plan['stages']:
         args = ', '.join(f"buffers[{b['resource']!r}]" for b in s['bindings'])
         block = s['blockSize']

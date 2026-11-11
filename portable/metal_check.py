@@ -4,6 +4,7 @@ Needs Xcode's Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`).
 This proves the Metal compiler accepts the generated shaders; it does not run them.
 """
 import argparse
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -39,16 +40,21 @@ def main(argv=None):
     with tempfile.TemporaryDirectory(prefix='qpel-metal-') as temp:
         work = Path(temp)
         cases = work/'cases'
+        standards = {}
         for name, generated in build_fixtures(work/'build'):
             (cases/name).mkdir(parents=True)
+            manifest = json.loads((generated/'manifest.json').read_text())
             for shader in generated.glob('*.metal'):
                 shutil.copy(shader, cases/name/shader.name)
+                # a package that needs a newer standard (bfloat: Metal 3.1) records it
+                standards[cases/name/shader.name] = manifest['outputs']['metal'].get('standard')
         # The checked-in SAM 2 package is shipped by sam2_adapter.py, so check it as-is too.
         (cases/'checked_in').mkdir()
         shutil.copy(HERE/'generated/components.metal', cases/'checked_in/components.metal')
         for shader in sorted(cases.glob('*/*.metal')):
             label = shader.relative_to(work)
-            ok, output = compile_shader(shader, args.std)
+            needed = standards.get(shader)
+            ok, output = compile_shader(shader, max(args.std, needed or args.std))
             print(('PASS ' if ok else 'FAIL ') + str(label))
             if not ok:
                 failed = True

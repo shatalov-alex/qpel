@@ -25,7 +25,7 @@ def command(path, dialect, include=()):
                 '-I', str(INCLUDE), *extra, '-include', 'cuda_runtime.h',  # nvcc includes it implicitly
                 '-fsyntax-only', '-Xclang', '-ast-dump=json', str(path)]
     if dialect == 'metal':
-        return ['xcrun', 'metal', '-std=metal3.0', *extra, '-fsyntax-only', '-Xclang', '-ast-dump=json', str(path)]
+        return ['xcrun', 'metal', '-std=metal3.1', *extra, '-fsyntax-only', '-Xclang', '-ast-dump=json', str(path)]
     raise ValueError('Unknown dialect: ' + str(dialect))
 
 

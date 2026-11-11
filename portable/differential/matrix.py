@@ -29,6 +29,7 @@ sys.path.insert(0, str(HERE))
 from frontends import roundtrip  # noqa: E402
 from frontends.c_import import import_source  # noqa: E402
 from qpel_ir import Lowering  # noqa: E402
+from qpel_types import normalize_plan  # noqa: E402
 from . import cases as test_cases  # noqa: E402
 from .simulate import Program  # noqa: E402
 
@@ -44,7 +45,7 @@ def sources():
     for entry in roundtrip.corpus_entries():
         if 'fixture' in entry:
             path = roundtrip.CORPUS/entry['source']
-            plan = json.loads((roundtrip.CORPUS/entry['plan']).read_text())
+            plan = normalize_plan(json.loads((roundtrip.CORPUS/entry['plan']).read_text()))
             include = [roundtrip.CORPUS/f for f in entry.get('include', ())]
             out.append((entry['fixture'], path, 'cuda' if path.suffix == '.cu' else 'metal', plan, include,
                         entry.get('grids', {})))

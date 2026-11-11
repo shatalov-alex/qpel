@@ -55,6 +55,10 @@ Resources become available only after the preceding stage completes. This delibe
 
 `validate(program, "metal")` and `validate(program, "cuda")` run the same graph, grammar, scalar typing, scope and pipeline checks without connecting to MPS. MPS keeps its own editor-time checks (`QpelChecks`) for immediate feedback; the Python checks are authoritative for builds.
 
+## IR version 3
+
+Types are terms: `ScalarType {scalar}` and `BufferType {element, access}` construct `u8 … i64`, `bf16`, `f16`, `f32`, `bool` and `buffer<T, read|write|atomic>`; the earlier concept names (`U32Type`, `ReadOnlyF32BufferType`, ...) are spellings of the same terms. Every checker reads types through `qpel_types.term`. See NUMERICS.md for the version 3 numeric rules.
+
 ## Numeric revision
 
 New exports use `qpel-portable-core-v1` and the `u32-modulo-v1` numeric emitter. See NUMERICS.md for exact rules, migration limitations and CPU UBSan evidence. Earlier sections describing exact native source parity and incomplete numeric lowering refer to the preceding revision; only the compatibility rendering now has native token parity. Dynamic division-by-zero, pointer validity and GPU execution remain unchecked.
