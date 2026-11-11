@@ -4,11 +4,11 @@ Target architecture: author in qpel or import a supported frontend -> backend-ne
 
 ## Implemented in this revision
 
-qpel_ir.py exports native MPS module/Pipeline models into versioned program.qpel.json. It removes editor-specific IDs/metadata, retains local declaration/function/resource links, and preserves containment, types, expressions, statements and dispatches. Equivalent native exports with different MPS IDs yield the same IR. This is a standalone serialization of the existing qpel concepts, not a new CUDA syntax or an algorithm template.
+MPS is an editor and exporter only. Building `qpel.sandbox` in MPS runs its TextGen, which writes each Pipeline root together with its module as `<pipeline>.qpel.json` in `languages/qpel.sandbox/source_gen/qpel/sandbox/`. The serializer (`QpelChecks.irJson` in the MPS typesystem model) is a generic tree walk: depth-first node ids, concept names as kinds, declared properties as typed attributes, children and references by role. It contains no qpel-specific lowering. All code generation happens in this Python compiler. `tests/test_qpel_ir.py` checks that every IR fixture equals the corresponding MPS export, so model and fixture drift is caught.
 
-The IR can originate from directly authored qpel, including the SAM 2 connected-components model. The restricted CUDA importer is only one frontend. A shared lowering emits the portable code body and launch plan; existing CUDA and Metal backend headers implement target ABI and primitives. Both backend packages are built from this same graph. The CLI now uses this path and guards migration by comparing source tokens and launch JSON to native TextGen before packaging.
+The IR can originate from directly authored qpel, including the SAM 2 connected-components model. The restricted CUDA importer is only one frontend. A shared lowering emits the portable code body and launch plan; existing CUDA and Metal backend headers implement target ABI and primitives. Both backend packages are built from this same graph.
 
-Backend profiles describe the implemented qpel subset, not all hardware capabilities. The common core supports integer, float32 and float16 buffers, flattened 1D grids, control flow and device-relaxed uint32 atomics. Float32 concepts also have native MPS structure, editors, checking rules and TextGen. Unknown concepts/types/operators, missing references, containment cycles and unsupported backend profiles fail explicitly. qpel_schema.py additionally checks serialized node fields, child roles/cardinalities/concept categories, reference target categories, attribute types, identifier/literal syntax, shape members and launch-value ranges before lowering. Malformed graphs fail with ValueError diagnostics before source files are emitted. qpel_types.py now checks scalar expression types, lexical visibility, assignments, helper calls/returns, duplicate declarations, kernel ABI and atomic operand types. qpel_pipeline.py additionally checks whole-resource pipeline contracts and helper effects; generation alone is not a safety proof. Type checking does not prove numeric lowering, bounds or race safety. NUMERICS.md specifies the corrected integer lowering and its separate execution tests.
+Backend profiles describe the implemented qpel subset, not all hardware capabilities. The common core supports integer, float32 and float16 buffers, flattened 1D grids, control flow and device-relaxed uint32 atomics. Float32 concepts also have native MPS structure, editors and checking rules. Unknown concepts/types/operators, missing references, containment cycles and unsupported backend profiles fail explicitly. qpel_schema.py additionally checks serialized node fields, child roles/cardinalities/concept categories, reference target categories, attribute types, identifier/literal syntax, shape members and launch-value ranges before lowering. Malformed graphs fail with ValueError diagnostics before source files are emitted. qpel_types.py now checks scalar expression types, lexical visibility, assignments, helper calls/returns, duplicate declarations, kernel ABI and atomic operand types. qpel_pipeline.py additionally checks whole-resource pipeline contracts and helper effects; generation alone is not a safety proof. Type checking does not prove numeric lowering, bounds or race safety. NUMERICS.md specifies the corrected integer lowering and its separate execution tests.
 
 ## Validation
 
@@ -27,24 +27,25 @@ A portable program cannot automatically guarantee equal performance or access to
 
 ## Offline export and generation
 
+Build `qpel.sandbox` in MPS, then compile the exported IR:
+
 ```sh
-python3 portable/qpel_ir.py --module-model module-model.json --pipeline-model pipeline-model.json --out /tmp/qpel-ir-export
-python3 portable/build_backends.py --source /tmp/qpel-ir-export/MODULE.qpel.h --out /tmp/qpel-backends
+python3 portable/qpel.py build languages/qpel.sandbox/source_gen/qpel/sandbox/PIPELINE.qpel.json --out /tmp/qpel-build
 ```
 
-Use the actual module name for MODULE. The qpel_core task artifacts contain seven exported programs, emitted bodies, plans, backend packages and evidence. Native MPS semantic checks remain a prerequisite for trusted compilation.
+Use the Pipeline root's name for PIPELINE (for example `components_launch`).
 
 ## Editor storage versus language
 
 MPS stores the editable qpel AST in `.mps` XML model files; `.mpl` files describe language modules. These are persistence and project formats, not the syntax users should author by hand. Model changes should use the MPS editor or its model API. The portable `program.qpel.json` graph is a separate compiler representation with local references. Neither XML nor JSON is executed by the GPU; the backends emit Metal/CUDA source and launch metadata.
 
-A plain-text qpel frontend is possible later and would parse into this same graph. It has not been implemented. The shared grammar validation is a prerequisite for accepting graphs from additional frontends, and shared scalar type/scope validation now follows it. Whole-resource pipeline/effect checks are now shared too. Per-element initialization, numeric promotion/overflow lowering and memory safety remain incomplete. The current import CLI retains native MPS checks and the TextGen cross-check.
+A plain-text qpel frontend is possible later and would parse into this same graph. It has not been implemented. The shared grammar validation is a prerequisite for accepting graphs from additional frontends, and shared scalar type/scope validation now follows it. Whole-resource pipeline/effect checks are now shared too. Per-element initialization, numeric promotion/overflow lowering and memory safety remain incomplete. The CUDA import CLI still runs the native MPS checks, then reads the program that MPS exported as qpel IR.
 
 ## Shared scalar typing (core v0)
 
 The editor-independent checker follows the existing native rules: u8 can widen to u32; implicit u32-to-u8 narrowing and bool-to-integer conversions are rejected. Locals are scalar, declarations become visible only after their initializer, and nested locals do not escape their block. Helpers must precede callers; recursion and direct calls to kernels are rejected. Numeric arithmetic is typed as u32, comparisons as bool; ordinary indexing and atomic operations have separate buffer contracts. Type judgments do not yet guarantee that every emitted C/C++ promotion matches this numeric model.
 
-The tests mutate valid saved native models to exercise type errors, read-only writes, helper calls, atomic operands, kernel bindings, self-references, nested visibility and unconditional returns. Both target validation paths and lowering reject these invalid programs. Seven original model fixtures still match native TextGen source tokens and launch plans; no new GPU execution was performed.
+The tests mutate valid saved native models to exercise type errors, read-only writes, helper calls, atomic operands, kernel bindings, self-references, nested visibility and unconditional returns. Both target validation paths and lowering reject these invalid programs. Every fixture is checked against the IR that MPS exports for the matching sandbox model (`test_fixtures_match_mps_export`).
 
 ## Shared pipeline validation
 
@@ -52,7 +53,7 @@ The common core now validates resource types/extents, local kernel dispatches, e
 
 Resources become available only after the preceding stage completes. This deliberately conservative whole-resource model rejects a same-stage read/write of an uninitialized resource, even if a particular kernel orders its local accesses. Conversely, a conditional or partial write still counts as a resource write: the checker is not proof of complete initialization, convergence, bounds or freedom from data races. Runtime size compatibility and numeric lowering need separate work.
 
-`validate(program, "metal")` and `validate(program, "cuda")` run the same graph, grammar, scalar typing, scope and pipeline checks without connecting to MPS. The import CLI still uses native model checking and TextGen as independent migration cross-checks.
+`validate(program, "metal")` and `validate(program, "cuda")` run the same graph, grammar, scalar typing, scope and pipeline checks without connecting to MPS. MPS keeps its own editor-time checks (`QpelChecks`) for immediate feedback; the Python checks are authoritative for builds.
 
 ## Numeric revision
 

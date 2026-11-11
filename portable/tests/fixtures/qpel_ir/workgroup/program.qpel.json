@@ -1,0 +1,851 @@
+{
+ "format": "qpel.ir",
+ "version": 1,
+ "semantics": "qpel-portable-core-v1",
+ "roots": {
+  "module": "n0",
+  "pipeline": "n57"
+ },
+ "nodes": [
+  {
+   "id": "n0",
+   "kind": "GpuModule",
+   "attributes": {
+    "name": "float_group_sum"
+   },
+   "children": {
+    "functions": [
+     "n1"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n1",
+   "kind": "Function",
+   "attributes": {
+    "isKernel": true,
+    "name": "masked_copy"
+   },
+   "children": {
+    "parameters": [
+     "n2",
+     "n4",
+     "n6",
+     "n8"
+    ],
+    "body": [
+     "n10"
+    ],
+    "resultType": [
+     "n55"
+    ],
+    "domain": [
+     "n56"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n2",
+   "kind": "Parameter",
+   "attributes": {
+    "binding": 0,
+    "isBuffer": true,
+    "name": "pixels"
+   },
+   "children": {
+    "type": [
+     "n3"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n3",
+   "kind": "ReadOnlyF32BufferType",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n4",
+   "kind": "Parameter",
+   "attributes": {
+    "binding": 1,
+    "isBuffer": true,
+    "name": "mask"
+   },
+   "children": {
+    "type": [
+     "n5"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n5",
+   "kind": "ReadOnlyU8BufferType",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n6",
+   "kind": "Parameter",
+   "attributes": {
+    "binding": 2,
+    "isBuffer": true,
+    "name": "output"
+   },
+   "children": {
+    "type": [
+     "n7"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n7",
+   "kind": "F32BufferType",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n8",
+   "kind": "Parameter",
+   "attributes": {
+    "binding": 3,
+    "isBuffer": true,
+    "name": "count"
+   },
+   "children": {
+    "type": [
+     "n9"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n9",
+   "kind": "Shape3DType",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n10",
+   "kind": "Block",
+   "attributes": {},
+   "children": {
+    "statements": [
+     "n11",
+     "n38"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n11",
+   "kind": "Variable",
+   "attributes": {
+    "name": "group_sum"
+   },
+   "children": {
+    "value": [
+     "n12"
+    ],
+    "type": [
+     "n37"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n12",
+   "kind": "WorkgroupSumF32",
+   "attributes": {},
+   "children": {
+    "value": [
+     "n13"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n13",
+   "kind": "Select",
+   "attributes": {},
+   "children": {
+    "condition": [
+     "n14"
+    ],
+    "yes": [
+     "n24"
+    ],
+    "no": [
+     "n36"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n14",
+   "kind": "Binary",
+   "attributes": {
+    "operator": "<"
+   },
+   "children": {
+    "left": [
+     "n15"
+    ],
+    "right": [
+     "n16"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n15",
+   "kind": "GridIndex",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n16",
+   "kind": "Binary",
+   "attributes": {
+    "operator": "*"
+   },
+   "children": {
+    "left": [
+     "n17"
+    ],
+    "right": [
+     "n22"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n17",
+   "kind": "Binary",
+   "attributes": {
+    "operator": "*"
+   },
+   "children": {
+    "left": [
+     "n18"
+    ],
+    "right": [
+     "n20"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n18",
+   "kind": "Member",
+   "attributes": {
+    "member": "x"
+   },
+   "children": {
+    "base": [
+     "n19"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n19",
+   "kind": "Name",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "declaration": "n8"
+   }
+  },
+  {
+   "id": "n20",
+   "kind": "Member",
+   "attributes": {
+    "member": "y"
+   },
+   "children": {
+    "base": [
+     "n21"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n21",
+   "kind": "Name",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "declaration": "n8"
+   }
+  },
+  {
+   "id": "n22",
+   "kind": "Member",
+   "attributes": {
+    "member": "z"
+   },
+   "children": {
+    "base": [
+     "n23"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n23",
+   "kind": "Name",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "declaration": "n8"
+   }
+  },
+  {
+   "id": "n24",
+   "kind": "Select",
+   "attributes": {},
+   "children": {
+    "condition": [
+     "n25"
+    ],
+    "yes": [
+     "n30"
+    ],
+    "no": [
+     "n35"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n25",
+   "kind": "Binary",
+   "attributes": {
+    "operator": "!="
+   },
+   "children": {
+    "left": [
+     "n26"
+    ],
+    "right": [
+     "n29"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n26",
+   "kind": "Index",
+   "attributes": {},
+   "children": {
+    "base": [
+     "n27"
+    ],
+    "index": [
+     "n28"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n27",
+   "kind": "Name",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "declaration": "n4"
+   }
+  },
+  {
+   "id": "n28",
+   "kind": "GridIndex",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n29",
+   "kind": "Literal",
+   "attributes": {
+    "value": "0"
+   },
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n30",
+   "kind": "Binary",
+   "attributes": {
+    "operator": "*"
+   },
+   "children": {
+    "left": [
+     "n31"
+    ],
+    "right": [
+     "n34"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n31",
+   "kind": "Index",
+   "attributes": {},
+   "children": {
+    "base": [
+     "n32"
+    ],
+    "index": [
+     "n33"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n32",
+   "kind": "Name",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "declaration": "n2"
+   }
+  },
+  {
+   "id": "n33",
+   "kind": "GridIndex",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n34",
+   "kind": "F32Literal",
+   "attributes": {
+    "value": "0.5"
+   },
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n35",
+   "kind": "F32Literal",
+   "attributes": {
+    "value": "0.0"
+   },
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n36",
+   "kind": "F32Literal",
+   "attributes": {
+    "value": "0.0"
+   },
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n37",
+   "kind": "F32Type",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n38",
+   "kind": "If",
+   "attributes": {},
+   "children": {
+    "condition": [
+     "n39"
+    ],
+    "thenBody": [
+     "n49"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n39",
+   "kind": "Binary",
+   "attributes": {
+    "operator": "<"
+   },
+   "children": {
+    "left": [
+     "n40"
+    ],
+    "right": [
+     "n41"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n40",
+   "kind": "GridIndex",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n41",
+   "kind": "Binary",
+   "attributes": {
+    "operator": "*"
+   },
+   "children": {
+    "left": [
+     "n42"
+    ],
+    "right": [
+     "n47"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n42",
+   "kind": "Binary",
+   "attributes": {
+    "operator": "*"
+   },
+   "children": {
+    "left": [
+     "n43"
+    ],
+    "right": [
+     "n45"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n43",
+   "kind": "Member",
+   "attributes": {
+    "member": "x"
+   },
+   "children": {
+    "base": [
+     "n44"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n44",
+   "kind": "Name",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "declaration": "n8"
+   }
+  },
+  {
+   "id": "n45",
+   "kind": "Member",
+   "attributes": {
+    "member": "y"
+   },
+   "children": {
+    "base": [
+     "n46"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n46",
+   "kind": "Name",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "declaration": "n8"
+   }
+  },
+  {
+   "id": "n47",
+   "kind": "Member",
+   "attributes": {
+    "member": "z"
+   },
+   "children": {
+    "base": [
+     "n48"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n48",
+   "kind": "Name",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "declaration": "n8"
+   }
+  },
+  {
+   "id": "n49",
+   "kind": "Block",
+   "attributes": {},
+   "children": {
+    "statements": [
+     "n50"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n50",
+   "kind": "Assign",
+   "attributes": {},
+   "children": {
+    "target": [
+     "n51"
+    ],
+    "value": [
+     "n54"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n51",
+   "kind": "Index",
+   "attributes": {},
+   "children": {
+    "base": [
+     "n52"
+    ],
+    "index": [
+     "n53"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n52",
+   "kind": "Name",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "declaration": "n6"
+   }
+  },
+  {
+   "id": "n53",
+   "kind": "GridIndex",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n54",
+   "kind": "Name",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "declaration": "n11"
+   }
+  },
+  {
+   "id": "n55",
+   "kind": "VoidType",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n56",
+   "kind": "Grid1D",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n57",
+   "kind": "Pipeline",
+   "attributes": {
+    "name": "float_group_sum_launch"
+   },
+   "children": {
+    "resources": [
+     "n58",
+     "n60",
+     "n62",
+     "n64"
+    ],
+    "stages": [
+     "n66"
+    ]
+   },
+   "links": {
+    "module": "n0"
+   }
+  },
+  {
+   "id": "n58",
+   "kind": "Resource",
+   "attributes": {
+    "kind": "input",
+    "name": "pixels"
+   },
+   "children": {
+    "type": [
+     "n59"
+    ]
+   },
+   "links": {
+    "extent": "n64"
+   }
+  },
+  {
+   "id": "n59",
+   "kind": "ReadOnlyF32BufferType",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n60",
+   "kind": "Resource",
+   "attributes": {
+    "kind": "input",
+    "name": "mask"
+   },
+   "children": {
+    "type": [
+     "n61"
+    ]
+   },
+   "links": {
+    "extent": "n64"
+   }
+  },
+  {
+   "id": "n61",
+   "kind": "ReadOnlyU8BufferType",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n62",
+   "kind": "Resource",
+   "attributes": {
+    "kind": "output",
+    "name": "output"
+   },
+   "children": {
+    "type": [
+     "n63"
+    ]
+   },
+   "links": {
+    "extent": "n64"
+   }
+  },
+  {
+   "id": "n63",
+   "kind": "F32BufferType",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n64",
+   "kind": "Resource",
+   "attributes": {
+    "kind": "shape",
+    "name": "count"
+   },
+   "children": {
+    "type": [
+     "n65"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n65",
+   "kind": "Shape3DType",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n66",
+   "kind": "Dispatch",
+   "attributes": {
+    "blockSize": 64,
+    "completionBarrier": true
+   },
+   "children": {
+    "bindings": [
+     "n67",
+     "n68",
+     "n69",
+     "n70"
+    ]
+   },
+   "links": {
+    "kernel": "n1",
+    "grid": "n64"
+   }
+  },
+  {
+   "id": "n67",
+   "kind": "Binding",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "parameter": "n2",
+    "resource": "n58"
+   }
+  },
+  {
+   "id": "n68",
+   "kind": "Binding",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "parameter": "n4",
+    "resource": "n60"
+   }
+  },
+  {
+   "id": "n69",
+   "kind": "Binding",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "parameter": "n6",
+    "resource": "n62"
+   }
+  },
+  {
+   "id": "n70",
+   "kind": "Binding",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "parameter": "n8",
+    "resource": "n64"
+   }
+  }
+ ]
+}

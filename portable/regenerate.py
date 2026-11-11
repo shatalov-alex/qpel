@@ -21,8 +21,8 @@ def main():
         generated = package/'generated'
         # Provenance paths point into the temporary build; store them relative to generated/.
         manifest = json.loads((generated/'manifest.json').read_text())
-        manifest['mps_source'] = 'components.qpel.h'
-        manifest['mps_pipeline'] = 'pipeline.json'
+        manifest['neutral_source'] = 'components.qpel.h'
+        manifest['neutral_pipeline'] = 'pipeline.json'
         manifest['ir_source'] = 'program.qpel.json'
         (generated/'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
         (generated/'program.qpel.json').write_text(json.dumps(fixture_program(FIXTURE), indent=2) + '\n')

@@ -8,7 +8,6 @@ import unittest
 from unittest.mock import patch
 HERE=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(HERE))
-from qpel_ir import export
 from qpel import compile_program
 
 class OfflineCliTests(unittest.TestCase):
@@ -16,7 +15,7 @@ class OfflineCliTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.source=self.root/'program.qpel.json'
         fixture=HERE/'tests/fixtures/qpel_ir/workgroup'
-        self.program=export(*(json.loads((fixture/f).read_text()) for f in ('module.json','pipeline.json')))
+        self.program=json.loads((fixture / 'program.qpel.json').read_text())
         self.source.write_text(json.dumps(self.program))
         self.out=self.root/'result'
     def test_check_creates_nothing(self):
@@ -27,7 +26,7 @@ class OfflineCliTests(unittest.TestCase):
         for name,digest in report['artifact_sha256'].items():
             self.assertEqual(hashlib.sha256((root/name).read_bytes()).hexdigest(),digest)
         manifest=json.loads((root/'generated/manifest.json').read_text())
-        for key in ('mps_source','mps_pipeline'):
+        for key in ('neutral_source','neutral_pipeline'):
             self.assertTrue(Path(manifest[key]).is_file())
             self.assertTrue(Path(manifest[key]).is_relative_to(root.resolve()))
         for backend in ('cuda','metal'):

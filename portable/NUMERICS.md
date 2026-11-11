@@ -8,12 +8,12 @@ New exports use `qpel-portable-core-v1` (IR container format remains version 1).
 - Comparisons return bool. Logical operators retain short-circuit behavior. Select retains lazy branch evaluation and its checked common type. No new implicit bool/integer conversion or u32-to-u8 narrowing is introduced.
 - Pointer offsets are separate from modular scalar arithmetic: the unsigned offset is converted as specified, but the address must still remain valid. This contract does not make out-of-bounds access safe.
 
-## Native migration guard
+## Single emitter
 
-MPS still runs its native checks. The CLI compares a non-packagable compatibility rendering of the IR to native TextGen, checking structural export equivalence. Actual packaging uses the new numeric emitter. Source token equality with native TextGen is **not** claimed for the corrected emitter. Launch plans remain identical. Packaging manifests identify `u32-modulo-v1` versus `legacy-native`. Direct packaging of old native TextGen does not apply this correction.
+Since 2026-10-19 MPS no longer generates code; it exports IR only, and this numeric emitter is the only one. `build_backends.build` rejects source without the `u32-modulo-v1` contract line, and every manifest records `numeric_contract: u32-modulo-v1`.
 
 ## Evidence
 
 80 tests pass. The numerical test compiles emitted helper functions with clang++ and UBSan, checks all 65536 u8 pairs (including subtraction used inside a comparison, unary negation and mixed min), and checks eight u32 boundary values pairwise for arithmetic, bitwise and nonzero division/remainder. A literal multiplication formerly susceptible to signed overflow is also exercised. This is CPU C++ execution of generated expressions, not nvcc or Metal GPU validation.
 
-Full GPU regression and updating native TextGen to the same numeric contract remain pending. Floating-point types are not introduced by this revision.
+Floating-point types are not introduced by this revision.

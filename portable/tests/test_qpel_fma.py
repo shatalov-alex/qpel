@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from qpel_ir import export,validate,Lowering,PROFILES
+from qpel_ir import validate,Lowering,PROFILES
 from build_backends import build
 FIXTURE=Path(__file__).parent/'fixtures/qpel_ir/fma32'
 
@@ -24,7 +24,7 @@ def vectors():
 
 class FmaTests(unittest.TestCase):
     def setUp(self):
-        self.ir=export(*(json.loads((FIXTURE/f).read_text()) for f in ('module.json','pipeline.json')))
+        self.ir=json.loads((FIXTURE / 'program.qpel.json').read_text())
         self.nodes={n['id']:n for n in self.ir['nodes']}
         self.fma=next(n for n in self.ir['nodes'] if n['kind']=='F32Fma')
 

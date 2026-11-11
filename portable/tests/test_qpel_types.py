@@ -3,14 +3,14 @@ from pathlib import Path
 import sys
 import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from qpel_ir import export, validate, Lowering
+from qpel_ir import validate, Lowering
 from qpel_types import TypeChecker
 
 FIXTURES = Path(__file__).parent / 'fixtures/qpel_ir'
 
 class TypeTests(unittest.TestCase):
     def setUp(self):
-        self.ir = export(*(json.loads((FIXTURES / 'components' / f).read_text()) for f in ('module.json', 'pipeline.json')))
+        self.ir = json.loads((FIXTURES / 'components' / 'program.qpel.json').read_text())
         self.c = TypeChecker(self.ir)
 
     def node(self, kind):
@@ -95,7 +95,7 @@ class TypeTests(unittest.TestCase):
         self.reject('DUPLICATE')
 
     def test_read_only_write(self):
-        self.ir = export(*(json.loads((FIXTURES / 'count' / f).read_text()) for f in ('module.json', 'pipeline.json')))
+        self.ir = json.loads((FIXTURES / 'count' / 'program.qpel.json').read_text())
         self.c = TypeChecker(self.ir)
         assignment = self.node('Assign')
         index = self.c.child(assignment, 'target')

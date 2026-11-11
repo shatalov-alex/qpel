@@ -1,6 +1,6 @@
 # Ordered float32 sum reduction
 
-ReduceSumF32(buffer, start, count) is now a native qpel concept with editor/checker/TextGen and a shared-IR operation. It accepts a readonly or writable float32 buffer and unsigned start/count. Starting at positive zero, it adds consecutive elements in increasing index order, rounding each step to float32. An empty slice returns zero without reading elements. The entire addressed range must be valid and start+count must not wrap; no static bounds proof or runtime guard is added.
+ReduceSumF32(buffer, start, count) is now a native qpel concept with editor/checker and a shared-IR operation. It accepts a readonly or writable float32 buffer and unsigned start/count. Starting at positive zero, it adds consecutive elements in increasing index order, rounding each step to float32. An empty slice returns zero without reading elements. The entire addressed range must be valid and start+count must not wrap; no static bounds proof or runtime guard is added.
 
 This is a serial per-invocation baseline, not a subgroup/threadgroup reduction or an acceleration claim. A tree reduction changes rounding order and will require a separate numerical contract, scheduling and barrier validation. SIMD width is not assumed identical on CUDA and Metal.
 

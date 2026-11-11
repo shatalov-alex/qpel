@@ -7,14 +7,14 @@ import sys
 import tempfile
 import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from qpel_ir import export, validate, Lowering
+from qpel_ir import validate, Lowering
 from build_backends import build
 from qpel_types import TypeChecker
 FIXTURE = Path(__file__).parent/'fixtures/qpel_ir/count'
 
 
 def float_program():
-    p = export(*(json.loads((FIXTURE/f).read_text()) for f in ('module.json','pipeline.json')))
+    p = json.loads((FIXTURE / 'program.qpel.json').read_text())
     nodes = {n['id']:n for n in p['nodes']}
     for n in p['nodes']:
         if n['kind'] in ('Parameter','Resource') and n['attributes']['name'] in ('pixels','output'):
@@ -91,7 +91,7 @@ class FloatTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which('clang++'),'clang++ required')
     def test_native_mps_export_on_cpu(self):
         fixture = FIXTURE.parent/'float32'
-        self.p = export(*(json.loads((fixture/f).read_text()) for f in ('module.json','pipeline.json')))
+        self.p = json.loads((fixture / 'program.qpel.json').read_text())
         self.compile_and_run()
 
     def compile_and_run(self):

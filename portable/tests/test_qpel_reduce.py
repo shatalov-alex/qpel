@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from qpel_ir import export,validate,Lowering,PROFILES
+from qpel_ir import validate,Lowering,PROFILES
 from qpel_types import TypeChecker
 from build_backends import build
 FIXTURE=Path(__file__).parent/'fixtures/qpel_ir/reduce'
@@ -20,7 +20,7 @@ def ordered(xs):
 
 class ReduceTests(unittest.TestCase):
     def setUp(self):
-        self.ir=export(*(json.loads((FIXTURE/f).read_text()) for f in ('module.json','pipeline.json')))
+        self.ir=json.loads((FIXTURE / 'program.qpel.json').read_text())
         self.c=TypeChecker(self.ir);self.nodes=self.c.nodes
         self.reduce=next(n for n in self.ir['nodes'] if n['kind']=='ReduceSumF32')
 

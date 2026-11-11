@@ -12,7 +12,7 @@ Float literals must be finite nonnegative decimal values that round to finite fl
 
 89 automated tests pass, including execution of a saved native MPS export. A masked float scaling kernel generated and packaged from the graph was compiled as CPU C++ with a small CUDA execution shim, UBSan and contraction disabled. It verified 257 elements and five padded invocations. This does not validate nvcc, Metal compilation, GPU performance or cross-device floating-point behavior.
 
-program.qpel.json is a reproducible portable-core example; generated/ contains CUDA, Metal and the Metal host. The original graph example now also has native MPS counterparts: float_masked_scale and float_masked_scale_launch in qpel.sandbox. All five float concepts have native structure declarations, editors, checks and TextGen. Four negative native checks passed and the valid model was restored. The native export is saved in tests/fixtures/qpel_ir/float32. Existing integer MPS models and the native migration guard remain supported.
+program.qpel.json is a reproducible portable-core example; generated/ contains CUDA, Metal and the Metal host. The original graph example now also has native MPS counterparts: float_masked_scale and float_masked_scale_launch in qpel.sandbox. All five float concepts have native structure declarations, editors and checks. Four negative native checks passed and the valid model was restored. The native export is saved in tests/fixtures/qpel_ir/float32. Existing integer MPS models and the native migration guard remain supported.
 
 ## GPU confirmation and FMA
 

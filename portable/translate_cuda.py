@@ -3,14 +3,13 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-import re
 import tempfile
 
 from cuda_import import parse
 from qpel_schema import is_identifier, is_block_size, MAX_BLOCK_SIZE
 from import_cuda_mps import MPS, import_model
 from build_backends import build
-from qpel_ir import export as export_ir, validate as validate_ir, Lowering
+from qpel_ir import validate as validate_ir, Lowering
 
 HERE=Path(__file__).resolve().parent
 
@@ -38,19 +37,14 @@ def translate(source,project,module,out,block=64,endpoint='http://127.0.0.1:6434
         mps=MPS(project,endpoint)
         import_model(mps,ir,module,'qpel.sandbox',block,journal)
         report.update(module_reference=journal['module_reference'],pipeline_reference=journal['pipeline_reference'])
-        models={role:mps.document('print_node',nodeReference=journal[role+'_reference'],deep=True) for role in ['module','pipeline']}
-        program=export_ir(models['module'],models['pipeline'])
+        # import_model rebuilt the model; MPS exports each Pipeline root as qpel IR.
+        exported=generated_dir/(module+'_launch.qpel.json')
+        if not exported.is_file():raise ValueError('MPS did not export '+exported.name+'; rebuild qpel.sandbox')
+        program=json.loads(exported.read_text())
         save(out/'program.qpel.json',program)
         report['numeric_contract']='u32-modulo-v1'
         report['backend_capabilities']={target:validate_ir(program,target) for target in ['metal','cuda']}
         neutral=Lowering(program);source_ir=neutral.write(out/'neutral')
-        # Keep the native structural cross-check; numeric lowering deliberately differs.
-        def tokens(text):return re.findall(r'[A-Za-z_][A-Za-z_0-9]*|[0-9]+|[^\s]',re.sub(r'//[^\n]*','',text))
-        legacy=Lowering(program, _native_compat=True)
-        if tokens(legacy.emit(legacy.nodes[program['roots']['module']]))!=tokens((generated_dir/(module+'.qpel.h')).read_text()):
-            raise ValueError('Shared IR lowering differs from native TextGen')
-        if neutral.plan()!=json.loads((generated_dir/(module+'_launch.json')).read_text()):
-            raise ValueError('Shared IR launch plan differs from native TextGen')
         # Only a complete backend package becomes generated/. Partial work stays in a temp directory.
         with tempfile.TemporaryDirectory(prefix='.package-',dir=out) as temp:
             stage=Path(temp)/'generated'
@@ -58,8 +52,6 @@ def translate(source,project,module,out,block=64,endpoint='http://127.0.0.1:6434
             if json.loads((stage/'pipeline.json').read_text())['module']!=module:raise ValueError('Generated plan/module mismatch')
             stage.rename(out/'generated')
         (out/'original.cu').write_bytes(raw)
-        for role in ['module','pipeline']:
-            save(out/(role+'-model.json'),models[role])
         inputs=[p['name'] for p in ir['parameters'] if p['type']=='ReadOnlyU8BufferType']
         shape_note='(count, 1, 1)' if ir['size_kind']=='count' else '(width, height, batch)'
         (out/'USAGE.md').write_text(

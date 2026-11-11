@@ -7,14 +7,14 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from qpel_ir import Lowering, export, validate
+from qpel_ir import Lowering, validate
 from qpel_schema import validate_structure
 
 FIXTURE = Path(__file__).parent / 'fixtures/qpel_ir/count'
 
 class SchemaTests(unittest.TestCase):
     def setUp(self):
-        self.ir = export(*(json.loads((FIXTURE / f).read_text()) for f in ('module.json', 'pipeline.json')))
+        self.ir = json.loads((FIXTURE / 'program.qpel.json').read_text())
 
     def node(self, kind):
         return next(n for n in self.ir['nodes'] if n['kind'] == kind)

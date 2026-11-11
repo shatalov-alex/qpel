@@ -19,10 +19,9 @@ python3 portable/translate_cuda.py portable/cuda_examples/masked_copy.cu --modul
 ## Package
 
 - original.cu: exact source bytes.
-- program.qpel.json: common backend-neutral program graph.
-- neutral/: shared lowering output, checked against native TextGen.
+- program.qpel.json: the IR that MPS exported for the imported model.
+- neutral/: shared lowering output.
 - generated/: Metal, CUDA, portable body, plan, generated Python host and hash manifest.
-- module-model.json and pipeline-model.json: native MPS model exports.
 - import-report.json: source hash, parsed representation, MPS references and build status.
 - translation-report.json: overall status, artifact hashes and explicit untested GPU/nvcc flags.
 - USAGE.md: generated API input/output names and shape convention.

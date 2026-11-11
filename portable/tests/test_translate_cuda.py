@@ -39,31 +39,32 @@ class WorkflowTests(unittest.TestCase):
     def test_checked_models_produce_both_backends_from_one_ir(self):
         from unittest.mock import MagicMock
         fixtures=Path(__file__).parent/'fixtures/qpel_ir/count'
-        models=[json.loads((fixtures/name).read_text()) for name in ['module.json','pipeline.json']]
         generated=self.root/'languages/qpel.sandbox/source_gen/qpel/sandbox'
-        (generated/'cuda_masked_copy.qpel.h').write_text((fixtures/'native.qpel.h').read_text())
-        (generated/'cuda_masked_copy_launch.json').write_text((fixtures/'native-plan.json').read_text())
+        (generated/'cuda_masked_copy_launch.qpel.json').write_text((fixtures/'program.qpel.json').read_text())
         def imported(mps,ir,module,model,block,journal):
             journal.update(module_reference='module-ref',pipeline_reference='plan-ref',status='complete')
-        mps=MagicMock();mps.document.side_effect=models
-        with patch.object(cli,'MPS',return_value=mps),patch.object(cli,'import_model',side_effect=imported):
+        with patch.object(cli,'MPS',return_value=MagicMock()),patch.object(cli,'import_model',side_effect=imported):
             result=cli.translate(SOURCE,self.root,'cuda_masked_copy',self.out)
         self.assertEqual(result['status'],'generated')
         self.assertTrue((self.out/'program.qpel.json').exists())
         self.assertEqual(set(result['backend_capabilities']),{'metal','cuda'})
         for ext in ['metal','cu']:self.assertTrue((self.out/'generated'/('cuda_masked_copy.'+ext)).exists())
         for path,digest in result['artifact_sha256'].items():self.assertEqual(cli.digest(self.out/path),digest)
+    def test_missing_mps_export_is_reported(self):
+        from unittest.mock import MagicMock
+        def imported(mps,ir,module,model,block,journal):
+            journal.update(module_reference='module-ref',pipeline_reference='plan-ref',status='complete')
+        with patch.object(cli,'MPS',return_value=MagicMock()),patch.object(cli,'import_model',side_effect=imported),self.assertRaisesRegex(ValueError,'did not export'):
+            cli.translate(SOURCE,self.root,'example',self.out)
+        self.assertFalse((self.out/'generated').exists())
     def test_packaging_failure_preserves_model_references(self):
         def imported(mps,ir,module,model,block,journal):
             journal.update(module_reference='module-ref',pipeline_reference='plan-ref',status='complete')
         fixtures=Path(__file__).parent/'fixtures/qpel_ir/count'
-        models=[json.loads((fixtures/name).read_text()) for name in ['module.json','pipeline.json']]
         generated=self.root/'languages/qpel.sandbox/source_gen/qpel/sandbox'
-        (generated/'example.qpel.h').write_text((fixtures/'native.qpel.h').read_text())
-        (generated/'example_launch.json').write_text((fixtures/'native-plan.json').read_text())
+        (generated/'example_launch.qpel.json').write_text((fixtures/'program.qpel.json').read_text())
         from unittest.mock import MagicMock
-        mps=MagicMock();mps.document.side_effect=models
-        with patch.object(cli,'MPS',return_value=mps),patch.object(cli,'import_model',side_effect=imported),patch.object(cli,'build',side_effect=RuntimeError('package failure')),self.assertRaisesRegex(RuntimeError,'package failure'):
+        with patch.object(cli,'MPS',return_value=MagicMock()),patch.object(cli,'import_model',side_effect=imported),patch.object(cli,'build',side_effect=RuntimeError('package failure')),self.assertRaisesRegex(RuntimeError,'package failure'):
             cli.translate(SOURCE,self.root,'example',self.out)
         report=json.loads((self.out/'translation-report.json').read_text())
         self.assertEqual(report['status'],'failed');self.assertEqual(report['module_reference'],'module-ref')

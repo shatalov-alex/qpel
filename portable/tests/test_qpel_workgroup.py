@@ -7,14 +7,14 @@ import sys
 import tempfile
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from qpel_ir import export,validate,Lowering,PROFILES
+from qpel_ir import validate,Lowering,PROFILES
 from qpel_types import TypeChecker
 from build_backends import build
 FIXTURE=Path(__file__).parent/'fixtures/qpel_ir/workgroup'
 
 class WorkgroupTests(unittest.TestCase):
     def setUp(self):
-        self.ir=export(*(json.loads((FIXTURE/f).read_text()) for f in ('module.json','pipeline.json')))
+        self.ir=json.loads((FIXTURE / 'program.qpel.json').read_text())
         self.c=TypeChecker(self.ir)
         self.fn=self.c.functions[0];self.body=self.c.child(self.fn,'body')
         self.local=self.c.children(self.body,'statements')[0]

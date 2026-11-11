@@ -1,0 +1,643 @@
+{
+ "format": "qpel.ir",
+ "version": 1,
+ "semantics": "qpel-portable-core-v1",
+ "roots": {
+  "module": "n0",
+  "pipeline": "n40"
+ },
+ "nodes": [
+  {
+   "id": "n0",
+   "kind": "GpuModule",
+   "attributes": {
+    "name": "cuda_masked_copy"
+   },
+   "children": {
+    "functions": [
+     "n1"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n1",
+   "kind": "Function",
+   "attributes": {
+    "isKernel": true,
+    "name": "masked_copy"
+   },
+   "children": {
+    "parameters": [
+     "n2",
+     "n4",
+     "n6",
+     "n8"
+    ],
+    "body": [
+     "n10"
+    ],
+    "resultType": [
+     "n38"
+    ],
+    "domain": [
+     "n39"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n2",
+   "kind": "Parameter",
+   "attributes": {
+    "binding": 0,
+    "isBuffer": true,
+    "name": "pixels"
+   },
+   "children": {
+    "type": [
+     "n3"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n3",
+   "kind": "ReadOnlyU8BufferType",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n4",
+   "kind": "Parameter",
+   "attributes": {
+    "binding": 1,
+    "isBuffer": true,
+    "name": "mask"
+   },
+   "children": {
+    "type": [
+     "n5"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n5",
+   "kind": "ReadOnlyU8BufferType",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n6",
+   "kind": "Parameter",
+   "attributes": {
+    "binding": 2,
+    "isBuffer": true,
+    "name": "output"
+   },
+   "children": {
+    "type": [
+     "n7"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n7",
+   "kind": "U32BufferType",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n8",
+   "kind": "Parameter",
+   "attributes": {
+    "binding": 3,
+    "isBuffer": true,
+    "name": "count"
+   },
+   "children": {
+    "type": [
+     "n9"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n9",
+   "kind": "Shape3DType",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n10",
+   "kind": "Block",
+   "attributes": {},
+   "children": {
+    "statements": [
+     "n11",
+     "n24"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n11",
+   "kind": "If",
+   "attributes": {},
+   "children": {
+    "condition": [
+     "n12"
+    ],
+    "thenBody": [
+     "n22"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n12",
+   "kind": "Binary",
+   "attributes": {
+    "operator": ">="
+   },
+   "children": {
+    "left": [
+     "n13"
+    ],
+    "right": [
+     "n14"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n13",
+   "kind": "GridIndex",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n14",
+   "kind": "Binary",
+   "attributes": {
+    "operator": "*"
+   },
+   "children": {
+    "left": [
+     "n15"
+    ],
+    "right": [
+     "n20"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n15",
+   "kind": "Binary",
+   "attributes": {
+    "operator": "*"
+   },
+   "children": {
+    "left": [
+     "n16"
+    ],
+    "right": [
+     "n18"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n16",
+   "kind": "Member",
+   "attributes": {
+    "member": "x"
+   },
+   "children": {
+    "base": [
+     "n17"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n17",
+   "kind": "Name",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "declaration": "n8"
+   }
+  },
+  {
+   "id": "n18",
+   "kind": "Member",
+   "attributes": {
+    "member": "y"
+   },
+   "children": {
+    "base": [
+     "n19"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n19",
+   "kind": "Name",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "declaration": "n8"
+   }
+  },
+  {
+   "id": "n20",
+   "kind": "Member",
+   "attributes": {
+    "member": "z"
+   },
+   "children": {
+    "base": [
+     "n21"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n21",
+   "kind": "Name",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "declaration": "n8"
+   }
+  },
+  {
+   "id": "n22",
+   "kind": "Block",
+   "attributes": {},
+   "children": {
+    "statements": [
+     "n23"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n23",
+   "kind": "Return",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n24",
+   "kind": "Assign",
+   "attributes": {},
+   "children": {
+    "target": [
+     "n25"
+    ],
+    "value": [
+     "n28"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n25",
+   "kind": "Index",
+   "attributes": {},
+   "children": {
+    "base": [
+     "n26"
+    ],
+    "index": [
+     "n27"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n26",
+   "kind": "Name",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "declaration": "n6"
+   }
+  },
+  {
+   "id": "n27",
+   "kind": "GridIndex",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n28",
+   "kind": "Select",
+   "attributes": {},
+   "children": {
+    "condition": [
+     "n29"
+    ],
+    "yes": [
+     "n34"
+    ],
+    "no": [
+     "n37"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n29",
+   "kind": "Binary",
+   "attributes": {
+    "operator": "!="
+   },
+   "children": {
+    "left": [
+     "n30"
+    ],
+    "right": [
+     "n33"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n30",
+   "kind": "Index",
+   "attributes": {},
+   "children": {
+    "base": [
+     "n31"
+    ],
+    "index": [
+     "n32"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n31",
+   "kind": "Name",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "declaration": "n4"
+   }
+  },
+  {
+   "id": "n32",
+   "kind": "GridIndex",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n33",
+   "kind": "Literal",
+   "attributes": {
+    "value": "0"
+   },
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n34",
+   "kind": "Index",
+   "attributes": {},
+   "children": {
+    "base": [
+     "n35"
+    ],
+    "index": [
+     "n36"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n35",
+   "kind": "Name",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "declaration": "n2"
+   }
+  },
+  {
+   "id": "n36",
+   "kind": "GridIndex",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n37",
+   "kind": "Literal",
+   "attributes": {
+    "value": "0"
+   },
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n38",
+   "kind": "VoidType",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n39",
+   "kind": "Grid1D",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n40",
+   "kind": "Pipeline",
+   "attributes": {
+    "name": "cuda_masked_copy_launch"
+   },
+   "children": {
+    "resources": [
+     "n41",
+     "n43",
+     "n45",
+     "n47"
+    ],
+    "stages": [
+     "n49"
+    ]
+   },
+   "links": {
+    "module": "n0"
+   }
+  },
+  {
+   "id": "n41",
+   "kind": "Resource",
+   "attributes": {
+    "kind": "input",
+    "name": "pixels"
+   },
+   "children": {
+    "type": [
+     "n42"
+    ]
+   },
+   "links": {
+    "extent": "n47"
+   }
+  },
+  {
+   "id": "n42",
+   "kind": "ReadOnlyU8BufferType",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n43",
+   "kind": "Resource",
+   "attributes": {
+    "kind": "input",
+    "name": "mask"
+   },
+   "children": {
+    "type": [
+     "n44"
+    ]
+   },
+   "links": {
+    "extent": "n47"
+   }
+  },
+  {
+   "id": "n44",
+   "kind": "ReadOnlyU8BufferType",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n45",
+   "kind": "Resource",
+   "attributes": {
+    "kind": "output",
+    "name": "output"
+   },
+   "children": {
+    "type": [
+     "n46"
+    ]
+   },
+   "links": {
+    "extent": "n47"
+   }
+  },
+  {
+   "id": "n46",
+   "kind": "U32BufferType",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n47",
+   "kind": "Resource",
+   "attributes": {
+    "kind": "shape",
+    "name": "count"
+   },
+   "children": {
+    "type": [
+     "n48"
+    ]
+   },
+   "links": {}
+  },
+  {
+   "id": "n48",
+   "kind": "Shape3DType",
+   "attributes": {},
+   "children": {},
+   "links": {}
+  },
+  {
+   "id": "n49",
+   "kind": "Dispatch",
+   "attributes": {
+    "blockSize": 64,
+    "completionBarrier": true
+   },
+   "children": {
+    "bindings": [
+     "n50",
+     "n51",
+     "n52",
+     "n53"
+    ]
+   },
+   "links": {
+    "kernel": "n1",
+    "grid": "n47"
+   }
+  },
+  {
+   "id": "n50",
+   "kind": "Binding",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "parameter": "n2",
+    "resource": "n41"
+   }
+  },
+  {
+   "id": "n51",
+   "kind": "Binding",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "parameter": "n4",
+    "resource": "n43"
+   }
+  },
+  {
+   "id": "n52",
+   "kind": "Binding",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "parameter": "n6",
+    "resource": "n45"
+   }
+  },
+  {
+   "id": "n53",
+   "kind": "Binding",
+   "attributes": {},
+   "children": {},
+   "links": {
+    "parameter": "n8",
+    "resource": "n47"
+   }
+  }
+ ]
+}

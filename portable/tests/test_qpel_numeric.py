@@ -7,12 +7,12 @@ import sys
 import tempfile
 import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from qpel_ir import export, validate, Lowering
+from qpel_ir import validate, Lowering
 FIXTURE = Path(__file__).parent / 'fixtures/qpel_ir/count'
 
 class NumericTests(unittest.TestCase):
     def setUp(self):
-        self.ir = export(*(json.loads((FIXTURE / f).read_text()) for f in ('module.json', 'pipeline.json')))
+        self.ir = json.loads((FIXTURE / 'program.qpel.json').read_text())
         self.counter = 0
 
     def add(self, kind, attrs=None, children=None, links=None):
@@ -48,10 +48,6 @@ class NumericTests(unittest.TestCase):
         for backend in ('metal', 'cuda'):
             with self.assertRaisesRegex(ValueError, 'ZERO_DIVISOR'):
                 validate(self.ir, backend)
-
-    def test_compatibility_render_cannot_write(self):
-        with tempfile.TemporaryDirectory() as folder, self.assertRaisesRegex(ValueError, 'comparison only'):
-            Lowering(self.ir, _native_compat=True).write(Path(folder))
 
     def test_unsigned_decimal_canonicalization(self):
         self.helper('decimal_value', 'U32Type', lambda r:self.literal('010'))

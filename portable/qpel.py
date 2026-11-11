@@ -34,7 +34,7 @@ def compile_program(source, out=None):
             neutral = Lowering(program).write(stage/'neutral')
             manifest = build(neutral, stage/'generated')
             # Record final provenance paths rather than deleted staging paths.
-            for key in ('mps_source', 'mps_pipeline'):
+            for key in ('neutral_source', 'neutral_pipeline'):
                 manifest[key] = str(out.resolve()/'package'/Path(manifest[key]).relative_to(stage.resolve()))
             save(stage/'generated/manifest.json', manifest)
             report['status'] = 'generated'

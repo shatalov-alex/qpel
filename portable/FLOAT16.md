@@ -1,6 +1,6 @@
 # qpel mixed precision: float16 storage, float32 computation
 
-Implemented in both the shared core and native MPS: F16Type, ReadOnlyF16BufferType, F16BufferType and F16Cast. F32Cast now accepts a half value. Each new native concept has an editor and TextGen; compiled checking rules and all five language/sandbox model checks pass.
+Implemented in both the shared core and native MPS: F16Type, ReadOnlyF16BufferType, F16BufferType and F16Cast. F32Cast now accepts a half value. Each new native concept has an editor; compiled checking rules and all five language/sandbox model checks pass.
 
 The contract is explicit: load half -> F32Cast -> float32 arithmetic/FMA -> F16Cast -> store half. There is no implicit widening, narrowing, half arithmetic, half FMA or half atomics. Half values may be passed, selected or stored without arithmetic. F16Cast requires float32; F32Cast is required first for integer inputs.
 

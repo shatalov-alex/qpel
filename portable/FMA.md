@@ -1,6 +1,6 @@
 # Explicit float32 FMA in qpel
 
-F32Fma(left, right, addend) requires three float32 expressions and returns float32. Integer operands require F32Cast. The common IR has a distinct float32_fma capability. Native MPS has the structure concept, editor, checker and TextGen. qpel.sandbox contains float_fma and float_fma_launch.
+F32Fma(left, right, addend) requires three float32 expressions and returns float32. Integer operands require F32Cast. The common IR has a distinct float32_fma capability. Native MPS has the structure concept, editor and checker. qpel.sandbox contains float_fma and float_fma_launch.
 
 CUDA lowers to __fmaf_rn; Metal lowers to metal::fma. This explicitly requests a fused multiplication/addition with no intermediate product rounding. Ordinary Binary multiply/add expressions still follow compiler contraction settings: this revision does not promise they remain unfused. No blanket cross-device bitwise guarantee for subnormals, exceptional values or fast-math compilation is made.
 

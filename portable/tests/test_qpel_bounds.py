@@ -4,14 +4,14 @@ import sys
 import tempfile
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from qpel_ir import export,validate,Lowering
+from qpel_ir import validate,Lowering
 from qpel_bounds import BoundsChecker,MAX_ELEMENTS
 FIXTURES=Path(__file__).parent/'fixtures/qpel_ir'
 
 class BoundsTests(unittest.TestCase):
     def load(self,name='float32'):
         folder=FIXTURES/name
-        self.ir=export(*(json.loads((folder/f).read_text()) for f in ('module.json','pipeline.json')))
+        self.ir=json.loads((folder / 'program.qpel.json').read_text())
     def replace(self,node,kind,attributes=None,children=None):
         ids=set()
         def visit(n):
@@ -80,7 +80,7 @@ class BoundsTests(unittest.TestCase):
 
     def test_all_existing_fixtures_remain_valid(self):
         for folder in FIXTURES.iterdir():
-            if (folder/'module.json').exists():
+            if (folder/'program.qpel.json').exists():
                 self.load(folder.name)
                 for target in ('metal','cuda'):validate(self.ir,target)
     def test_helper_pointer_origin_is_unknown(self):

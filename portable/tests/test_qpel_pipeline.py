@@ -4,13 +4,13 @@ from pathlib import Path
 import sys
 import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from qpel_ir import export, validate, Lowering
+from qpel_ir import validate, Lowering
 from qpel_pipeline import PipelineChecker, READ, WRITE
 FIXTURE = Path(__file__).parent / 'fixtures/qpel_ir/components'
 
 class PipelineTests(unittest.TestCase):
     def setUp(self):
-        self.ir = export(*(json.loads((FIXTURE / f).read_text()) for f in ('module.json', 'pipeline.json')))
+        self.ir = json.loads((FIXTURE / 'program.qpel.json').read_text())
         self.c = PipelineChecker(self.ir)
         self.p = self.c.pipeline
         self.resources = self.c.children(self.p, 'resources')

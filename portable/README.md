@@ -4,7 +4,7 @@ qpel is a typed GPU language developed in the existing JetBrains MPS project. It
 
 ## Current scope
 
-- Native MPS models, editors, semantic checks and TextGen; portable graph export and shared validation.
+- MPS models, editors and editor-time checks; MPS exports each program as qpel IR (`<pipeline>.qpel.json`). All code generation and authoritative validation happen in this Python compiler.
 - Unsigned integer operations, float32 computation, explicit FMA, float16 storage/conversions, sequential and cooperative float32 sums, and device-relaxed uint32 atomics.
 - Explicit one-dimensional dispatch pipelines with typed resources, ordered stages and block sizes 1..256.
 - Generated PyTorch/Metal and initial CuPy/CUDA host modules from the same Pipeline.
@@ -28,7 +28,7 @@ Checking/building requires only Python's standard library, without MPS, PyTorch,
 
 ## Authoring and import
 
-CORE.md describes the graph, validation and native/common migration cross-check. CUDA_IMPORT.md and TRANSLATE.md describe the restricted source importer and IDE-dependent workflow. Direct build_backends.py packaging remains a lower-level operation and is not a substitute for full graph validation.
+CORE.md describes the graph, the MPS export and validation. CUDA_IMPORT.md and TRANSLATE.md describe the restricted source importer and IDE-dependent workflow.
 
 ## Validation
 

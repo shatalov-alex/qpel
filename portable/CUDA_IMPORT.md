@@ -1,6 +1,6 @@
 # Restricted CUDA import into qpel
 
-The standalone source original.cu was parsed and imported into the existing JetBrains MPS project as cuda_threshold and cuda_threshold_launch. These are actual qpel AST nodes with declaration references; no generated code was pasted into a raw-text node. Native MPS checks and TextGen build passed. The resulting source and plan were packaged by the existing backend and Metal host generators.
+The standalone source original.cu was parsed and imported into the existing JetBrains MPS project as cuda_threshold and cuda_threshold_launch. These are actual qpel AST nodes with declaration references; no generated code was pasted into a raw-text node. Native MPS checks and the MPS build passed. The resulting source and plan were packaged by the existing backend and Metal host generators.
 
 ## Accepted CUDA subset
 
@@ -41,7 +41,7 @@ With the local MPS MCP server enabled, import to a NEW root name:
 
 ```sh
 python3 portable/import_cuda_mps.py portable/cuda_examples/threshold.cu --project "$PWD" --module another_threshold --report /tmp/another-threshold-import.json
-python3 portable/build_backends.py --source languages/qpel.sandbox/source_gen/qpel/sandbox/another_threshold.qpel.h --out portable/generated-another-threshold
+python3 portable/qpel.py build languages/qpel.sandbox/source_gen/qpel/sandbox/another_threshold_launch.qpel.json --out /tmp/another-threshold
 ```
 
 The endpoint defaults to localhost:64342/stream and can be set with --endpoint. The model defaults to qpel.sandbox. --report must be a new path; review an existing journal before retrying a failed import.
