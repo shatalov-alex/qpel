@@ -34,15 +34,18 @@ kernels.cu:21:30: [do-loop] do statements are not in qpel yet
 
 - Scalar kernel arguments of type `unsigned int`, `int` and `float` (in Metal, `constant T&` parameters) stay ordinary arguments; the hosts take them as `values=`.
 - CUDA host functions (neither `__global__` nor `__device__`) are skipped and listed as host code; kernel launches in them parse but are not imported. Namespaces are flattened (function names must still be unique), which is listed as an adaptation.
+- A function template used with one set of types is imported as that one function. `do ... while`, atomics on `int` (`atomicAdd`/`atomicMin`/`atomicExch` on `int*`, Metal `atomic_int`), conversions to `unsigned char` (low 8 bits), and locals declared without a value.
+- 2D/3D kernels sized by scalar arguments: when each thread-index axis (or a local computed from one axis, such as `row = (blockIdx.y * blockDim.y + threadIdx.y) * 2`) is compared with exactly one `unsigned int` or `int` argument, those arguments become one shape `(W, H, 1)` and their uses read its members. Like the 1D count, this changes the host interface.
 
-Rejected for now, each with its own code: templates, atomics on anything but `unsigned int`, `do`/`switch`/`goto`, `double`, float-to-integer conversion, narrowing to `unsigned char`, raw `threadIdx`/`blockIdx`/`blockDim` outside the global index (block-local indices), 2D/3D kernels sized by scalar width/height arguments instead of a `uint3`, shared memory and barriers in user code, other scalar argument types, and buffers of other types.
+Rejected for now, each with its own code: templates used with several types, atomics on anything but `unsigned int` and `int`, `+=` or `++` on an element other threads update atomically, `switch`/`goto`, `double`, float-to-integer conversion, raw `threadIdx`/`blockIdx`/`blockDim` outside the global index (block-local indices), shared memory and barriers in user code, other scalar argument types, writable `unsigned char` buffers, and buffers of other types.
 
 ## Adaptations and warnings
 
 `import-report.json` (in a translated package) and the `import` command's output list:
 
 - **adaptations**: a kernel without a `uint3` shape is sized by the `unsigned int` that its thread index is compared with (`if (i >= n) return;`, `if (i < n) {...}`). That one argument becomes a qpel shape, and the generated hosts take `(n, 1, 1)` for it instead of the plain number. This is a host ABI change; all other scalar arguments keep their meaning.
-- **warnings**: kernels with a thread-index axis that is never compared against anything. CUDA rounds the grid up to whole blocks, so such a kernel also runs for indices past the end of its buffers.
+- **adaptations** also list: plain reads and writes of a buffer that is updated atomically somewhere (CUDA allows this; qpel makes them relaxed atomic loads and stores), a non-const `unsigned char*` that is never written (read-only), a local without a value (starts at zero; reading it first is undefined in C), a second local with an existing name (renamed `name_2`), flattened namespaces, single-use templates, and an atomic accumulator that is updated before anything writes it (a `zeroed` resource, when there is no plan).
+- **warnings**: kernels with a thread-index axis that is never compared against anything (directly, or through a local computed from it). CUDA rounds the grid up to whole blocks, so such a kernel also runs for indices past the end of its buffers.
 
 ## Launch plan
 
@@ -54,18 +57,11 @@ Source files do not say how kernels are launched. Without `--plan`, each kernel 
 
 `corpus/coverage.json` records the result per kernel (`code at function:line`). `tests/test_corpus.py` fails when it changes, so a new feature shows up as kernels becoming importable, and a regression cannot slip through; after checking the change, run `python3 -m frontends.corpus --update`. `--details` lists every blocker.
 
-First entry, 2026-11-11: SAM 2 `sam2/csrc/connected_components.cu` (commit 2b90b9f), 0 of 6 kernels importable:
+First entry: SAM 2 `sam2/csrc/connected_components.cu` (commit 2b90b9f). On 2026-11-11 it started at 0 of 6 kernels importable. The blockers were scalar `W`/`H` sizing (all 6), `int32_t` atomics, `do`/`while`, an uninitialized `bool`, the `hasBit<T>` template and a read-only `uint8_t*` image. The same day all six import, with the adaptations listed above. The file never needed shared memory or barriers.
 
-| Blocker | Kernels | Where |
-|---|---|---|
-| `no-extent` | 6 | every kernel is 2D and sized by scalar `W`, `H` arguments, not a `uint3` |
-| `atomic-type` | 2 | `atomicMin` on `int32_t` labels (`union_`), `atomicAdd` on `int32_t` counts |
-| `do-loop` | 1 | `do { ... } while (!done)` in `union_` |
-| `uninitialized-local` | 1 | `bool done;` in `union_` |
-| `template` | 1 | `hasBit<T>` |
-| `buffer-type` | 1 | `merge` takes a non-const `uint8_t*` image it only reads |
+`corpus/sam2/connected_components.plan.json` is the launch plan transcribed from the original host function (`get_connected_componnets`): `img` input, `label` and `count_final` outputs, `count_init` zeroed (`torch::zeros`), six stages in its order with 16 × 16 blocks. Imported with it, the file must give the `sam2_cc` fixture exactly (a row of the round-trip matrix). That fixture compiles with nvcc and Metal and passes 65 cases on the Apple GPU against an independent NumPy model of the original's labelling (8-connected components; label = 1 + smallest 2 × 2 block index in the component; count = area).
 
-It needs no shared memory or barriers. Scalar `W`/`H` sizing alone would make 4 of the 6 kernels importable; i32 atomics a fifth. The original also launches one thread per 2 × 2 pixel block. qpel's shape-sized grid would run 4 times as many threads, which the kernels' own guards make harmless but wasteful. Launch geometry lives in host code, which is the host-layer part of the roadmap.
+The original launches one thread per 2 × 2 pixel block and loops over the batch on the host. qpel runs one thread per pixel of a `(W, H, 1)` shape. Threads past the original's grid fail the kernels' own guards, so the result is the same, but 4 times as many threads are launched. Launch geometry belongs to the host layer (Phase 4).
 
 ## Round-trip matrix
 

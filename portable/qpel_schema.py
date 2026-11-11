@@ -6,9 +6,9 @@ import re
 import math
 import struct
 
-TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType Shape3DType'.split())
-EXPRESSIONS = set('Name Literal I32Literal I32Cast U32Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin'.split())
-STATEMENTS = set('Block Variable Assign Evaluate If While For Break Continue Return'.split())
+TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType'.split())
+EXPRESSIONS = set('Name Literal I32Literal I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin'.split())
+STATEMENTS = set('Block Variable Assign Evaluate If While DoWhile For Break Continue Return'.split())
 
 # Child role -> (allowed concepts, minimum count, maximum count or None).
 def one(kinds):
@@ -27,6 +27,7 @@ CHILDREN = {
     'F32Cast': {'operand': one(EXPRESSIONS)},
     'I32Cast': {'operand': one(EXPRESSIONS)},
     'U32Cast': {'operand': one(EXPRESSIONS)},
+    'U8Cast': {'operand': one(EXPRESSIONS)},
     'WorkgroupSumF32': {'value': one(EXPRESSIONS)},
     'ReduceSumF32': {role: one(EXPRESSIONS) for role in ('buffer','start','count')},
     'F16Cast': {'operand': one(EXPRESSIONS)},
@@ -43,6 +44,8 @@ CHILDREN = {
     'Evaluate': {'value': one(EXPRESSIONS)},
     'If': {'condition': one(EXPRESSIONS), 'thenBody': one('Block'), 'elseBody': optional('Block')},
     'While': {'condition': one(EXPRESSIONS), 'body': one('Block')},
+    # do body while (condition); continue evaluates the condition.
+    'DoWhile': {'body': one('Block'), 'condition': one(EXPRESSIONS)},
     # for (init; condition; step) body. A missing condition means true.
     'For': {'init': optional('Variable Assign'), 'condition': optional(EXPRESSIONS),
             'step': optional('Assign Evaluate'), 'body': one('Block')},
@@ -180,7 +183,7 @@ def validate_structure(nodes):
                 fail('Float32 literal is out of range')
         if kind == 'Member' and a['member'] not in ('x', 'y', 'z'):
             fail('Unsupported shape member')
-        if kind == 'Resource' and a['kind'] not in ('input', 'output', 'scratch', 'shape', 'value'):
+        if kind == 'Resource' and a['kind'] not in ('input', 'output', 'scratch', 'zeroed', 'shape', 'value'):
             fail('Unsupported resource kind')
         if kind == 'Dispatch':
             dims = (a['blockSize'], a.get('blockHeight', 1), a.get('blockDepth', 1))

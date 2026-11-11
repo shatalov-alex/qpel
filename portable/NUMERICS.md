@@ -10,15 +10,21 @@ New exports use `qpel-portable-core-v1` (IR container format remains version 1).
 
 ## IR version 2 and the signed contract: i32-wrap-v1
 
-IR version 2 (`"version": 2`, semantics `qpel-portable-core-v2`) adds `else`, `for` with `break`/`continue`, signed 32-bit integers, shifts and `~`, scalar kernel arguments, and 2D/3D kernels. Version 1 programs keep their meaning and their generated kernel code; a version 1 program that uses a version 2 construct is rejected. The importers write version 1 unless a version 2 construct is needed. Programs that use `i32` carry a second contract line, `// qpel numeric contract: i32-wrap-v1`, and their manifest records `u32-modulo-v1, i32-wrap-v1`.
+IR version 2 (`"version": 2`, semantics `qpel-portable-core-v2`) adds `else`, `for` and `do`/`while` with `break`/`continue`, signed 32-bit integers and their atomics, shifts and `~`, conversion to u8, scalar kernel arguments, 2D/3D kernels and zeroed scratch. Version 1 programs keep their meaning and their generated kernel code; a version 1 program that uses a version 2 construct is rejected. The importers write version 1 unless a version 2 construct is needed. Programs that use `i32` carry a second contract line, `// qpel numeric contract: i32-wrap-v1`, and their manifest records `u32-modulo-v1, i32-wrap-v1`.
 
 - `I32Type`, `ReadOnlyI32BufferType`, `I32BufferType`. `I32Literal` is a non-negative decimal up to 2147483647; negative values are written with unary minus.
-- No implicit conversions between i32 and the unsigned types: `I32Cast` (from u8, u32 or i32) and `U32Cast` (from i32, u8 or u32) are explicit. Converting keeps the 32-bit pattern (two's complement). `F32Cast` accepts i32. There is no float-to-integer conversion yet.
+- No implicit conversions between i32 and the unsigned types: `I32Cast` (from u8, u32 or i32) and `U32Cast` (from i32, u8 or u32) are explicit. Converting keeps the 32-bit pattern (two's complement). `U8Cast` (from any integer) keeps the low 8 bits, as C's conversion to `unsigned char` does. `F32Cast` accepts i32. There is no float-to-integer conversion yet.
 - `+ - *` and unary minus wrap modulo 2^32, as for u32. They are emitted through unsigned arithmetic, so the overflow that C leaves undefined for int cannot happen.
 - `/` truncates toward zero and `%` has the sign of the dividend, as in C. `INT_MIN / -1` is `INT_MIN` and `INT_MIN % -1` is 0 (C leaves both undefined). Literal zero divisors are rejected; dynamic divisors must be nonzero, as for u32.
 - `& | ^ ~` act on the 32-bit pattern. Comparisons are signed. min/max take two i32 or two unsigned operands.
 - Shifts `<<` and `>>` take any integer count and use it modulo 32 (C leaves counts of 32 or more undefined). Unsigned `>>` is logical. Signed `<<` is done on the bit pattern; signed `>>` is arithmetic (sign-extending), which nvcc and Metal both implement.
 - Conditions (`if`, `while`, `for`, `!`, `&&`, `||`, `?:`) accept i32 as well as bool and unsigned values.
+
+Atomics on int: `AtomicI32BufferType` (`int*` in CUDA, `device atomic_int*` in Metal) takes the same relaxed `AtomicLoad`, `AtomicStore`, `AtomicAdd` and `AtomicMin` as the u32 atomic buffer; values and results are i32, `AtomicAdd` wraps and `AtomicMin` is signed. As before, atomic buffers are not indexed directly, and an address is the buffer plus an unsigned offset.
+
+`do body while (condition);` is `DoWhile`; `continue` goes to the condition, as in C.
+
+Zeroed scratch: a Pipeline resource of kind `zeroed` is scratch the host fills with zeros before the first stage, so a stage may read (or atomically update) it before any stage writes it. It models a host's `cudaMemset` / `torch::zeros`. Both hosts allocate it with `zeros` and do not return it.
 
 Scalar kernel arguments: a kernel parameter of type U32Type, I32Type or F32Type binds a Pipeline resource of kind `value` (no extent). The host passes it per call: `run(inputs, shapes, values={'scale': 0.5, 'offset': -3})`. Both hosts check that integers are Python ints within the type's range and floats are numbers, before anything is allocated. CUDA receives the value by value; Metal reads it from a small constant buffer (`constant T&`), which is how Metal passes scalars.
 

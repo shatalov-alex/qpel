@@ -332,9 +332,69 @@ def run_components(name, host, plan):
     return len(cases)
 
 
+# --- SAM 2 connected components, imported from the unmodified CUDA original ---
+
+def sam2_oracle(mask, w, h):
+    """Labels and areas as SAM 2's get_connected_componnets defines them, for one image.
+
+    Components are 8-connected. Every foreground pixel of a 2x2 block is in one
+    component; a component's label is 1 + the smallest index of a block top-left
+    pixel (row and column even) among its pixels. Background is 0, as is its area."""
+    from collections import deque
+    labels = np.zeros(w*h, np.int32)
+    areas = np.zeros(w*h, np.int32)
+    seen = np.zeros(w*h, bool)
+    for start in range(w*h):
+        if not mask[start] or seen[start]:
+            continue
+        seen[start] = True
+        queue, members = deque([start]), []
+        while queue:
+            p = queue.popleft()
+            members.append(p)
+            y, x = divmod(p, w)
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < h and 0 <= nx < w and mask[ny*w + nx] and not seen[ny*w + nx]:
+                        seen[ny*w + nx] = True
+                        queue.append(ny*w + nx)
+        label = 1 + min((p // w) // 2 * 2 * w + (p % w) // 2 * 2 for p in members)
+        labels[members] = label
+        areas[members] = len(members)
+    return labels, areas
+
+
+def sam2_cases():
+    """(w, h, mask) cases; SAM 2 requires even width and height."""
+    cases = [(2, 2, np.zeros(4, np.uint8)), (2, 2, np.ones(4, np.uint8)), (16, 16, np.ones(256, np.uint8))]
+    checker = np.indices((10, 12)).sum(axis=0) % 2  # diagonal neighbours only
+    cases.append((12, 10, checker.astype(np.uint8).ravel()))
+    rows = np.zeros((8, 34), np.uint8); rows[::3] = 1  # long thin components across blocks
+    cases.append((34, 8, rows.ravel()))
+    rng = np.random.default_rng(20261111)
+    for k in range(60):
+        w, h = 2*int(rng.integers(1, 40)), 2*int(rng.integers(1, 30))
+        density = (k*17) % 101
+        values = rng.integers(1, 256, w*h).astype(np.uint8)
+        cases.append((w, h, np.where(rng.integers(0, 100, w*h) < density, values, 0).astype(np.uint8)))
+    return cases
+
+
+def run_sam2_cc(name, host, plan):
+    cases = sam2_cases()
+    for w, h, mask in cases:
+        result = host.run({'img': torch.from_numpy(mask).to('mps')}, {'shape': (w, h, 1)})
+        labels, areas = sam2_oracle(mask, w, h)
+        np.testing.assert_array_equal(result['label'].cpu().numpy(), labels, err_msg=f'labels {w}x{h}')
+        np.testing.assert_array_equal(result['count_final'].cpu().numpy(), areas, err_msg=f'areas {w}x{h}')
+    return len(cases)
+
+
 TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fma32': run_fma32,
          'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components,
-         'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset, 'box_sum': run_box_sum}
+         'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset, 'box_sum': run_box_sum,
+         'sam2_cc': run_sam2_cc}
 
 
 def main(argv=None):

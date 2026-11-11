@@ -1,0 +1,190 @@
+{
+ "schema": 1,
+ "module": "connected_components",
+ "resources": [
+  {
+   "name": "label",
+   "kind": "output",
+   "type": "AtomicI32BufferType",
+   "extent": "shape"
+  },
+  {
+   "name": "shape",
+   "kind": "shape",
+   "type": "Shape3DType",
+   "extent": null
+  },
+  {
+   "name": "img",
+   "kind": "input",
+   "type": "ReadOnlyU8BufferType",
+   "extent": "shape"
+  },
+  {
+   "name": "count_init",
+   "kind": "zeroed",
+   "type": "AtomicI32BufferType",
+   "extent": "shape"
+  },
+  {
+   "name": "count_final",
+   "kind": "output",
+   "type": "I32BufferType",
+   "extent": "shape"
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "init_labeling",
+   "grid": "shape",
+   "blockSize": 16,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "label",
+     "resource": "label"
+    },
+    {
+     "parameter": "shape",
+     "resource": "shape"
+    }
+   ],
+   "domain": "grid3d",
+   "blockShape": [
+    16,
+    16,
+    1
+   ]
+  },
+  {
+   "kernel": "merge",
+   "grid": "shape",
+   "blockSize": 16,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "img",
+     "resource": "img"
+    },
+    {
+     "parameter": "label",
+     "resource": "label"
+    },
+    {
+     "parameter": "shape",
+     "resource": "shape"
+    }
+   ],
+   "domain": "grid3d",
+   "blockShape": [
+    16,
+    16,
+    1
+   ]
+  },
+  {
+   "kernel": "compression",
+   "grid": "shape",
+   "blockSize": 16,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "label",
+     "resource": "label"
+    },
+    {
+     "parameter": "shape",
+     "resource": "shape"
+    }
+   ],
+   "domain": "grid3d",
+   "blockShape": [
+    16,
+    16,
+    1
+   ]
+  },
+  {
+   "kernel": "final_labeling",
+   "grid": "shape",
+   "blockSize": 16,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "img",
+     "resource": "img"
+    },
+    {
+     "parameter": "label",
+     "resource": "label"
+    },
+    {
+     "parameter": "shape",
+     "resource": "shape"
+    }
+   ],
+   "domain": "grid3d",
+   "blockShape": [
+    16,
+    16,
+    1
+   ]
+  },
+  {
+   "kernel": "init_counting",
+   "grid": "shape",
+   "blockSize": 16,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "label",
+     "resource": "label"
+    },
+    {
+     "parameter": "count_init",
+     "resource": "count_init"
+    },
+    {
+     "parameter": "shape",
+     "resource": "shape"
+    }
+   ],
+   "domain": "grid3d",
+   "blockShape": [
+    16,
+    16,
+    1
+   ]
+  },
+  {
+   "kernel": "final_counting",
+   "grid": "shape",
+   "blockSize": 16,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "label",
+     "resource": "label"
+    },
+    {
+     "parameter": "count_init",
+     "resource": "count_init"
+    },
+    {
+     "parameter": "count_final",
+     "resource": "count_final"
+    },
+    {
+     "parameter": "shape",
+     "resource": "shape"
+    }
+   ],
+   "domain": "grid3d",
+   "blockShape": [
+    16,
+    16,
+    1
+   ]
+  }
+ ]
+}

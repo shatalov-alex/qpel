@@ -10,7 +10,8 @@ ELEMENTS = {'ReadOnlyU8BufferType': 'U8Type', 'U32BufferType': 'U32Type', 'ReadO
             'I32BufferType': 'I32Type', 'ReadOnlyF32BufferType': 'F32Type', 'F32BufferType': 'F32Type',
             'ReadOnlyF16BufferType': 'F16Type', 'F16BufferType': 'F16Type'}
 READ_ONLY = {'ReadOnlyU8BufferType', 'ReadOnlyI32BufferType', 'ReadOnlyF32BufferType', 'ReadOnlyF16BufferType'}
-BUFFERS = set(ELEMENTS) | {'AtomicU32BufferType'}
+ATOMICS = {'AtomicU32BufferType': 'U32Type', 'AtomicI32BufferType': 'I32Type'}  # buffer -> element
+BUFFERS = set(ELEMENTS) | set(ATOMICS)
 COMPARISONS = {'==', '!=', '<', '>', '<=', '>='}
 VALUES = {'U32Type', 'I32Type', 'F32Type'}  # scalar kernel arguments (IR version 2)
 
@@ -71,9 +72,9 @@ class TypeChecker:
             return 'BoolType' if a['value'] in ('true', 'false') else 'U32Type'
         if k == 'I32Literal':
             return 'I32Type'
-        if k in ('I32Cast', 'U32Cast'):
+        if k in ('I32Cast', 'U32Cast', 'U8Cast'):
             check(e('operand') in INTEGERS, 'CAST_TYPE', 'Integer conversion requires an integer')
-            return 'I32Type' if k == 'I32Cast' else 'U32Type'
+            return {'I32Cast': 'I32Type', 'U32Cast': 'U32Type', 'U8Cast': 'U8Type'}[k]
         if k == 'F32Literal':return 'F32Type'
         if k == 'WorkgroupSumF32':
             parent = self.parents.get(node['id'])
@@ -121,10 +122,12 @@ class TypeChecker:
             check(base in ELEMENTS, 'INDEX_BASE', 'Ordinary buffer required; use atomic operations for atomic buffers')
             return ELEMENTS[base]
         if k.startswith('Atomic'):
-            check(e('address') == 'AtomicU32BufferType', 'ATOMIC_ADDRESS', 'Atomic buffer address required')
+            address = e('address')
+            check(address in ATOMICS, 'ATOMIC_ADDRESS', 'Atomic buffer address required')
+            element = ATOMICS[address]
             if k != 'AtomicLoad':
-                check(e('value') in NUMBERS, 'ATOMIC_VALUE', 'Unsigned integer required')
-            return 'VoidType' if k == 'AtomicStore' else 'U32Type'
+                check(fits(element, e('value')), 'ATOMIC_VALUE', f'{element} value required')
+            return 'VoidType' if k == 'AtomicStore' else element
         if k == 'Unary':
             operand = e('operand')
             if a['operator'] == '!' and operand in CONDITIONS:
@@ -218,6 +221,9 @@ class TypeChecker:
         elif k == 'While':
             check(e('condition') in CONDITIONS, 'CONDITION', 'Scalar condition required')
             self.block(self.child(node, 'body'), env, function, names, loops + 1)
+        elif k == 'DoWhile':
+            self.block(self.child(node, 'body'), env, function, names, loops + 1)
+            check(e('condition') in CONDITIONS, 'CONDITION', 'Scalar condition required')
         elif k == 'For':
             inner = set(env)  # the init variable is visible only inside the loop
             for init in self.children(node, 'init'):
@@ -263,7 +269,7 @@ class TypeChecker:
                     for ref in values:yield from descendants(self.nodes[ref])
             kinds = {n['kind'] for n in descendants(function)}
             if 'WorkgroupSumF32' in kinds:
-                self.require(function, not kinds & {'Return', 'While', 'For', 'Break', 'Continue'}, 'COLLECTIVE_FLOW', 'Kernels with group sum cannot contain returns or loops; mask input and guard writes instead')
+                self.require(function, not kinds & {'Return', 'While', 'DoWhile', 'For', 'Break', 'Continue'}, 'COLLECTIVE_FLOW', 'Kernels with group sum cannot contain returns or loops; mask input and guard writes instead')
             returns = self.block(self.child(function, 'body'), env, function, names)
             self.require(function, result == 'VoidType' or returns, 'MISSING_RETURN', 'Non-void helper requires unconditional return')
 

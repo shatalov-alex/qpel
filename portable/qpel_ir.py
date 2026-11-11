@@ -11,17 +11,18 @@ from qpel_bounds import validate_static_bounds
 
 TYPES={'F16Type':'QPEL_F16','ReadOnlyF16BufferType':'QPEL_READ_F16','F16BufferType':'QPEL_WRITE_F16','F32Type':'QPEL_F32','ReadOnlyF32BufferType':'QPEL_READ_F32','F32BufferType':'QPEL_WRITE_F32','VoidType':'void','BoolType':'bool','U8Type':'QPEL_U8','U32Type':'QPEL_U32',
        'ReadOnlyU8BufferType':'QPEL_READ_U8','U32BufferType':'QPEL_WRITE_U32',
-       'AtomicU32BufferType':'QPEL_ATOMIC_U32','Shape3DType':'QPEL_SHAPE',
+       'AtomicU32BufferType':'QPEL_ATOMIC_U32','AtomicI32BufferType':'QPEL_ATOMIC_I32','Shape3DType':'QPEL_SHAPE',
        'I32Type':'QPEL_I32','ReadOnlyI32BufferType':'QPEL_READ_I32','I32BufferType':'QPEL_WRITE_I32'}
-KINDS=set(TYPES)|set('Grid3D ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal I32Cast U32Cast For Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin Pipeline Resource Dispatch Binding'.split())
+KINDS=set(TYPES)|set('Grid3D ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin Pipeline Resource Dispatch Binding'.split())
 COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32'}
 PROFILES={'metal':COMMON_FEATURES,'cuda':COMMON_FEATURES}
 SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2'}
-# Version 2 adds else, for/break/continue, signed 32-bit integers, shifts and ~.
-V2_KINDS={'Grid3D','ThreadIndex','For','Break','Continue','I32Type','ReadOnlyI32BufferType','I32BufferType','I32Literal','I32Cast','U32Cast'}
+# Version 2 adds else, for/do/break/continue, signed 32-bit integers and their atomics,
+# shifts, ~, conversion to u8, scalar arguments and 2D/3D kernels.
+V2_KINDS={'Grid3D','ThreadIndex','For','DoWhile','Break','Continue','I32Type','ReadOnlyI32BufferType','I32BufferType','AtomicI32BufferType','I32Literal','I32Cast','U32Cast','U8Cast'}
 BINARY_OPERATORS={'+','-','*','/','%','&','|','^','==','!=','<','>','<=','>=','&&','||','<<','>>'}
 UNARY_OPERATORS={'!','-','~'}
-INT32_KINDS={'I32Type','ReadOnlyI32BufferType','I32BufferType','I32Literal','I32Cast'}
+INT32_KINDS={'I32Type','ReadOnlyI32BufferType','I32BufferType','AtomicI32BufferType','I32Literal','I32Cast'}
 
 
 def version_2_features(nodes):
@@ -33,7 +34,7 @@ def version_2_features(nodes):
         if k=='If' and n['children'].get('elseBody'):used.add('else')
         if k=='Binary' and a.get('operator') in ('<<','>>'):used.add('shift')
         if k=='Unary' and a.get('operator')=='~':used.add('~')
-        if k=='Resource' and a.get('kind')=='value':used.add('value')
+        if k=='Resource' and a.get('kind') in ('value','zeroed'):used.add(a['kind'])
         if k=='Dispatch' and ('blockHeight' in a or 'blockDepth' in a):used.add('block shape')
     return used
 
@@ -59,7 +60,7 @@ def validate(program, backend=None):
         if n['kind']=='F32Fma':required.add('float32_fma')
         if 'F32' in n['kind']:required.add('float32')
         if n['kind'].startswith('Atomic'):required.add('device_relaxed_u32_atomics')
-        if n['kind'] in ('If','While','For'):required.add('control_flow')
+        if n['kind'] in ('If','While','DoWhile','For'):required.add('control_flow')
         if n['kind'] in INT32_KINDS:required.add('int32')
         if n['kind']=='Grid3D':required.add('grid_3d')
         targets=list(n['links'].values())+[v for values in n['children'].values() for v in values]
@@ -128,6 +129,7 @@ class Lowering:
         if k=='I32Literal':return a['value']
         if k=='I32Cast':return '((QPEL_I32)('+e('operand')+'))'
         if k=='U32Cast':return '((QPEL_U32)('+e('operand')+'))'
+        if k=='U8Cast':return '((QPEL_U8)('+e('operand')+'))'
         if k=='F32Literal':
             value = a['value']
             return value+('' if '.' in value or 'e' in value.lower() else '.0')+'f'
@@ -184,6 +186,7 @@ class Lowering:
         if k=='Break':return 'break;\n'
         if k=='Continue':return 'continue;\n'
         if k=='While':return 'while ('+e('condition')+') '+e('body')+'\n'
+        if k=='DoWhile':return 'do '+e('body')+' while ('+e('condition')+');\n'
         if k in ('AtomicLoad','AtomicStore','AtomicAdd','AtomicMin'):
             macro={'AtomicLoad':'QPEL_LOAD','AtomicStore':'QPEL_STORE','AtomicAdd':'QPEL_ADD','AtomicMin':'QPEL_MIN'}[k]
             return macro+'('+e('address')+('' if k=='AtomicLoad' else ', '+e('value'))+')'

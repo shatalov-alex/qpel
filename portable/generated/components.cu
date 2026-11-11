@@ -72,6 +72,7 @@ __device__ __forceinline__ float qpel_group_sum_f32(float value, float* scratch,
 // INT_MIN % -1 is 0 (C leaves both undefined). Divisors must be nonzero.
 __device__ __forceinline__ int qpel_i32_div(int a, int b) { return b == -1 ? (int)(0u - (unsigned int)a) : a / b; }
 __device__ __forceinline__ int qpel_i32_rem(int a, int b) { return b == -1 ? 0 : a % b; }
+#define QPEL_ATOMIC_I32 int*
 #define QPEL_I32_DIV(a, b) qpel_i32_div((a), (b))
 #define QPEL_I32_REM(a, b) qpel_i32_rem((a), (b))
 #endif

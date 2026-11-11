@@ -21,6 +21,11 @@ FIXTURES = HERE/'tests/fixtures/qpel_ir'
 EXAMPLES = {'threshold': 'import', 'classify_bytes': 'classify', 'combine_masks': 'masks', 'masked_copy': 'count',
             'signed_delta': 'signed_delta', 'scale_offset': 'scale_offset', 'box_sum': 'box_sum'}
 SOURCE_DIRS = {'cuda': HERE/'cuda_examples', 'metal': HERE/'metal_examples'}
+CORPUS = HERE/'corpus'  # unmodified real sources; entries with a fixture must import to it
+
+
+def corpus_entries():
+    return json.loads((CORPUS/'corpus.json').read_text())
 SUFFIX = {'cuda': '.cu', 'metal': '.metal'}
 
 
@@ -95,6 +100,14 @@ def rows(fixtures=None):
         for dialect in ('cuda', 'metal'):
             source = SOURCE_DIRS[dialect]/(source_name + SUFFIX[dialect])
             yield f'{dialect} -> qpel', source.name, check(original, source, plan, validate)
+    for entry in corpus_entries():
+        if 'fixture' not in entry:
+            continue
+        source = CORPUS/entry['source']
+        plan = json.loads((CORPUS/entry['plan']).read_text())
+        include = [CORPUS/folder for folder in entry.get('include', ())]
+        dialect = 'cuda' if source.suffix == '.cu' else 'metal'
+        yield f'{dialect} -> qpel', 'corpus/' + entry['source'], check(fixture(entry['fixture']), source, plan, validate, include)
 
 
 def reimport(program):
@@ -113,9 +126,9 @@ def reimport(program):
     return results
 
 
-def check(original, source, plan, validate):
+def check(original, source, plan, validate, include=()):
     try:
-        program, _ = import_source(source, plan=plan)
+        program, _ = import_source(source, plan=plan, include=include)
         validate(program)
     except ValueError as error:
         return str(error)

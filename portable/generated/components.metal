@@ -67,6 +67,7 @@ inline float qpel_group_sum_f32(float value, threadgroup float* scratch, uint la
 // INT_MIN % -1 is 0 (C leaves both undefined). Divisors must be nonzero.
 inline int qpel_i32_div(int a, int b) { return b == -1 ? (int)(0u - (uint)a) : a / b; }
 inline int qpel_i32_rem(int a, int b) { return b == -1 ? 0 : a % b; }
+#define QPEL_ATOMIC_I32 device atomic_int*
 #define QPEL_I32_DIV(a, b) qpel_i32_div((a), (b))
 #define QPEL_I32_REM(a, b) qpel_i32_rem((a), (b))
 #endif

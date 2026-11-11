@@ -84,7 +84,7 @@ class PipelineChecker(TypeChecker):
                 self.require(resource, typ in BUFFERS, 'RESOURCE_TYPE', 'Data resource requires buffer type')
                 self.require(resource, extent in local and self.nodes[extent]['attributes']['kind'] == 'shape' and self.declared(self.nodes[extent]) == 'Shape3DType', 'EXTENT', 'Extent must reference a local shape')
                 self.require(resource, typ not in READ_ONLY or kind == 'input', 'RESOURCE_ACCESS', 'Read-only buffers must be inputs')
-                if kind == 'input':
+                if kind in ('input', 'zeroed'):  # zeroed scratch is filled with zeros before the first stage
                     ready.add(resource['id'])
         for stage in self.children(self.pipeline, 'stages'):
             kernel, grid = self.target(stage, 'kernel'), self.target(stage, 'grid')

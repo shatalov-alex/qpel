@@ -34,12 +34,12 @@ SCALARS = {'unsigned int': 'u32', 'unsigned': 'u32', 'uint': 'u32', 'uint32_t': 
            'unsigned char': 'u8', 'uchar': 'u8', 'uint8_t': 'u8', 'bool': 'bool', 'float': 'f32',
            '__half': 'f16', 'half': 'f16', 'int': 'i32', 'signed int': 'i32', 'signed': 'i32', 'int32_t': 'i32',
            'void': 'void', 'double': 'f64',
-           'atomic_uint': 'atomic'}
+           'atomic_uint': 'atomic', 'atomic_int': 'atomic_i32'}
 SHAPES = {'uint3', 'QpelShape', 'dim3'}
 SCALAR_KIND = {'u32': 'U32Type', 'u8': 'U8Type', 'i32': 'I32Type', 'bool': 'BoolType', 'f32': 'F32Type',
                'f16': 'F16Type', 'void': 'VoidType'}
 BUFFER_KIND = {('u8', True): 'ReadOnlyU8BufferType', ('u32', False): 'U32BufferType',
-               ('atomic', False): 'AtomicU32BufferType', ('i32', True): 'ReadOnlyI32BufferType',
+               ('atomic', False): 'AtomicU32BufferType', ('atomic_i32', False): 'AtomicI32BufferType', ('i32', True): 'ReadOnlyI32BufferType',
                ('i32', False): 'I32BufferType', ('f32', True): 'ReadOnlyF32BufferType',
                ('f32', False): 'F32BufferType', ('f16', True): 'ReadOnlyF16BufferType',
                ('f16', False): 'F16BufferType'}
@@ -239,6 +239,8 @@ class Metal(Dialect):
 
 
 DIALECT = {'cuda': Cuda(), 'metal': Metal()}
+ATOMIC_ELEMENTS = {'u32': 'atomic', 'i32': 'atomic_i32'}  # element -> scalar of its atomic buffer
+ZERO = {'bool': ('Literal', 'false'), 'u32': ('Literal', '0u'), 'i32': ('I32Literal', '0'), 'f32': ('F32Literal', '0.0')}
 VALUE_KINDS = {'U32Type', 'I32Type', 'F32Type'}
 GRID3D_BLOCK = (16, 16, 1)  # default block for 2D/3D kernels without a launch plan
 MINIMUM = {'min', 'umin'}
@@ -342,9 +344,17 @@ class Importer:
             self.adaptations.append(f'namespace {node.get("name", "(anonymous)")} was flattened')
             return [d for child in node.get('inner', ()) for d in self.attempt(lambda: self.top_level(child), [])]
         if kind == 'FunctionTemplateDecl':
+            uses = [d for d in node.get('inner', ()) if d['kind'] == 'FunctionDecl' and body_of(d) is not None
+                    and any(c['kind'] == 'TemplateArgument' for c in d.get('inner', ()))]
+            if not uses:
+                return []  # never instantiated, so never called
+            if len(uses) == 1:
+                arguments = ', '.join(c.get('type', {}).get('qualType', '?') for c in uses[0]['inner'] if c['kind'] == 'TemplateArgument')
+                self.adaptations.append(f'template {node["name"]} is used only with <{arguments}> and was imported for it')
+                return self.top_level(uses[0])
             self.rejected.add(node.get('name'))
             self.current = node.get('name')
-            raise Unsupported(node, 'template', f'template {node.get("name", "")} is not in qpel; write it for one type')
+            raise Unsupported(node, 'template', f'template {node.get("name", "")} is used with {len(uses)} types; qpel has no templates')
         if kind == 'FunctionDecl':
             if body_of(node) is None or node.get('name', '').startswith('qpel_'):
                 return []  # declarations and qpel backend helpers
@@ -382,7 +392,7 @@ class Importer:
             for i, p in enumerate(params):
                 index[(fname, p['name'])] = (fname, i)
                 t = describe(p['type']['qualType'])
-                if t[0] == 'pointer' and t[2] == 'atomic':
+                if t[0] == 'pointer' and t[2] in ATOMIC_ELEMENTS.values():
                     atomic.add((fname, i))
                 if self.dialect.is_kernel(decl):
                     group = plan_groups.get((fname, p['name']), p['name'])
@@ -417,8 +427,17 @@ class Importer:
     def parameter_type(self, decl, i, p, find, atomic_groups):
         t = describe(p['type']['qualType'])
         if t[0] == 'pointer':
-            scalar = 'atomic' if t[2] == 'u32' and find((decl['name'], i)) in atomic_groups else t[2]
-            kind = BUFFER_KIND.get((scalar, t[1] and scalar != 'atomic'))
+            if find((decl['name'], i)) in atomic_groups or t[2] in ATOMIC_ELEMENTS.values():
+                scalar = ATOMIC_ELEMENTS.get(t[2], t[2] if t[2] in ATOMIC_ELEMENTS.values() else None)
+                if scalar is None:
+                    raise Unsupported(p, 'atomic-type', f'atomics on {p["type"]["qualType"]} are not in qpel; only on unsigned int and int')
+                return BUFFER_KIND[(scalar, False)]
+            if t[2] == 'u8' and not t[1]:
+                if p['name'] in written_buffers(body_of(decl)):
+                    raise Unsupported(p, 'buffer-type', 'writable unsigned char buffers are not in qpel yet')
+                self.adaptations.append(f'{decl["name"]}: {p["name"]} is never written, so it became read-only')
+                return 'ReadOnlyU8BufferType'
+            kind = BUFFER_KIND.get((t[2], t[1]))
             if kind is None:
                 raise Unsupported(p, 'buffer-type', f'{p["type"]["qualType"]} buffers are not in qpel yet')
             return kind
@@ -481,6 +500,7 @@ class Importer:
         self.kernel_params = {}
         function_ids = []
         for decl in self.decls:
+            self.current = decl['name']
             function_ids.append(self.function(decl, types))
         module = self.graph.add('GpuModule', {'name': self.module}, {'functions': function_ids})
         pipeline = self.pipeline(module, plan, block_size)
@@ -492,6 +512,7 @@ class Importer:
         self.scope = {}
         self.kernel = kernel
         self.assigned = assigned_decls(body_of(decl))
+        self.names = {p.get('name') for p in params_of(decl)}  # qpel names are unique per function
         params = []
         position = 0
         shape_param = None
@@ -524,6 +545,11 @@ class Importer:
             ir = self.graph.add('Parameter', attrs, {'type': self.graph.add(kind)})
             self.scope[p['id']] = ('param', ir, kind)
             params.append(ir)
+        if kernel and self.grid3d and shape_param is None and not any(
+                e and e[0] == 'untyped' for e in self.scope.values()):
+            extents = self.attempt(lambda: self.axis_extents(decl, params))
+            if extents:
+                shape_param = self.extent_shape(decl, params, extents)
         if kernel:
             if count is not None:
                 entry = self.scope[count['id']]
@@ -548,6 +574,90 @@ class Importer:
             children['domain'] = self.graph.add('Grid3D' if self.grid3d else 'Grid1D')
             self.domains[name] = 'grid3d' if self.grid3d else 'grid1d'
         return self.graph.put(ident, 'Function', attrs, children)
+
+    def axis_of(self, node):
+        """'x', 'y' or 'z' when node is a thread-index axis (CUDA expression or Metal position member)."""
+        node = peel(node)
+        axis = grid_axis(node)
+        if axis:
+            return axis
+        if node['kind'] in ('MemberExpr', 'ExtVectorElementExpr'):
+            base = peel(node['inner'][0])
+            entry = self.scope.get(base.get('referencedDecl', {}).get('id')) if base['kind'] == 'DeclRefExpr' else None
+            field = member_name(node, self.source)
+            if entry and entry[0] == 'position' and field in 'xyz':
+                return field
+        if node['kind'] == 'DeclRefExpr':
+            entry = self.scope.get(node['referencedDecl']['id'])
+            if entry and entry[0] == 'grid':
+                return entry[1]
+        return None
+
+    def axis_extents(self, decl, params):
+        """{axis: scalar parameter} for a 2D/3D kernel sized by scalar arguments.
+
+        A local computed from one thread-index axis (`row = (blockIdx.y * blockDim.y +
+        threadIdx.y) * 2`), or the axis itself, compared with a scalar argument
+        (`row < H`) makes that argument the extent of the axis."""
+        body = body_of(decl)
+        derived = {}
+        for node in walk(body):
+            if node.get('kind') == 'VarDecl' and 'init' in node:
+                axes = {self.axis_of(x) for x in walk(node['inner'][0])} - {None}
+                if len(axes) == 1:
+                    derived[node['id']] = axes.pop()
+        scalars = {self.graph.nodes[ir]['attributes']['name']: ir for ir in params
+                   if self.graph.nodes[self.graph.nodes[ir]['children']['type'][0]]['kind'] in ('U32Type', 'I32Type')}
+        ids = {p['id']: p['name'] for p in params_of(decl) if p['name'] in scalars}
+
+        def axis(node):
+            core = peel(node)
+            if core['kind'] == 'DeclRefExpr' and core['referencedDecl']['id'] in derived:
+                return derived[core['referencedDecl']['id']]
+            return self.axis_of(core)
+        found = {}
+        for node in walk(body):
+            if node.get('kind') == 'BinaryOperator' and node['opcode'] in ('<', '<=', '>', '>='):
+                a, b = node['inner']
+                for index, other in ((a, b), (b, a)):
+                    other = peel(other)
+                    if axis(index) and other['kind'] == 'DeclRefExpr' and other['referencedDecl']['id'] in ids:
+                        found.setdefault(axis(index), set()).add(ids[other['referencedDecl']['id']])
+        used = {axis(n) for n in walk(body) if n.get('kind') in ('BinaryOperator', 'MemberExpr', 'DeclRefExpr', 'ExtVectorElementExpr')} - {None}
+        extents = {}
+        for a in sorted(used):
+            names = found.get(a, set())
+            if len(names) != 1:
+                raise Unsupported(decl, 'no-extent', f'the {a} thread index is compared with ' +
+                                  (f'several arguments ({", ".join(sorted(names))})' if names else 'no scalar argument') +
+                                  '; pass a uint3 shape')
+            extents[a] = names.pop()
+        if len(set(extents.values())) != len(extents):
+            raise Unsupported(decl, 'no-extent', 'two thread-index axes are compared with the same argument; pass a uint3 shape')
+        return extents
+
+    def extent_shape(self, decl, params, extents):
+        """Replace the extent arguments by one shape (W, H, N); uses of them read its members."""
+        names = {self.graph.nodes[ir]['attributes']['name']: ir for ir in params}
+        first = min(params.index(names[n]) for n in extents.values())
+        taken = set(names) | {v.get('name') for v in walk(body_of(decl)) if v.get('kind') == 'VarDecl'}
+        shape_name = next(n for n in ('shape', 'grid_shape', 'qshape') if n not in taken)
+        binding = self.graph.nodes[params[first]]['attributes']['binding']
+        shape = self.graph.add('Parameter', {'name': shape_name, 'binding': binding, 'isBuffer': True},
+                               {'type': self.graph.add('Shape3DType')})
+        for p in params_of(decl):
+            for a, n in extents.items():
+                if p['name'] == n:
+                    kind = self.scope[p['id']][2]
+                    self.scope[p['id']] = ('extent', shape, a, kind)
+        removed = {names[n] for n in extents.values()}
+        params[:] = [ir for ir in params[:first] if ir not in removed] + [shape] + [ir for ir in params[first:] if ir not in removed]
+        if self.dialect.name == 'cuda':  # CUDA bindings follow parameter order
+            for position, ir in enumerate(params):
+                self.graph.nodes[ir]['attributes']['binding'] = position
+        sizes = [extents.get(a, '1') for a in 'xyz']
+        self.adaptations.append(f'{decl["name"]}: {", ".join(extents[a] for a in sorted(extents))} became a shape ({", ".join(sizes)})')
+        return shape
 
     def uses_grid3d(self, decl):
         """A kernel is 2D/3D when it uses a y or z thread index, or a Metal uint2/uint3 position."""
@@ -647,19 +757,27 @@ class Importer:
                 raise Unsupported(node, 'while-declaration', 'declarations inside while (...) are not supported')
             cond, body = node['inner']
             return [add('While', children={'condition': self.expr(cond), 'body': self.as_block(body)})]
+        if kind == 'DoStmt':
+            body, cond = node['inner']
+            return [add('DoWhile', children={'body': self.as_block(body), 'condition': self.expr(cond)})]
         if kind == 'ReturnStmt':
             value = [self.expr(node['inner'][0])] if node.get('inner') else []
             return [add('Return', children={'value': value})]
-        later = {'DoStmt': 'do-loop', 'SwitchStmt': 'switch', 'GotoStmt': 'goto', 'LabelStmt': 'goto'}
+        later = {'SwitchStmt': 'switch', 'GotoStmt': 'goto', 'LabelStmt': 'goto'}
         if kind in later:
             if self.issues is not None:  # a survey still reads what is inside, for further blockers
-                for child in node.get('inner', ()):
-                    if child.get('kind', '').endswith('Stmt'):
-                        self.as_block(child)
-                    elif child:
-                        self.attempt(lambda: self.expr(child))
+                self.survey_inside(node)
             raise Unsupported(node, later[kind], f'{kind[:-4].lower()} statements are not in qpel yet')
         return [self.expression_statement(node)]
+
+    def survey_inside(self, node):
+        for child in node.get('inner', ()):
+            if child.get('kind') in ('CompoundStmt', 'CaseStmt', 'DefaultStmt', 'LabelStmt'):
+                self.survey_inside(child)  # the labels themselves are part of the rejected statement
+            elif child.get('kind', '').endswith('Stmt'):
+                self.as_block(child)
+            elif child:
+                self.attempt(lambda: self.expr(child))
 
     def local_group(self, node):
         return [s for d in node['inner'] for s in self.local(d)]
@@ -677,21 +795,52 @@ class Importer:
             raise Unsupported(decl, 'local-type', f'local {name} of type {decl["type"]["qualType"]} is not in qpel yet')
         init = decl['inner'][0] if 'init' in decl else None
         if init is None:
-            raise Unsupported(decl, 'uninitialized-local', f'local {name} needs an initializer')
+            if t[1] not in ZERO:
+                raise Unsupported(decl, 'uninitialized-local', f'local {name} needs an initializer')
+            # Reading an uninitialized local is undefined in C, so any value is a faithful start.
+            self.adaptations.append(f'{self.current}: local {name} had no initializer; qpel starts it at zero')
+            name = self.unique_name(name)
+            ir = self.graph.add('Variable', {'name': name}, {'type': self.graph.add(SCALAR_KIND[t[1]]),
+                                                               'value': self.graph.add(*ZERO[t[1]][:1], {'value': ZERO[t[1]][1]})})
+            self.scope[decl['id']] = ('local', ir, SCALAR_KIND[t[1]])
+            return [ir]
         if self.kernel and grid_axis(init) and decl['id'] not in self.assigned:
             self.scope[decl['id']] = ('grid', grid_axis(init))
             return []
         value = self.expr(init)
+        name = self.unique_name(name)
         ir = self.graph.add('Variable', {'name': name},
                             {'type': self.graph.add(SCALAR_KIND[t[1]]), 'value': value})
         self.scope[decl['id']] = ('local', ir, SCALAR_KIND[t[1]])
         return [ir]
+
+    def unique_name(self, name):
+        """C allows one name in sibling blocks; qpel names are unique in a function."""
+        if name not in self.names:
+            self.names.add(name)
+            return name
+        number = 2
+        while f'{name}_{number}' in self.names:
+            number += 1
+        renamed = f'{name}_{number}'
+        self.names.add(renamed)
+        self.adaptations.append(f'{self.current}: a second local {name} was renamed {renamed}')
+        return renamed
 
     def expression_statement(self, node):
         add = self.graph.add
         while node['kind'] in ('ExprWithCleanups', 'ParenExpr'):
             node = node['inner'][0]
         kind = node['kind']
+        if kind in ('BinaryOperator', 'CompoundAssignOperator', 'UnaryOperator') and node.get('opcode') in ('=', '++', '--') \
+                or kind == 'CompoundAssignOperator':
+            if self.is_atomic_element(node['inner'][0]):
+                if node['opcode'] != '=':
+                    raise Unsupported(node, 'atomic-update', f'{node["opcode"]} on an atomic buffer element is a race; use an atomic call')
+                target, value = node['inner']
+                self.note_atomic_access(peel(target)['inner'][0])
+                store = add('AtomicStore', children={'address': self.element_address(peel(target)), 'value': self.expr(value)})
+                return add('Evaluate', children={'value': store})
         if kind == 'BinaryOperator' and node['opcode'] == '=':
             target, value = node['inner']
             return add('Assign', children={'target': self.lvalue(target), 'value': self.expr(value)})
@@ -733,6 +882,8 @@ class Importer:
 
     def expr(self, node, statement=False, address=False):
         wrapped = self.wrapping_idiom(node)
+        if wrapped is None:
+            wrapped = self.converted_wrapping(node)
         if wrapped is not None:
             return wrapped
         core = peel(node)
@@ -764,6 +915,19 @@ class Importer:
             return self.graph.add('Binary', {'operator': op}, {'left': self.expr(left), 'right': self.expr(right)})
         return None
 
+    def converted_wrapping(self, node):
+        """(unsigned)(int)((unsigned)a op (unsigned)b), qpel's spelling of U32Cast(a op b) on ints."""
+        n = strip_parens(node)
+        if n['kind'] not in EXPLICIT_CASTS or scalar_of(n) != 'u32':
+            return None
+        inner = strip_parens(cast_operand(n))
+        while inner['kind'] in EXPLICIT_CASTS and scalar_of(inner) == 'u32' and scalar_of(cast_operand(inner)) == 'u32':
+            inner = strip_parens(cast_operand(inner))  # (unsigned)(unsigned x) is x
+        if inner['kind'] in EXPLICIT_CASTS and scalar_of(inner) == 'u32':
+            return self.converted_wrapping(inner)
+        signed = self.wrapping_idiom(inner)
+        return None if signed is None else self.graph.add('U32Cast', children={'operand': signed})
+
     def shift_count(self, node):
         """qpel masks shift counts as ((unsigned)(c) & 31u); masking again changes nothing."""
         n = strip_parens(node)
@@ -792,6 +956,8 @@ class Importer:
             return self.graph.add('F32Literal', {'value': str(value)})
         if target == 'i32':
             return self.graph.add('I32Literal', {'value': str(value)})
+        if target == 'u8':
+            return self.graph.add('U8Cast', children={'operand': self.literal(n, 'u32')})
         unsigned = scalar_of(n) == 'u32' or value >= 2**31
         return self.graph.add('Literal', {'value': str(value) + ('u' if unsigned else '')})
 
@@ -812,13 +978,16 @@ class Importer:
         if target == 'i32' and source in ('u8', 'u32'):
             return add('I32Cast', children={'operand': value})
         if (source, target) == ('i32', 'u32'):
+            node = self.graph.nodes[value]
+            if node['kind'] == 'I32Cast' and self.graph.nodes[node['children']['operand'][0]]['kind'] == 'Member':
+                return node['children']['operand'][0]  # an int extent used as unsigned is the shape member itself
             return add('U32Cast', children={'operand': value})
         if target == 'f32' and source in ('u32', 'u8', 'i32', 'f16'):
             return add('F32Cast', children={'operand': value})
         if (source, target) == ('f32', 'f16'):
             return add('F16Cast', children={'operand': value})
-        if target == 'u8':
-            raise Unsupported(outer, 'narrowing', f'conversion from {source} to unsigned char drops bits; qpel has no u8 arithmetic')
+        if target == 'u8' and source in ('u32', 'i32'):
+            return add('U8Cast', children={'operand': value})  # keeps the low 8 bits, as C does
         raise Unsupported(outer, 'conversion', f'conversion from {source} to {target} is not in qpel')
 
     def name(self, ident):
@@ -844,6 +1013,9 @@ class Importer:
                 return self.thread_index(entry[1], n)
             if entry[0] == 'position':
                 raise Unsupported(n, 'thread-builtin', 'use the .x, .y and .z components of the thread position')
+            if entry[0] == 'extent':
+                member = add('Member', {'member': entry[2]}, {'base': self.name(entry[1])})
+                return add('I32Cast', children={'operand': member}) if entry[3] == 'I32Type' else member
             if entry[0] == 'count':
                 member = lambda m: add('Member', {'member': m}, {'base': self.name(entry[1])})
                 xy = add('Binary', {'operator': '*'}, {'left': member('x'), 'right': member('y')})
@@ -876,7 +1048,7 @@ class Importer:
             if scalar_of(n) == 'pointer':
                 if not address or op not in ('+', '-') or scalar_of(left) != 'pointer':
                     raise Unsupported(n, 'pointer', 'pointer arithmetic is only supported as an atomic address')
-                return add('Binary', {'operator': op}, {'left': self.expr(left, address=True), 'right': self.expr(right)})
+                return add('Binary', {'operator': op}, {'left': self.expr(left, address=True), 'right': self.offset(right)})
             return add('Binary', {'operator': op}, {'left': self.expr(left), 'right': self.expr(right)})
         if kind == 'UnaryOperator':
             op = n['opcode']
@@ -886,9 +1058,7 @@ class Importer:
             if op == '+':
                 return self.expr(operand)
             if op == '&' and address and peel(operand)['kind'] == 'ArraySubscriptExpr':
-                element = peel(operand)
-                base, index = element['inner']
-                return add('Binary', {'operator': '+'}, {'left': self.buffer(base), 'right': self.expr(index)})
+                return self.element_address(peel(operand))
             raise Unsupported(n, 'operator', f'operator {op} is not supported here')
         if kind in EXPLICIT_CASTS:  # explicit cast to float or half, see peel()
             operand = peel(n['inner'][0])
@@ -921,17 +1091,45 @@ class Importer:
             raise Unsupported(node, 'thread-builtin', 'internal: 1D kernel with a y/z index')
         return self.graph.add('GridIndex')
 
-    def buffer(self, node):
+    def buffer_kind(self, node):
         core = peel(node)
         entry = self.scope.get(core.get('referencedDecl', {}).get('id')) if core['kind'] == 'DeclRefExpr' else None
         self.typed(entry, node)
         if not entry or entry[0] != 'param' or entry[2] not in BUFFER_KIND.values():
             raise Unsupported(node, 'buffer', 'only buffer parameters can be indexed')
-        return self.name(entry[1])
+        return entry[2]
+
+    def buffer(self, node):
+        self.buffer_kind(node)
+        return self.name(self.scope[peel(node)['referencedDecl']['id']][1])
+
+    def offset(self, node):
+        """A pointer offset, which qpel takes unsigned. A negative int offset from a buffer's
+        start is out of bounds in C too, so reading it as unsigned changes no valid program."""
+        value = self.expr(node)
+        return self.graph.add('U32Cast', children={'operand': value}) if scalar_of(node) == 'i32' else value
+
+    def element_address(self, node):
+        base, index = node['inner']
+        return self.graph.add('Binary', {'operator': '+'}, {'left': self.buffer(base), 'right': self.offset(index)})
+
+    def is_atomic_element(self, node):
+        node = peel(node)
+        return node['kind'] == 'ArraySubscriptExpr' and self.buffer_kind(node['inner'][0]).startswith('Atomic')
 
     def index(self, node):
         base, index = node['inner']
+        if self.is_atomic_element(node):
+            # CUDA reads buffers that other threads update atomically with plain loads;
+            # qpel makes them relaxed atomic loads.
+            self.note_atomic_access(base)
+            return self.graph.add('AtomicLoad', children={'address': self.element_address(node)})
         return self.graph.add('Index', children={'base': self.buffer(base), 'index': self.expr(index)})
+
+    def note_atomic_access(self, base):
+        message = f'{self.current}: plain accesses to atomic buffer {decl_name(base)} became relaxed atomic loads and stores'
+        if message not in self.adaptations:
+            self.adaptations.append(message)
 
     def call(self, n, statement):
         add = self.graph.add
@@ -973,8 +1171,8 @@ class Importer:
             if has_order and decl_name(args[-1]) != 'memory_order_relaxed':
                 raise Unsupported(n, 'memory-order', 'only memory_order_relaxed atomics are in qpel')
             pointee = describe(peel(args[0]).get('type', {}).get('qualType', ''))
-            if pointee[0] == 'pointer' and pointee[2] not in ('u32', 'atomic'):
-                raise Unsupported(n, 'atomic-type', f'{callee} on {pointee[2]} is not in qpel yet; atomics are on unsigned int')
+            if pointee[0] == 'pointer' and pointee[2] not in ('u32', 'i32', 'atomic', 'atomic_i32'):
+                raise Unsupported(n, 'atomic-type', f'{callee} on {pointee[2]} is not in qpel yet; atomics are on unsigned int and int')
             value = self.expr(args[1]) if has_value else None
             if kind == 'AtomicAdd' and peel(args[1])['kind'] == 'IntegerLiteral' and int(peel(args[1])['value']) == 0:
                 kind, value = 'AtomicLoad', None  # CUDA's atomic read idiom
@@ -997,6 +1195,36 @@ class Importer:
             raise Unsupported(None, 'no-kernel', f'{self.path} has no kernel')
         if plan is None:
             plan = self.synthesize_plan(kernels, block_size)
+            zeroed = self.read_first(module, self.dispatch(module, plan), plan)
+            for r in plan['resources']:
+                if r['name'] in zeroed:
+                    r['kind'] = 'zeroed'
+                    self.adaptations.append(f'{r["name"]} is updated atomically before anything writes it, '
+                                            'so it starts as zeros (pass a plan if the host fills it)')
+        return self.dispatch(module, plan)
+
+    def read_first(self, module, pipeline, plan):
+        """Atomic scratch resources that a stage reads before any stage writes them."""
+        from qpel_pipeline import PipelineChecker, READ, WRITE
+        checker = PipelineChecker(self.graph.program(module, pipeline))
+        kinds = {r['name']: r['kind'] for r in plan['resources']}
+        ready, found = {n for n, k in kinds.items() if k != 'scratch' and k != 'output'}, set()
+        for stage in checker.children(checker.pipeline, 'stages'):
+            kernel = checker.target(stage, 'kernel')
+            effects = checker.effects(kernel)
+            written = set()
+            for binding in checker.children(stage, 'bindings'):
+                name = checker.target(binding, 'resource')['attributes']['name']
+                flags = effects.get(binding['links']['parameter'], 0)
+                if flags & READ and name not in ready and kinds[name] == 'scratch':
+                    found.add(name)
+                if flags & WRITE:
+                    written.add(name)
+            ready |= written | found
+        return found
+
+    def dispatch(self, module, plan):
+        add = self.graph.add
         resources, ids = [], {}
         for r in plan['resources']:
             ids[r['name']] = add('Resource', {'name': r['name'], 'kind': r['kind']}, {'type': add(r['type'])})
@@ -1090,6 +1318,24 @@ def nonnegative_int(node):
     return scalar_of(node) == 'u8'
 
 
+def written_buffers(body):
+    """Names of pointers whose elements are written in the body (or handed to another function)."""
+    out = set()
+    for node in walk(body):
+        target = None
+        if node['kind'] in ('BinaryOperator', 'CompoundAssignOperator') and node.get('opcode', '').endswith('=') \
+                and node['opcode'] not in ('==', '!=', '<=', '>='):
+            target = node['inner'][0]
+        elif node['kind'] == 'UnaryOperator' and node['opcode'] in ('++', '--'):
+            target = node['inner'][0]
+        elif node['kind'] == 'CallExpr':
+            out.update(decl_name(a) for a in node['inner'][1:] if scalar_of(peel(a)) == 'pointer')
+            out.update(atomic_address_base(a) for a in node['inner'][1:2])
+        if target is not None and peel(target)['kind'] == 'ArraySubscriptExpr':
+            out.add(decl_name(peel(target)['inner'][0]))
+    return out
+
+
 def assigned_decls(body):
     """Declaration ids that are written somewhere in the body."""
     out = set()
@@ -1107,14 +1353,14 @@ def assigned_decls(body):
     return out
 
 
-def import_source(path, dialect=None, module=None, plan=None, block_size=64):
+def import_source(path, dialect=None, module=None, plan=None, block_size=64, include=()):
     """Import every kernel and device function in `path`. Returns (program, report).
 
     `plan` is an optional launch plan (the pipeline.json qpel writes); without one,
     each kernel becomes one dispatch over the single shape parameter."""
     path = Path(path)
     dialect = dialect or clang_ast.dialect_of(path)
-    unit, source = clang_ast.parse(path, dialect)
+    unit, source = clang_ast.parse(path, dialect, include)
     module = module or (plan or {}).get('module') or path.stem
     if not is_identifier(module):
         raise ValueError(f'{module!r} cannot be a qpel module name; pass one explicitly')
@@ -1132,8 +1378,30 @@ def unguarded_kernels(program):
     to whole blocks, so such a kernel also runs for indices past the shape."""
     nodes = {n['id']: n for n in program['nodes']}
 
-    def axis(node):
-        return 'x' if node['kind'] == 'GridIndex' else node['attributes']['axis'] if node['kind'] == 'ThreadIndex' else None
+    derived = {}  # Variable id -> axis, for locals computed from one thread-index axis
+
+    def axes(node):
+        found = {direct(node)} - {None}
+        for values in node['children'].values():
+            for c in values:
+                found |= axes(nodes[c])
+        return found
+
+    def direct(node):
+        if node['kind'] == 'GridIndex':
+            return 'x'
+        if node['kind'] == 'ThreadIndex':
+            return node['attributes']['axis']
+        if node['kind'] == 'Name':
+            return derived.get(node['links']['declaration'])
+        return None
+
+    axis = direct
+    for n in program['nodes']:  # in document order, so a local is seen before its uses
+        if n['kind'] == 'Variable':
+            found = axes(nodes[n['children']['value'][0]])
+            if len(found) == 1:
+                derived[n['id']] = found.pop()
     warnings = []
     for n in program['nodes']:
         if n['kind'] != 'Function' or not n['attributes'].get('isKernel'):

@@ -52,7 +52,8 @@ class Sources(unittest.TestCase):
 class RoundTripMatrix(unittest.TestCase):
     def test_every_row_matches(self):
         results = list(roundtrip.rows())
-        self.assertEqual(len(results), 2*len(list(roundtrip.FIXTURES.iterdir())) + 2*len(roundtrip.EXAMPLES))
+        self.assertEqual(len(results), 2*len(list(roundtrip.FIXTURES.iterdir())) + 2*len(roundtrip.EXAMPLES)
+                         + sum('fixture' in e for e in roundtrip.corpus_entries()))
         failures = [(row, case, error) for row, case, error in results if error]
         self.assertEqual(failures, [])
 
@@ -143,8 +144,10 @@ class CudaIdioms(Sources):
 
     def test_rejections_name_the_construct(self):
         cases = {
-            'do-loop': THRESHOLD_CU.replace('binary[i] =', 'do {} while (false); binary[i] ='),
-            'narrowing': THRESHOLD_CU.replace('binary[i] =', 'unsigned char c = i; binary[i] ='),
+            'switch': THRESHOLD_CU.replace('binary[i] =', 'switch (i) { default: break; } binary[i] ='),
+            'atomic-update': THRESHOLD_CU.replace('binary[i] =', 'atomicAdd(binary, 1u); binary[i] +='),
+            'template': '''template <typename T> __device__ T twice(T v) { return v + v; }
+''' + THRESHOLD_CU.replace('1u :', 'twice(1u) + twice(1) :'),
             'conversion': THRESHOLD_CU.replace('1u :', '(unsigned int)(0.5f) :'),
             'for-init': THRESHOLD_CU.replace('binary[i] =', 'for (unsigned j = 0, k = 1; j < 2u; ++j) {} binary[i] ='),
             'double': THRESHOLD_CU.replace('intensity[i] >= cutoff[i]', '0.5 > 0.25'),
@@ -209,8 +212,15 @@ class CudaIdioms(Sources):
         self.assertEqual({n['attributes']['axis'] for n in program['nodes'] if n['kind'] == 'ThreadIndex'}, {'x', 'y'})
         self.assertIn('Grid3D', self.kinds(program))
         self.assertEqual(report['warnings'], [])
+        # Sized by scalar width and height: they become one shape (w, h, 1).
+        scalar = source.replace('uint3 s', 'unsigned int w, int h').replace('s.x', 'w').replace('y < s.y', 'y < h')
+        sized, report = self.program(scalar)
+        self.assertIn('k: w, h became a shape (w, h, 1)', report['adaptations'])
+        params = [n['attributes']['name'] for n in sized['nodes'] if n['kind'] == 'Parameter']
+        self.assertEqual(params, ['a', 'b', 'shape'])
+        self.assertEqual(roundtrip.reimport(sized), {'cuda': None, 'metal': None})
         with self.assertRaises(Unsupported) as caught:
-            self.program(source.replace('uint3 s', 'unsigned int w, unsigned int h').replace('s.x', 'w').replace('s.y', 'h'))
+            self.program(scalar.replace('x < w && ', ''))  # nothing bounds x
         self.assertEqual(caught.exception.code, 'no-extent')
         _, report = self.program(source.replace('x < s.x && ', ''))
         self.assertEqual(report['warnings'], ['k: no bounds guard on the thread index (x)'])
@@ -314,7 +324,7 @@ class Command(Sources):
 
     def test_rejected_source_writes_nothing(self):
         out = Path(self.tmp.name)/'pkg'
-        source = self.write(THRESHOLD_CU.replace('return;', 'return; do {} while (false);'), '.cu')
+        source = self.write(THRESHOLD_CU.replace('return;', 'return; switch (i) { default: break; }'), '.cu')
         with self.assertRaises(Unsupported):
             qpel.translate(source, out)
         self.assertFalse(out.exists())

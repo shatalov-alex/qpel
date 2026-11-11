@@ -75,6 +75,36 @@ class Checks(unittest.TestCase):
         b.ir['version'], b.ir['semantics'] = 2, 'qpel-portable-core-v2'
         validate(b.ir)
 
+    def test_later_version_2_constructs(self):
+        b = Builder(version=1)
+        b.helper('f', ['AtomicI32BufferType', 'U32Type'], lambda p: [
+            b.add('DoWhile', body=b.block(), condition=b.lit('false')),
+            b.ret(b.add('U8Cast', operand=b.add('AtomicMin', address=b.bin('+', b.name(p[0]), b.name(p[1])), value=b.i32('3'))))],
+            'U8Type')
+        with self.assertRaisesRegex(ValueError, 'declare version 2'):
+            validate(b.ir)
+        b.ir['version'], b.ir['semantics'] = 2, 'qpel-portable-core-v2'
+        validate(b.ir)
+        lower = Lowering(b.ir)
+        text = lower.emit(lower.nodes[b.ir['roots']['module']])
+        self.assertIn('QPEL_U8 f(QPEL_ATOMIC_I32 a, QPEL_U32 b)', text)
+        self.assertRegex(text, r'do \{\s*\} while \(false\);')
+        self.assertIn('((QPEL_U8)(QPEL_MIN(', text)
+
+    def test_zeroed_resources_are_readable_from_the_start(self):
+        sam2 = json.loads((HERE/'tests/fixtures/qpel_ir/sam2_cc/program.qpel.json').read_text())
+        validate(sam2)
+        zeroed = next(n for n in sam2['nodes'] if n['kind'] == 'Resource' and n['attributes']['kind'] == 'zeroed')
+        zeroed['attributes']['kind'] = 'scratch'
+        with self.assertRaisesRegex(ValueError, 'READ_BEFORE_WRITE'):
+            validate(sam2)
+        plan = Lowering(json.loads((HERE/'tests/fixtures/qpel_ir/sam2_cc/program.qpel.json').read_text())).plan()
+        from generate_metal_host import generate
+        from generate_cuda_host import generate as generate_cuda
+        self.assertIn("buffers['count_init'] = torch.zeros(", generate(plan, b''))
+        self.assertIn("buffers['count_init'] = cp.zeros(", generate_cuda(plan, b''))
+        self.assertIn("buffers['label'] = torch.empty(", generate(plan, b''))
+
     def test_fixtures_declare_their_minimum_version(self):
         for folder in (HERE/'tests/fixtures/qpel_ir').iterdir():
             program = json.loads((folder/'program.qpel.json').read_text())
@@ -88,6 +118,12 @@ class Checks(unittest.TestCase):
             'MISSING_RETURN': lambda b: b.helper('f', ['BoolType'], lambda p: [
                 b.add('If', condition=b.name(p[0]), thenBody=b.block(b.ret(b.lit('1'))))], 'U32Type'),
             'CAST_TYPE': lambda b: b.helper('f', ['F32Type'], lambda p: [b.ret(b.add('I32Cast', operand=b.name(p[0])))], 'I32Type'),
+            'ATOMIC_VALUE': lambda b: b.helper('f', ['AtomicI32BufferType', 'U32Type'], lambda p: [
+                b.add('Evaluate', value=b.add('AtomicStore', address=b.name(p[0]), value=b.name(p[1])))], 'VoidType'),
+            'INDEX_BASE': lambda b: b.helper('f', ['AtomicI32BufferType'], lambda p: [
+                b.ret(b.add('Index', base=b.name(p[0]), index=b.lit('0')))], 'I32Type'),
+            'CONDITION': lambda b: b.helper('f', ['F32Type'], lambda p: [
+                b.add('DoWhile', body=b.block(), condition=b.name(p[0]))], 'VoidType'),
         }
         for code, build in cases.items():
             with self.subTest(code=code):
@@ -170,6 +206,15 @@ class Compiled(unittest.TestCase):
             loop = b.add('For', init=k, condition=b.bin('<', b.name(k), b.lit('32')), step=step, body=body)
             return [count, loop, b.ret(b.name(count))]
         b.helper('count_bits', ['U32Type', 'U32Type'], count_bits, 'U32Type')
+        b.helper('to_u8', ['I32Type'], lambda p: [b.ret(b.add('U8Cast', operand=b.name(p[0])))], 'U8Type')
+
+        def do_steps(p):
+            # steps = 0; do { steps += 1; if (steps < 3) continue; } while (steps < n); return steps;
+            steps = b.add('Variable', {'name': 'steps'}, type=b.add('U32Type'), value=b.lit('0'))
+            body = b.block(b.add('Assign', target=b.name(steps), value=b.bin('+', b.name(steps), b.lit('1'))),
+                           b.add('If', condition=b.bin('<', b.name(steps), b.lit('3')), thenBody=b.block(b.add('Continue'))))
+            return [steps, b.add('DoWhile', body=body, condition=b.bin('<', b.name(steps), b.name(p[0]))), b.ret(b.name(steps))]
+        b.helper('do_steps', ['U32Type'], do_steps, 'U32Type')
         validate(b.ir)
         lower = Lowering(b.ir)
         module = lower.emit(lower.nodes[b.ir['roots']['module']])
@@ -182,6 +227,7 @@ class Compiled(unittest.TestCase):
             checks.append(f'check(i_neg({a}) == {wrap(-a)});')
             checks.append(f'check(i_not({a}) == {~a});')
             checks.append(f'check(to_u32({a}) == {a & 0xffffffff}u);')
+            checks.append(f'check(to_u8({a}) == {a & 0xff});')
             for s in range(0, 40, 3):
                 checks.append(f'check(i_shl({a}, {s}) == {wrap(a << (s & 31))});')
                 checks.append(f'check(i_shr({a}, {s}) == {a >> (s & 31)});')
@@ -203,6 +249,7 @@ class Compiled(unittest.TestCase):
             for s in range(0, 40, 3):
                 checks.append(f'check(u_shl({u}u, {s}u) == {(u << (s & 31)) & 0xffffffff}u);')
                 checks.append(f'check(u_shr({u}u, {s}u) == {u >> (s & 31)}u);')
+            checks.append(f'check(do_steps({u}u) == {max(u, 1)}u);' if u < 100 else '')
             for limit in (0, 1, 3, 40):
                 expected = bin(u).count('1') if limit == 0 or limit > bin(u).count('1') else limit
                 checks.append(f'check(count_bits({u}u, {limit}u) == {expected}u);')

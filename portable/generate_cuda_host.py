@@ -91,7 +91,8 @@ def generate(plan, shader):
         if r['kind'] == 'input':
             lines.append(f'        buffers[{name!r}] = cp.ascontiguousarray(inputs[{name!r}]).reshape(-1)')
         elif r['kind'] not in ('shape', 'value'):
-            lines.append(f"        buffers[{name!r}] = cp.empty(sizes[{r['extent']!r}], dtype=cp.{BUFFER_TYPES[r['type']]})")
+            allocate = 'zeros' if r['kind'] == 'zeroed' else 'empty'  # zeroed scratch starts at zero
+            lines.append(f"        buffers[{name!r}] = cp.{allocate}(sizes[{r['extent']!r}], dtype=cp.{BUFFER_TYPES[r['type']]})")
     for s in plan['stages']:
         args = ', '.join(f"buffers[{b['resource']!r}]" for b in s['bindings'])
         block = s['blockSize']

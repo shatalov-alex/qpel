@@ -52,7 +52,7 @@ def compile_program(source, out=None):
     return report
 
 
-def import_program(source, plan=None, module=None, block=64):
+def import_program(source, plan=None, module=None, block=64, include=()):
     """Import a CUDA (.cu) or Metal (.metal) source; return (program, report)."""
     from frontends.c_import import import_source
     from qpel_schema import is_identifier, is_block_size, MAX_BLOCK_SIZE
@@ -61,15 +61,15 @@ def import_program(source, plan=None, module=None, block=64):
     if not is_block_size(block):
         raise ValueError(f'Block size must be 1..{MAX_BLOCK_SIZE}')
     plan_data = json.loads(plan.read_text()) if plan else None
-    program, report = import_source(source, module=module, plan=plan_data, block_size=block)
+    program, report = import_source(source, module=module, plan=plan_data, block_size=block, include=include)
     report['checks'] = {target: validate(program, target) for target in ('metal', 'cuda')}
     report['source_sha256'] = hashlib.sha256(source.read_bytes()).hexdigest()
     return program, report
 
 
-def translate(source, out, plan=None, module=None, block=64):
+def translate(source, out, plan=None, module=None, block=64, include=()):
     """Import a source and build the CUDA and Metal package from it."""
-    program, report = import_program(source, plan, module, block)
+    program, report = import_program(source, plan, module, block, include)
     with tempfile.TemporaryDirectory(prefix='.qpel-import-') as temp:
         saved = Path(temp)/'program.qpel.json'
         save(saved, program)
@@ -96,6 +96,8 @@ def main(argv=None):
         command.add_argument('--plan', type=Path, help='Launch plan (pipeline.json); default: one dispatch per kernel')
         command.add_argument('--module', help='Module name; default: the plan module or the file name')
         command.add_argument('--block', type=int, default=64, help='Block size when there is no plan')
+        command.add_argument('-I', '--include', type=Path, action='append', default=[],
+                             help='Extra header folder, such as stubs for a library the source includes')
     args = parser.parse_args(argv)
     try:
         if args.command == 'check':
@@ -105,10 +107,10 @@ def main(argv=None):
         elif args.command == 'import':
             if args.out.exists():
                 raise ValueError('Output already exists; choose a new file')
-            program, report = import_program(args.source, args.plan, args.module, args.block)
+            program, report = import_program(args.source, args.plan, args.module, args.block, args.include)
             save(args.out, program)
         else:
-            report = translate(args.source, args.out, args.plan, args.module, args.block)
+            report = translate(args.source, args.out, args.plan, args.module, args.block, args.include)
     except (ValueError, OSError, RuntimeError) as error:
         parser.exit(1, f'qpel: {error}\n')
     print(json.dumps(report, indent=2))

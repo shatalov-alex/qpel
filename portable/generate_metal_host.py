@@ -2,7 +2,7 @@
 import hashlib
 import keyword
 
-BUFFER_TYPES = {'ReadOnlyF16BufferType': 'float16', 'F16BufferType': 'float16', 'ReadOnlyF32BufferType': 'float32', 'F32BufferType': 'float32', 'ReadOnlyU8BufferType': 'uint8', 'U32BufferType': 'int32', 'AtomicU32BufferType': 'int32', 'ReadOnlyI32BufferType': 'int32', 'I32BufferType': 'int32'}
+BUFFER_TYPES = {'ReadOnlyF16BufferType': 'float16', 'F16BufferType': 'float16', 'ReadOnlyF32BufferType': 'float32', 'F32BufferType': 'float32', 'ReadOnlyU8BufferType': 'uint8', 'U32BufferType': 'int32', 'AtomicU32BufferType': 'int32', 'AtomicI32BufferType': 'int32', 'ReadOnlyI32BufferType': 'int32', 'I32BufferType': 'int32'}
 VALUE_TYPES = {'U32Type': 'int32', 'I32Type': 'int32', 'F32Type': 'float32'}
 READ_ONLY = {'ReadOnlyU8BufferType', 'ReadOnlyI32BufferType', 'ReadOnlyF32BufferType', 'ReadOnlyF16BufferType'}
 
@@ -17,7 +17,7 @@ def validate_resources(plan):
         elif kind == 'value':
             if typ not in VALUE_TYPES or r.get('extent') is not None:
                 raise ValueError('A value requires U32Type, I32Type or F32Type and no extent')
-        elif kind in ('input', 'output', 'scratch'):
+        elif kind in ('input', 'output', 'scratch', 'zeroed'):
             if typ not in BUFFER_TYPES:
                 raise ValueError('Unsupported buffer type: ' + typ)
             extent = resources.get(r.get('extent'))
@@ -113,7 +113,8 @@ def generate(plan, shader):
         elif r['kind'] == 'value':
             lines.append(f"    buffers[{name!r}] = torch.tensor([scalar_{name}], device=device, dtype=torch.{VALUE_TYPES[r['type']]})")
         elif r['kind'] != 'input':
-            lines.append(f"    buffers[{name!r}] = torch.empty(sizes[{r['extent']!r}], device=device, dtype=torch.{BUFFER_TYPES[r['type']]})")
+            allocate = 'zeros' if r['kind'] == 'zeroed' else 'empty'  # zeroed scratch starts at zero
+            lines.append(f"    buffers[{name!r}] = torch.{allocate}(sizes[{r['extent']!r}], device=device, dtype=torch.{BUFFER_TYPES[r['type']]})")
     for s in plan['stages']:
         args = ', '.join(f"buffers[{b['resource']!r}]" for b in s['bindings'])
         if s.get('domain') == 'grid3d':

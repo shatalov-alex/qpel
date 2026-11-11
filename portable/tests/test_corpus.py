@@ -29,23 +29,23 @@ class Survey(unittest.TestCase):
         codes, results = self.survey('''
 namespace lib {
 template <typename T> __device__ T twice(T v) { return v + v; }
-__device__ int lowest(int* s, int n) {
-  bool done;
-  do { atomicMin(s + n, 0); done = true; } while (!done);
-  return s[n];
+__device__ int lowest(float* s, int n) {
+  float done[2];
+  switch (n) { default: atomicAdd(s + n, 0.5f); }
+  return n;
 }
-__global__ void k(int* s, unsigned int n) {
+__global__ void k(float* s, float* out, unsigned int n) {
   unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i < n) s[i] = lowest(s, (int)i) + twice(1);
+  if (i < n) out[i] = twice(1) + twice(1u) + lowest(s, (int)i);
 }
 }
-void launch(int* s, unsigned int n) { lib::k<<<1, 1>>>(s, n); }
+void launch(float* s, unsigned int n) { lib::k<<<1, 1>>>(s, s, n); }
 ''')
         self.assertEqual(results['launch']['kind'], 'host')
         self.assertEqual(codes['twice'], ['template'])
-        # the do loop is reported, and so is what is inside it; `done` is reported once
-        self.assertEqual(sorted(codes['lowest']), ['atomic-type', 'do-loop', 'uninitialized-local'])
-        self.assertEqual(codes['k'], ['call-rejected'])
+        # the switch is reported, and so is what is inside it
+        self.assertEqual(sorted(set(codes['lowest'])), ['atomic-type', 'local-type', 'switch'])
+        self.assertIn('call-rejected', codes['k'])
         self.assertEqual(results['k']['calls'], ['lowest', 'twice'])
 
     def test_one_parameter_blocker_is_reported_once(self):
@@ -62,9 +62,9 @@ __global__ void k(const unsigned char* in, double* out, unsigned int n) {
             path.write_text('''
 __global__ void k(int* s, unsigned int n) {
   unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i < n) atomicAdd(s + i, 1);
+  if (i < n) { atomicAdd(s + i, 1); s[i] += 1; }
 }''')
-            with self.assertRaisesRegex(Unsupported, r'\[atomic-type\] atomicAdd on i32'):
+            with self.assertRaisesRegex(Unsupported, r'\[atomic-update\]'):
                 import_source(path)
 
     def test_host_functions_are_not_imported(self):
