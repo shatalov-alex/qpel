@@ -53,6 +53,17 @@ class CudaHostTests(unittest.TestCase):
         (root/(plan['module']+'.cu')).write_bytes(b'shader')
         with patch.dict(sys.modules,cupy=self.cp): exec(generate(plan,b'shader'),ns)
         return ns
+    def test_grid3d_launch_and_values(self):
+        plan = json.loads((HERE/'tests/fixtures/qpel_ir/box_sum/program.qpel.json').read_text())
+        from qpel_ir import Lowering
+        plan = Lowering(plan).plan()
+        with tempfile.TemporaryDirectory() as d:
+            h = self.host(Path(d), plan)
+            h['run']({'image': Array(17*15*3)}, {'shape': (17, 15, 3)})
+            launch = next(e for e in self.events if e[0] == 'box_sum')
+            self.assertEqual((launch[1], launch[2]), ((2, 1, 3), (16, 16, 1)))
+            with self.assertRaisesRegex(ValueError, 'too tall'):
+                h['run']({'image': Array(1*1048576*1)}, {'shape': (1, 1048576, 1)})
     def test_dispatch_and_shape_abi(self):
         with tempfile.TemporaryDirectory() as d:
             h=self.host(Path(d)); mask=Array(258)

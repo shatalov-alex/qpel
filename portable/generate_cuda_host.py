@@ -33,6 +33,13 @@ def _shape(value):
         raise ValueError("Shape exceeds INT32_MAX elements")
     return np.array((w, h, n, 0), dtype=SHAPE_DTYPE)[()], w * h * n
 
+def _grid3d(shape, block):
+    """Blocks covering a (W, H, N) shape; CUDA limits grid y and z to 65535 blocks."""
+    grid = tuple((int(shape[axis]) + b - 1) // b for axis, b in zip('xyz', block))
+    if grid[1] > 65535 or grid[2] > 65535:
+        raise ValueError("Shape is too tall or deep for one CUDA launch")
+    return grid
+
 def _value(value, kind):
     """A scalar kernel argument, checked against its qpel type."""
     if kind == 'F32Type':
@@ -88,7 +95,13 @@ def generate(plan, shader):
     for s in plan['stages']:
         args = ', '.join(f"buffers[{b['resource']!r}]" for b in s['bindings'])
         block = s['blockSize']
-        lines += [f"        lib.get_function({s['kernel']!r})(((sizes[{s['grid']!r}] + {block - 1}) // {block},), ({block},), ({args},), stream=stream)",
-                  '        stream.synchronize()']
+        if s.get('domain') == 'grid3d':
+            bx, by, bz = s['blockShape']
+            lines += [f"        grid = _grid3d(buffers[{s['grid']!r}], {(bx, by, bz)!r})",
+                      f"        lib.get_function({s['kernel']!r})(grid, {(bx, by, bz)!r}, ({args},), stream=stream)",
+                      '        stream.synchronize()']
+        else:
+            lines += [f"        lib.get_function({s['kernel']!r})(((sizes[{s['grid']!r}] + {block - 1}) // {block},), ({block},), ({args},), stream=stream)",
+                      '        stream.synchronize()']
     lines.append('    return {' + ', '.join(f'{n!r}: buffers[{n!r}]' for n in outputs) + '}')
     return '\n'.join(lines) + '\n'

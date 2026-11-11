@@ -199,6 +199,22 @@ class CudaIdioms(Sources):
         self.assertEqual(set(values), {'bias', 'gain'})
         self.assertEqual(program['version'], 2)
 
+    def test_2d_kernels(self):
+        source = '''__global__ void k(const float* a, float* b, uint3 s) {
+            unsigned int x = threadIdx.x + blockDim.x * blockIdx.x;
+            unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
+            if (x < s.x && y < s.y) b[y * s.x + x] = a[y * s.x + x] * 2.0f;
+        }'''
+        program, report = self.program(source)
+        self.assertEqual({n['attributes']['axis'] for n in program['nodes'] if n['kind'] == 'ThreadIndex'}, {'x', 'y'})
+        self.assertIn('Grid3D', self.kinds(program))
+        self.assertEqual(report['warnings'], [])
+        with self.assertRaises(Unsupported) as caught:
+            self.program(source.replace('uint3 s', 'unsigned int w, unsigned int h').replace('s.x', 'w').replace('s.y', 'h'))
+        self.assertEqual(caught.exception.code, 'no-extent')
+        _, report = self.program(source.replace('x < s.x && ', ''))
+        self.assertEqual(report['warnings'], ['k: no bounds guard on the thread index (x)'])
+
     def test_unsigned_chars_compared_as_int_stay_unsigned(self):
         program, _ = self.program(THRESHOLD_CU)
         self.assertEqual(program['version'], 1)
@@ -252,6 +268,15 @@ class MetalIdioms(Sources):
             }''', '.metal')
         for kind in ['AtomicAdd', 'F16Cast', 'F32Cast', 'F32Fma']:
             self.assertIn(kind, self.kinds(program))
+
+    def test_uint2_position(self):
+        program, _ = self.program('''
+            #include <metal_stdlib>
+            using namespace metal;
+            kernel void k(device float* b [[buffer(0)]], constant uint3& s [[buffer(1)]], uint2 p [[thread_position_in_grid]]) {
+                if (p.x < s.x && p.y < s.y) b[p.y * s.x + p.x] = 1.0f;
+            }''', '.metal')
+        self.assertEqual(sorted(n['attributes']['axis'] for n in program['nodes'] if n['kind'] == 'ThreadIndex'), ['x', 'x', 'y', 'y'])
 
     def test_rejections(self):
         cases = {

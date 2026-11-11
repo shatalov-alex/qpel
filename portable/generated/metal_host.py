@@ -41,7 +41,7 @@ def _input(value, dtype, count, device):
 
 
 SHADER_FILE = 'components.metal'
-SHADER_SHA256 = '2719df5797a5529434e353bbea8cdbeaaffbed89d6057e83d0d4227c6b7eae77'
+SHADER_SHA256 = '27fa9bae82704abbb89d1acf76e853bacdf210640431b8665322ce911c8a82ce'
 
 def run(inputs, shapes, values=None, *, device="mps"):
     """Inputs are tensors; shapes map names to (W,H,N); values are scalars; outputs are flat tensors."""

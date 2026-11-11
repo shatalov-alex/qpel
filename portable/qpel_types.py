@@ -39,6 +39,10 @@ class TypeChecker:
     def declared(self, node):
         return self.child(node, 'type')['kind']
 
+    def domain(self, function):
+        domain = self.children(function, 'domain')
+        return domain[0]['kind'] if domain else None
+
     def require(self, node, condition, code, message):
         if not condition:
             raise ValueError(f"{node['id']} ({node['kind']}) {code}: {message}")
@@ -74,7 +78,7 @@ class TypeChecker:
         if k == 'WorkgroupSumF32':
             parent = self.parents.get(node['id'])
             body = self.child(function, 'body')
-            check(function['attributes'].get('isKernel', False) and parent is not None and parent['kind'] == 'Variable' and parent['id'] in body['children'].get('statements', []) and self.child(parent,'value')['id'] == node['id'], 'COLLECTIVE_CONTEXT', 'Group sum must directly initialize a top-level kernel local')
+            check(function['attributes'].get('isKernel', False) and self.domain(function) == 'Grid1D' and parent is not None and parent['kind'] == 'Variable' and parent['id'] in body['children'].get('statements', []) and self.child(parent,'value')['id'] == node['id'], 'COLLECTIVE_CONTEXT', 'Group sum must directly initialize a top-level kernel local')
             check(e('value') == 'F32Type', 'GROUP_SUM_TYPE', 'Group sum requires float32')
             return 'F32Type'
         if k == 'ReduceSumF32':
@@ -92,7 +96,10 @@ class TypeChecker:
             check(e('operand') in INTEGERS | {'F32Type', 'F16Type'}, 'CAST_TYPE', 'Float32 conversion requires numeric scalar')
             return 'F32Type'
         if k == 'GridIndex':
-            check(function['attributes'].get('isKernel', False), 'GRID_CONTEXT', 'Grid index requires a kernel')
+            check(function['attributes'].get('isKernel', False) and self.domain(function) == 'Grid1D', 'GRID_CONTEXT', 'Grid index requires a Grid1D kernel')
+            return 'U32Type'
+        if k == 'ThreadIndex':
+            check(function['attributes'].get('isKernel', False) and self.domain(function) == 'Grid3D', 'GRID_CONTEXT', 'Thread index requires a Grid3D kernel')
             return 'U32Type'
         if k == 'Call':
             target = self.target(node, 'function')

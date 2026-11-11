@@ -79,3 +79,9 @@ __device__ __forceinline__ int qpel_i32_rem(int a, int b) { return b == -1 ? 0 :
 // Scalar kernel arguments are passed by value.
 #define QPEL_VALUE(type, name, binding) type name
 #endif
+
+#ifdef QPEL_GRID3D_ENABLED
+// Grid3D kernels: one thread per shape element in (x, y, z) blocks.
+#define QPEL_GRID3D_PARAM
+#define QPEL_THREAD_INDEX(axis) (blockIdx.axis * blockDim.axis + threadIdx.axis)
+#endif

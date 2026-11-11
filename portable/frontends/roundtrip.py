@@ -19,7 +19,7 @@ HERE = Path(__file__).resolve().parents[1]
 FIXTURES = HERE/'tests/fixtures/qpel_ir'
 # Hand-written sources, each with the fixture it must import to.
 EXAMPLES = {'threshold': 'import', 'classify_bytes': 'classify', 'combine_masks': 'masks', 'masked_copy': 'count',
-            'signed_delta': 'signed_delta', 'scale_offset': 'scale_offset'}
+            'signed_delta': 'signed_delta', 'scale_offset': 'scale_offset', 'box_sum': 'box_sum'}
 SOURCE_DIRS = {'cuda': HERE/'cuda_examples', 'metal': HERE/'metal_examples'}
 SUFFIX = {'cuda': '.cu', 'metal': '.metal'}
 

@@ -24,7 +24,7 @@ kernels.cu:21:30: [do-loop] do statements are not in qpel yet
 ## What is accepted
 
 - Any number of kernels and device helper functions in one file; helpers must come before their callers.
-- The 1D thread index `blockIdx.x * blockDim.x + threadIdx.x` (operands in any order, in a local or inline), or a Metal `[[thread_position_in_grid]]` parameter.
+- The thread index `blockIdx.a * blockDim.a + threadIdx.a` for each axis a = x, y, z (operands in any order, in a local or inline), or a Metal `[[thread_position_in_grid]]` parameter of type `uint`, `uint2` or `uint3`. A kernel that uses only the x index stays 1D; one that uses y or z, or a `uint2`/`uint3` position, becomes a 2D/3D kernel over its `uint3` shape. Without a launch plan its block is 16 × 16 × 1.
 - Buffers of `unsigned char` (read-only), `unsigned int`, `int`, `float` and `half`/`__half`; a `uint3` shape, either by value or as `constant uint3&`.
 - CUDA atomic buffers are plain `unsigned int*`. A buffer counts as atomic when an atomic call uses it, either directly or through a helper, or through another kernel that shares its resource. `atomicAdd(p, 0u)` becomes an atomic load. Metal atomics must use `memory_order_relaxed`.
 - `if`/`else`, `while`, `for`, `break`, `continue`, `return`, locals with an initializer, `=`, the compound assignments (computed in C's type and converted back, as C does) and `++`/`--` on 32-bit integers.
@@ -34,14 +34,14 @@ kernels.cu:21:30: [do-loop] do statements are not in qpel yet
 
 - Scalar kernel arguments of type `unsigned int`, `int` and `float` (in Metal, `constant T&` parameters) stay ordinary arguments; the hosts take them as `values=`.
 
-Rejected for now, each with its own code: `do`/`switch`/`goto`, `double`, float-to-integer conversion, narrowing to `unsigned char`, 2D/3D thread indices, shared memory and barriers in user code, other scalar argument types, and buffers of other types.
+Rejected for now, each with its own code: `do`/`switch`/`goto`, `double`, float-to-integer conversion, narrowing to `unsigned char`, raw `threadIdx`/`blockIdx`/`blockDim` outside the global index (block-local indices), 2D/3D kernels sized by scalar width/height arguments instead of a `uint3`, shared memory and barriers in user code, other scalar argument types, and buffers of other types.
 
 ## Adaptations and warnings
 
 `import-report.json` (in a translated package) and the `import` command's output list:
 
 - **adaptations**: a kernel without a `uint3` shape is sized by the `unsigned int` that its thread index is compared with (`if (i >= n) return;`, `if (i < n) {...}`). That one argument becomes a qpel shape, and the generated hosts take `(n, 1, 1)` for it instead of the plain number. This is a host ABI change; all other scalar arguments keep their meaning.
-- **warnings**: kernels that never compare the thread index against anything. CUDA rounds the grid up to whole blocks, so such a kernel also runs for indices past the end of its buffers.
+- **warnings**: kernels with a thread-index axis that is never compared against anything. CUDA rounds the grid up to whole blocks, so such a kernel also runs for indices past the end of its buffers.
 
 ## Launch plan
 
@@ -58,7 +58,7 @@ Source files do not say how kernels are launched. Without `--plan`, each kernel 
 | CUDA → qpel | `cuda_examples/*.cu` must import to their fixture |
 | Metal → qpel | `metal_examples/*.metal` must import to the same fixture |
 
-`scale_offset` covers scalar arguments: a `float` and an `int` argument next to the element count, GPU-tested with wrapping offsets and the hosts' argument checks. The fifth example, `signed_delta`, is the other version 2 case: signed arithmetic, an `if`/`else if`/`else` chain and a `for` loop with `continue` and `break`. Its fixture was made by importing the CUDA file, so its CUDA row only guards against regressions. The independent checks are the Metal file importing to the same program, both re-imports, nvcc and Metal compiling it, and the Apple GPU test against a NumPy model of C's semantics. Re-importing generated code also reads back qpel's own spellings: wrapping `(int)((unsigned)a + (unsigned)b)`, `qpel_i32_div`/`qpel_i32_rem` and masked shift counts.
+`box_sum` covers 2D/3D kernels: a 3×3 neighbourhood sum over a batch of images, with signed offsets and nested `for` loops, GPU-tested on sizes that are not multiples of the block. `scale_offset` covers scalar arguments: a `float` and an `int` argument next to the element count, GPU-tested with wrapping offsets and the hosts' argument checks. The fifth example, `signed_delta`, is the other version 2 case: signed arithmetic, an `if`/`else if`/`else` chain and a `for` loop with `continue` and `break`. Its fixture was made by importing the CUDA file, so its CUDA row only guards against regressions. The independent checks are the Metal file importing to the same program, both re-imports, nvcc and Metal compiling it, and the Apple GPU test against a NumPy model of C's semantics. Re-importing generated code also reads back qpel's own spellings: wrapping `(int)((unsigned)a + (unsigned)b)`, `qpel_i32_div`/`qpel_i32_rem` and masked shift counts.
 
 Programs are compared as trees, so node ids, literal suffixes and float spelling don't count. CUDA → Metal and Metal → CUDA follow from these rows. A source that imports to a fixture's IR produces exactly that fixture's CUDA and Metal, and those are covered by the nvcc, Metal and Apple GPU checks.
 

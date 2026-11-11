@@ -76,6 +76,12 @@ inline int qpel_i32_rem(int a, int b) { return b == -1 ? 0 : a % b; }
 #define QPEL_VALUE(type, name, binding) constant type& name [[buffer(binding)]]
 #endif
 
+#ifdef QPEL_GRID3D_ENABLED
+// Grid3D kernels: one thread per shape element in (x, y, z) threadgroups.
+#define QPEL_GRID3D_PARAM , uint3 qpel_position [[thread_position_in_grid]]
+#define QPEL_THREAD_INDEX(axis) qpel_position.axis
+#endif
+
 // Generated from qpel IR. Do not edit.
 // qpel numeric contract: u32-modulo-v1
 QPEL_KERNEL void initialize(QPEL_PARAM(QPEL_READ_U8, mask, 0), QPEL_PARAM(QPEL_ATOMIC_U32, parent, 1), QPEL_PARAM(QPEL_ATOMIC_U32, counts, 2), QPEL_PARAM(QPEL_SHAPE, shape, 3) QPEL_GRID_PARAM(qpel_index)) {

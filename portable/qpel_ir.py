@@ -13,12 +13,12 @@ TYPES={'F16Type':'QPEL_F16','ReadOnlyF16BufferType':'QPEL_READ_F16','F16BufferTy
        'ReadOnlyU8BufferType':'QPEL_READ_U8','U32BufferType':'QPEL_WRITE_U32',
        'AtomicU32BufferType':'QPEL_ATOMIC_U32','Shape3DType':'QPEL_SHAPE',
        'I32Type':'QPEL_I32','ReadOnlyI32BufferType':'QPEL_READ_I32','I32BufferType':'QPEL_WRITE_I32'}
-KINDS=set(TYPES)|set('GpuModule Function Parameter Block Variable Name Literal I32Literal I32Cast U32Cast For Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin Pipeline Resource Dispatch Binding'.split())
-COMMON_FEATURES={'integer_buffers','grid_1d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32'}
+KINDS=set(TYPES)|set('Grid3D ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal I32Cast U32Cast For Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin Pipeline Resource Dispatch Binding'.split())
+COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32'}
 PROFILES={'metal':COMMON_FEATURES,'cuda':COMMON_FEATURES}
 SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2'}
 # Version 2 adds else, for/break/continue, signed 32-bit integers, shifts and ~.
-V2_KINDS={'For','Break','Continue','I32Type','ReadOnlyI32BufferType','I32BufferType','I32Literal','I32Cast','U32Cast'}
+V2_KINDS={'Grid3D','ThreadIndex','For','Break','Continue','I32Type','ReadOnlyI32BufferType','I32BufferType','I32Literal','I32Cast','U32Cast'}
 BINARY_OPERATORS={'+','-','*','/','%','&','|','^','==','!=','<','>','<=','>=','&&','||','<<','>>'}
 UNARY_OPERATORS={'!','-','~'}
 INT32_KINDS={'I32Type','ReadOnlyI32BufferType','I32BufferType','I32Literal','I32Cast'}
@@ -34,6 +34,7 @@ def version_2_features(nodes):
         if k=='Binary' and a.get('operator') in ('<<','>>'):used.add('shift')
         if k=='Unary' and a.get('operator')=='~':used.add('~')
         if k=='Resource' and a.get('kind')=='value':used.add('value')
+        if k=='Dispatch' and ('blockHeight' in a or 'blockDepth' in a):used.add('block shape')
     return used
 
 
@@ -60,6 +61,7 @@ def validate(program, backend=None):
         if n['kind'].startswith('Atomic'):required.add('device_relaxed_u32_atomics')
         if n['kind'] in ('If','While','For'):required.add('control_flow')
         if n['kind'] in INT32_KINDS:required.add('int32')
+        if n['kind']=='Grid3D':required.add('grid_3d')
         targets=list(n['links'].values())+[v for values in n['children'].values() for v in values]
         if any(t not in nodes for t in targets):raise ValueError('Dangling IR reference')
         if n['kind']=='Binary' and n['attributes'].get('operator') not in BINARY_OPERATORS:
@@ -110,6 +112,8 @@ class Lowering:
             return '// Generated from qpel IR. Do not edit.\n// qpel numeric contract: u32-modulo-v1\n'+signed+joined('functions','\n')
         if k=='Function':
             kernel=a.get('isKernel',False);args=joined('parameters',', ')
+            if kernel and self.child(n,'domain')['kind']=='Grid3D':
+                return 'QPEL_KERNEL '+e('resultType')+' '+a['name']+'('+args+' QPEL_GRID3D_PARAM) {\n'+e('body')+'\n}\n'
             return ('QPEL_KERNEL ' if kernel else 'QPEL_DEVICE ')+e('resultType')+' '+a['name']+'('+args+(' QPEL_GRID_PARAM(qpel_index)' if kernel else '')+') {\n'+('QPEL_GRID_LOCAL(qpel_index)\n' if kernel else '')+e('body')+'\n}\n'
         if k=='Parameter':
             if not a.get('isBuffer',False):return e('type')+' '+a['name']
@@ -117,6 +121,7 @@ class Lowering:
             return macro+e('type')+', '+a['name']+', '+str(a.get('binding',0))+')'
         if k=='Name':return self.link(n,'declaration')['attributes']['name']
         if k=='GridIndex':return 'qpel_index'
+        if k=='ThreadIndex':return 'QPEL_THREAD_INDEX('+a['axis']+')'
         if k=='Literal':
             value = a['value']
             return value if value in ('true','false') else str(int(value.rstrip('uU'))) + 'u'
@@ -190,7 +195,11 @@ class Lowering:
             resources.append(dict(name=r['attributes']['name'],kind=r['attributes']['kind'],type=self.child(r,'type')['kind'],extent=self.link(r,'extent')['attributes']['name'] if 'extent' in r['links'] else None))
         stages=[]
         for s in self.children(p,'stages'):
-            stages.append(dict(kernel=self.link(s,'kernel')['attributes']['name'],grid=self.link(s,'grid')['attributes']['name'],blockSize=s['attributes']['blockSize'],completionBarrier=s['attributes']['completionBarrier'],bindings=[dict(parameter=self.link(b,'parameter')['attributes']['name'],resource=self.link(b,'resource')['attributes']['name']) for b in self.children(s,'bindings')]))
+            stage=dict(kernel=self.link(s,'kernel')['attributes']['name'],grid=self.link(s,'grid')['attributes']['name'],blockSize=s['attributes']['blockSize'],completionBarrier=s['attributes']['completionBarrier'],bindings=[dict(parameter=self.link(b,'parameter')['attributes']['name'],resource=self.link(b,'resource')['attributes']['name']) for b in self.children(s,'bindings')])
+            if self.child(self.link(s,'kernel'),'domain')['kind']=='Grid3D':
+                # A 3D stage runs one thread per shape element, in (x, y, z) blocks.
+                stage.update(domain='grid3d',blockShape=[s['attributes']['blockSize'],s['attributes'].get('blockHeight',1),s['attributes'].get('blockDepth',1)])
+            stages.append(stage)
         return dict(schema=1,module=module['attributes']['name'],resources=resources,stages=stages)
     def write(self,directory):
         directory.mkdir(parents=True,exist_ok=True);plan=self.plan();name=plan['module']

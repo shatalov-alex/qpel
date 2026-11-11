@@ -25,7 +25,9 @@ def launch_header(plan):
     lines = ['// Generated from the checked MPS Pipeline. Requires QPEL_STAGE.']
     for stage in plan['stages']:
         kernel=identifier(stage['kernel']); grid=identifier(stage['grid']); block=stage['blockSize']
-        if not is_block_size(block): raise ValueError('Invalid block size')
+        shape=stage.get('blockShape',[block,1,1])
+        if stage.get('domain','grid1d') not in ('grid1d','grid3d') or len(shape)!=3 or shape[0]!=block: raise ValueError('Invalid stage domain')
+        if not all(is_block_size(d) for d in shape) or shape[0]*shape[1]*shape[2]>256: raise ValueError('Invalid block size')
         if stage['completionBarrier'] is not True: raise ValueError('Stage completion is required')
         if grid not in resources or resources[grid]['kind'] != 'shape': raise ValueError('Invalid grid resource')
         args=[]
@@ -35,7 +37,10 @@ def launch_header(plan):
             resource=resources[name]
             if resource['kind'] not in ('shape','value') and resource['extent']!=grid: raise ValueError('Grid/extent mismatch')
             args.append(name)
-        lines.append('QPEL_STAGE('+', '.join([kernel,grid,str(block)]+args)+')')
+        if stage.get('domain')=='grid3d':
+            lines.append('QPEL_STAGE3D('+', '.join([kernel,grid]+[str(d) for d in shape]+args)+')')
+        else:
+            lines.append('QPEL_STAGE('+', '.join([kernel,grid,str(block)]+args)+')')
     return '\n'.join(lines)+'\n'
 
 def build(source, output, plan_path=None):
@@ -56,7 +61,8 @@ def build(source, output, plan_path=None):
         group = b'#define QPEL_GROUP_SUM_F32_ENABLED 1\n' if b'QPEL_GROUP_SUM_F32(' in body else b''
         signed = b'#define QPEL_I32_ENABLED 1\n' if b'QPEL_I32' in body else b''
         values = b'#define QPEL_VALUE_ENABLED 1\n' if b'QPEL_VALUE(' in body else b''
-        result = half + reduction + group + signed + values + b'// Generated backend package. Edit the MPS model or backend support.\n' + support + b'\n' + body
+        grid3d = b'#define QPEL_GRID3D_ENABLED 1\n' if b'QPEL_GRID3D_PARAM' in body else b''
+        result = half + reduction + group + signed + values + grid3d + b'// Generated backend package. Edit the MPS model or backend support.\n' + support + b'\n' + body
         path = output / (module+'.'+suffix)
         path.write_bytes(result)
         if backend == 'metal':

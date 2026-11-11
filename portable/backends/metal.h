@@ -74,3 +74,9 @@ inline int qpel_i32_rem(int a, int b) { return b == -1 ? 0 : a % b; }
 // Scalar kernel arguments arrive in small constant buffers.
 #define QPEL_VALUE(type, name, binding) constant type& name [[buffer(binding)]]
 #endif
+
+#ifdef QPEL_GRID3D_ENABLED
+// Grid3D kernels: one thread per shape element in (x, y, z) threadgroups.
+#define QPEL_GRID3D_PARAM , uint3 qpel_position [[thread_position_in_grid]]
+#define QPEL_THREAD_INDEX(axis) qpel_position.axis
+#endif

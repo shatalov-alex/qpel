@@ -7,7 +7,7 @@ import math
 import struct
 
 TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType Shape3DType'.split())
-EXPRESSIONS = set('Name Literal I32Literal I32Cast U32Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin'.split())
+EXPRESSIONS = set('Name Literal I32Literal I32Cast U32Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin'.split())
 STATEMENTS = set('Block Variable Assign Evaluate If While For Break Continue Return'.split())
 
 # Child role -> (allowed concepts, minimum count, maximum count or None).
@@ -22,7 +22,7 @@ def optional(kinds):
 
 CHILDREN = {
     'GpuModule': {'functions': many('Function')},
-    'Function': {'parameters': many('Parameter'), 'resultType': one(TYPE_KINDS), 'body': one('Block'), 'domain': optional('Grid1D')},
+    'Function': {'parameters': many('Parameter'), 'resultType': one(TYPE_KINDS), 'body': one('Block'), 'domain': optional('Grid1D Grid3D')},
     'Parameter': {'type': one(TYPE_KINDS)},
     'F32Cast': {'operand': one(EXPRESSIONS)},
     'I32Cast': {'operand': one(EXPRESSIONS)},
@@ -74,9 +74,10 @@ ATTRIBUTES = {
     'Binary': {'operator': str}, 'Unary': {'operator': str},
     'Member': {'member': str}, 'Pipeline': {'name': str},
     'Resource': {'name': str, 'kind': str},
-    'Dispatch': {'blockSize': int, 'completionBarrier': bool},
+    'Dispatch': {'blockSize': int, 'blockHeight': int, 'blockDepth': int, 'completionBarrier': bool},
+    'ThreadIndex': {'axis': str},
 }
-DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer'}}
+DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer'}, 'Dispatch': {'blockHeight', 'blockDepth'}}
 # Every qpel name is emitted verbatim into both CUDA C++ and Metal Shading Language, so it
 # must avoid qpel keywords, C++ keywords, CUDA built-ins and Metal keywords and type names.
 QPEL_KEYWORDS = set('void bool uint int float return if while for true false kernel device min max'.split())
@@ -181,7 +182,11 @@ def validate_structure(nodes):
             fail('Unsupported shape member')
         if kind == 'Resource' and a['kind'] not in ('input', 'output', 'scratch', 'shape', 'value'):
             fail('Unsupported resource kind')
-        if kind == 'Dispatch' and not is_block_size(a['blockSize']):
-            fail(f'Block size must be between 1 and {MAX_BLOCK_SIZE}')
+        if kind == 'Dispatch':
+            dims = (a['blockSize'], a.get('blockHeight', 1), a.get('blockDepth', 1))
+            if not all(is_block_size(d) for d in dims) or dims[0]*dims[1]*dims[2] > MAX_BLOCK_SIZE:
+                fail(f'Block size must be between 1 and {MAX_BLOCK_SIZE} threads in total')
+        if kind == 'ThreadIndex' and a['axis'] not in ('x', 'y', 'z'):
+            fail('Thread index axis must be x, y or z')
         if kind == 'Parameter' and a.get('binding', 0) < 0:
             fail('Binding must be nonnegative')

@@ -96,6 +96,28 @@ class Checks(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, code):
                     validate(b.ir)
 
+    def test_grid3d_rules(self):
+        box = json.loads((HERE/'tests/fixtures/qpel_ir/box_sum/program.qpel.json').read_text())
+        validate(box)
+        nodes = {n['id']: n for n in box['nodes']}
+        cases = {}
+        flat = json.loads(json.dumps(box))
+        next(n for n in flat['nodes'] if n['kind'] == 'ThreadIndex').update(kind='GridIndex', attributes={})
+        cases['GRID_CONTEXT'] = flat
+        big = json.loads(json.dumps(box))
+        next(n for n in big['nodes'] if n['kind'] == 'Dispatch')['attributes'].update(blockSize=16, blockHeight=17)
+        cases['Block size'] = big
+        one = json.loads(json.dumps(Builder().ir))
+        next(n for n in one['nodes'] if n['kind'] == 'Dispatch')['attributes']['blockHeight'] = 2
+        cases['BLOCK_SHAPE'] = one
+        axis = json.loads(json.dumps(box))
+        next(n for n in axis['nodes'] if n['kind'] == 'ThreadIndex')['attributes']['axis'] = 'w'
+        cases['axis'] = axis
+        for message, program in cases.items():
+            with self.subTest(message), self.assertRaisesRegex(ValueError, message):
+                validate(program)
+        self.assertEqual(Lowering(box).plan()['stages'][0]['blockShape'], [16, 16, 1])
+
     def test_for_variable_is_scoped_to_the_loop(self):
         b = Builder()
         holder = {}

@@ -28,6 +28,13 @@ def _shape(value):
         raise ValueError("Shape exceeds INT32_MAX elements")
     return np.array((w, h, n, 0), dtype=SHAPE_DTYPE)[()], w * h * n
 
+def _grid3d(shape, block):
+    """Blocks covering a (W, H, N) shape; CUDA limits grid y and z to 65535 blocks."""
+    grid = tuple((int(shape[axis]) + b - 1) // b for axis, b in zip('xyz', block))
+    if grid[1] > 65535 or grid[2] > 65535:
+        raise ValueError("Shape is too tall or deep for one CUDA launch")
+    return grid
+
 def _value(value, kind):
     """A scalar kernel argument, checked against its qpel type."""
     if kind == 'F32Type':
@@ -43,7 +50,7 @@ def _value(value, kind):
 
 
 SHADER_FILE = 'components.cu'
-SHADER_SHA256 = 'b91875f539091dbbca5cfbe720a99e88ec9e974f3802a7e3637db5093ea9cd6d'
+SHADER_SHA256 = '5f7fd67f89fd0cc7c39cace04784e6e05a4827aa472fa38bc7c01a3bc78d3de0'
 
 def run(inputs, shapes, values=None, *, device=0):
     """CuPy arrays in/out; shapes are (W,H,N); values are scalars; each stage completes before the next."""

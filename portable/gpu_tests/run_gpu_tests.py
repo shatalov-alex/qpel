@@ -145,6 +145,27 @@ def run_scale_offset(name, host, plan):
     return cases
 
 
+# --- IR version 2: a 2D/3D kernel ---
+
+def box_sum_oracle(image):
+    n, h, w = image.shape
+    padded = np.zeros((n, h + 2, w + 2), np.uint32)
+    padded[:, 1:-1, 1:-1] = image
+    return sum(padded[:, 1 + dy:h + 1 + dy, 1 + dx:w + 1 + dx] for dy in (-1, 0, 1) for dx in (-1, 0, 1))
+
+
+def run_box_sum(name, host, plan):
+    rng = np.random.default_rng(20261111)
+    shapes = [(1, 1, 1), (1, 1, 17), (1, 17, 1), (16, 16, 1), (17, 15, 3), (33, 1, 2), (1, 40, 2), (100, 37, 4)]
+    cases = 0
+    for w, h, n in shapes:
+        for image in (rng.integers(0, 256, (n, h, w), dtype=np.uint8), np.full((n, h, w), 255, np.uint8)):
+            result = host.run({'image': torch.from_numpy(image).to('mps')}, {'shape': (w, h, n)})['sums']
+            np.testing.assert_array_equal(result.cpu().numpy().view(np.uint32).reshape(n, h, w), box_sum_oracle(image))
+            cases += 1
+    return cases
+
+
 # --- floating point kernels ---
 
 def run_float32(name, host, plan):
@@ -313,7 +334,7 @@ def run_components(name, host, plan):
 
 TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fma32': run_fma32,
          'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components,
-         'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset}
+         'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset, 'box_sum': run_box_sum}
 
 
 def main(argv=None):

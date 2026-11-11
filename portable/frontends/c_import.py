@@ -123,19 +123,31 @@ def is_member(node, base, field):
     return (node['kind'] == 'MemberExpr' and node.get('name') == field and decl_name(node['inner'][0]) == base)
 
 
-def is_grid_index(node):
-    """blockIdx.x * blockDim.x + threadIdx.x, operands in any order."""
+def grid_axis(node):
+    """'x', 'y' or 'z' for blockIdx.a * blockDim.a + threadIdx.a (operands in any order), else None."""
     node = peel(node)
     if node['kind'] != 'BinaryOperator' or node['opcode'] != '+':
-        return False
+        return None
     for product, thread in (node['inner'], node['inner'][::-1]):
         product = peel(product)
-        if is_member(thread, 'threadIdx', 'x') and product['kind'] == 'BinaryOperator' and product['opcode'] == '*':
-            a, b = product['inner']
-            if (is_member(a, 'blockIdx', 'x') and is_member(b, 'blockDim', 'x')) or \
-               (is_member(a, 'blockDim', 'x') and is_member(b, 'blockIdx', 'x')):
-                return True
-    return False
+        if product['kind'] != 'BinaryOperator' or product['opcode'] != '*':
+            continue
+        a, b = product['inner']
+        for axis in 'xyz':
+            if is_member(thread, 'threadIdx', axis) and (
+                    (is_member(a, 'blockIdx', axis) and is_member(b, 'blockDim', axis)) or
+                    (is_member(a, 'blockDim', axis) and is_member(b, 'blockIdx', axis))):
+                return axis
+    return None
+
+
+def is_position_vector(param):
+    """A Metal [[thread_position_in_grid]] of type uint2 or uint3."""
+    return ' '.join(words(param['type']['qualType'])) in ('uint2', 'uint3')
+
+
+def is_grid_index(node):
+    return grid_axis(node) == 'x'
 
 
 def walk(node):
@@ -220,6 +232,7 @@ class Metal(Dialect):
 
 DIALECT = {'cuda': Cuda(), 'metal': Metal()}
 VALUE_KINDS = {'U32Type', 'I32Type', 'F32Type'}
+GRID3D_BLOCK = (16, 16, 1)  # default block for 2D/3D kernels without a launch plan
 MINIMUM = {'min', 'umin'}
 MAXIMUM = {'max', 'umax'}
 FMA = {'__fmaf_rn', 'fmaf', 'fma'}
@@ -288,6 +301,8 @@ class Importer:
         self.graph = Graph()
         self.functions = {}  # source name -> (decl, IR id, is kernel)
         self.unsigned = 0  # > 0 while reading promoted unsigned chars as unsigned
+        self.domains = {}  # kernel name -> 'grid1d' | 'grid3d'
+        self.grid3d = False
         self.adaptations = []
         decls = []
         for node in clang_ast.main_file_decls(unit, path):
@@ -357,6 +372,8 @@ class Importer:
         types = {}
         for decl in self.decls:
             for i, p in enumerate(params_of(decl)):
+                if self.dialect.is_kernel(decl) and self.dialect.builtin(p):
+                    continue  # thread builtins are not kernel arguments
                 t = describe(p['type']['qualType'])
                 if t[0] == 'pointer':
                     scalar = 'atomic' if t[2] == 'u32' and find((decl['name'], i)) in atomic_groups else t[2]
@@ -402,11 +419,13 @@ class Importer:
         params = []
         position = 0
         shape_param = None
-        count = self.element_count(decl, types) if kernel else None
+        self.grid3d = kernel and self.uses_grid3d(decl)
+        count = self.element_count(decl, types) if kernel and not self.grid3d else None
         for i, p in enumerate(params_of(decl)):
             builtin = self.dialect.builtin(p) if kernel else None
             if builtin == 'grid':
-                self.scope[p['id']] = ('grid',)
+                vector = is_position_vector(p)
+                self.scope[p['id']] = ('position',) if vector else ('grid', 'x')
                 continue
             if builtin:
                 self.scope[p['id']] = ('builtin', p['name'])
@@ -431,7 +450,8 @@ class Importer:
                 self.scope[count['id']] = ('count', entry[1], entry[2])
                 self.adaptations.append(f'{name}: count {count["name"]} became a shape (count, 1, 1)')
             elif shape_param is None:
-                raise Unsupported(decl, 'no-extent', 'a kernel needs a uint3 shape, or an unsigned element count that the thread index is compared with')
+                raise Unsupported(decl, 'no-extent', 'a 2D/3D kernel needs a uint3 shape argument' if self.grid3d else
+                                  'a kernel needs a uint3 shape, or an unsigned element count that the thread index is compared with')
             self.kernel_params[name] = {self.graph.nodes[p]['attributes']['name']: p for p in params}
         result = describe(decl['type']['qualType'].split('(')[0])
         if result[0] != 'scalar' or result[1] not in SCALAR_KIND:
@@ -443,8 +463,16 @@ class Importer:
         attrs = {'name': name, 'isKernel': True} if kernel else {'name': name}
         children = {'parameters': params, 'resultType': self.graph.add(SCALAR_KIND[result[1]]), 'body': body}
         if kernel:
-            children['domain'] = self.graph.add('Grid1D')
+            children['domain'] = self.graph.add('Grid3D' if self.grid3d else 'Grid1D')
+            self.domains[name] = 'grid3d' if self.grid3d else 'grid1d'
         return self.graph.put(ident, 'Function', attrs, children)
+
+    def uses_grid3d(self, decl):
+        """A kernel is 2D/3D when it uses a y or z thread index, or a Metal uint2/uint3 position."""
+        for p in params_of(decl):
+            if self.dialect.builtin(p) == 'grid' and is_position_vector(p):
+                return True
+        return any(grid_axis(node) in ('y', 'z') for node in walk(body_of(decl)) if node.get('kind') == 'BinaryOperator')
 
     def element_count(self, decl, types):
         """The unsigned scalar that sizes the grid of a kernel without a uint3 shape.
@@ -453,10 +481,10 @@ class Importer:
         (`if (i >= n) return;`, `if (i < n) {...}`). qpel turns it into a shape
         (n, 1, 1); every other scalar stays an ordinary kernel argument."""
         params = params_of(decl)
-        if any(types[(decl['name'], i)] == 'Shape3DType' for i in range(len(params))):
+        if any(types.get((decl['name'], i)) == 'Shape3DType' for i in range(len(params))):
             return None
         unsigned = {p['id']: p for i, p in enumerate(params)
-                    if types[(decl['name'], i)] == 'U32Type' and not self.dialect.builtin(p)}
+                    if types.get((decl['name'], i)) == 'U32Type' and not self.dialect.builtin(p)}
         grid = {p['id'] for p in params if self.dialect.builtin(p) == 'grid'}
         body = body_of(decl)
         for node in walk(body):
@@ -558,8 +586,8 @@ class Importer:
         init = decl['inner'][0] if 'init' in decl else None
         if init is None:
             raise Unsupported(decl, 'uninitialized-local', f'local {name} needs an initializer')
-        if self.kernel and is_grid_index(init) and decl['id'] not in self.assigned:
-            self.scope[decl['id']] = ('grid',)
+        if self.kernel and grid_axis(init) and decl['id'] not in self.assigned:
+            self.scope[decl['id']] = ('grid', grid_axis(init))
             return []
         value = self.expr(init)
         ir = self.graph.add('Variable', {'name': name},
@@ -715,7 +743,9 @@ class Importer:
                     raise Unsupported(n, 'thread-builtin', 'only blockIdx.x * blockDim.x + threadIdx.x is supported')
                 raise Unsupported(n, 'unknown-name', f'{ref.get("name")} is not a parameter or local')
             if entry[0] == 'grid':
-                return add('GridIndex')
+                return self.thread_index(entry[1], n)
+            if entry[0] == 'position':
+                raise Unsupported(n, 'thread-builtin', 'use the .x, .y and .z components of the thread position')
             if entry[0] == 'count':
                 member = lambda m: add('Member', {'member': m}, {'base': self.name(entry[1])})
                 xy = add('Binary', {'operator': '*'}, {'left': member('x'), 'right': member('y')})
@@ -731,10 +761,10 @@ class Importer:
             if scalar_of(n) != 'f32':
                 raise Unsupported(n, 'double', 'double precision is not in qpel; write a float literal such as 0.5f')
             return add('F32Literal', {'value': n['value']})
-        if is_grid_index(n):
+        if grid_axis(n):
             if not self.kernel:
                 raise Unsupported(n, 'thread-builtin', 'the thread index is only available in kernels')
-            return add('GridIndex')
+            return self.thread_index(grid_axis(n), n)
         if kind == 'BinaryOperator':
             op = n['opcode']
             if op not in BINARY:
@@ -775,6 +805,8 @@ class Importer:
             field = member_name(n, self.source)
             base = peel(n['inner'][0])
             entry = self.scope.get(base.get('referencedDecl', {}).get('id')) if base['kind'] == 'DeclRefExpr' else None
+            if entry and entry[0] == 'position' and field in ('x', 'y', 'z'):
+                return self.thread_index(field, n)
             if entry and entry[0] == 'param' and entry[2] == 'Shape3DType' and field in ('x', 'y', 'z'):
                 return add('Member', {'member': field}, {'base': self.name(entry[1])})
             if decl_name(base) in ('threadIdx', 'blockIdx', 'blockDim', 'gridDim'):
@@ -783,6 +815,13 @@ class Importer:
         if kind == 'CallExpr':
             return self.call(n, statement)
         raise Unsupported(n, 'expression', f'{kind} is not supported')
+
+    def thread_index(self, axis, node):
+        if self.grid3d:
+            return self.graph.add('ThreadIndex', {'axis': axis})
+        if axis != 'x':
+            raise Unsupported(node, 'thread-builtin', 'internal: 1D kernel with a y/z index')
+        return self.graph.add('GridIndex')
 
     def buffer(self, node):
         core = peel(node)
@@ -868,7 +907,12 @@ class Importer:
             params = self.kernel_params[s['kernel']]
             bindings = [add('Binding', links={'parameter': params[b['parameter']], 'resource': ids[b['resource']]})
                         for b in s['bindings']]
-            stages.append(add('Dispatch', {'blockSize': s['blockSize'], 'completionBarrier': s['completionBarrier']},
+            attrs = {'blockSize': s['blockSize'], 'completionBarrier': s['completionBarrier']}
+            if (s.get('domain') == 'grid3d') != (self.domains[s['kernel']] == 'grid3d'):
+                raise ValueError(f'Plan and source disagree on whether {s["kernel"]} is 2D/3D')
+            if s.get('domain') == 'grid3d':
+                attrs.update(blockHeight=s['blockShape'][1], blockDepth=s['blockShape'][2])
+            stages.append(add('Dispatch', attrs,
                               {'bindings': bindings},
                               {'kernel': self.functions[s['kernel']][1], 'grid': ids[s['grid']]}))
         return add('Pipeline', {'name': plan.get('pipeline', self.module + '_launch')},
@@ -891,8 +935,10 @@ class Importer:
                 if role == 'shape':
                     grid = name
                 bindings.append({'parameter': name, 'resource': name})
-            stages.append({'kernel': kernel, 'grid': grid, 'blockSize': block_size,
-                           'completionBarrier': True, 'bindings': bindings})
+            stage = {'kernel': kernel, 'grid': grid, 'blockSize': block_size, 'completionBarrier': True, 'bindings': bindings}
+            if self.domains[kernel] == 'grid3d':
+                stage.update(blockSize=GRID3D_BLOCK[0], domain='grid3d', blockShape=list(GRID3D_BLOCK))
+            stages.append(stage)
         shapes = [r['name'] for r in resources.values() if r['kind'] == 'shape']
         if len(shapes) != 1:
             raise Unsupported(None, 'extent', 'kernels use different shape parameters; pass a launch plan')
@@ -978,19 +1024,25 @@ def import_source(path, dialect=None, module=None, plan=None, block_size=64):
 
 
 def unguarded_kernels(program):
-    """Kernels that never compare the thread index. CUDA rounds the grid up to whole
-    blocks, so such a kernel also runs for indices past the shape volume."""
+    """Kernels with a thread-index axis that is never compared. CUDA rounds the grid up
+    to whole blocks, so such a kernel also runs for indices past the shape."""
     nodes = {n['id']: n for n in program['nodes']}
+
+    def axis(node):
+        return 'x' if node['kind'] == 'GridIndex' else node['attributes']['axis'] if node['kind'] == 'ThreadIndex' else None
     warnings = []
     for n in program['nodes']:
         if n['kind'] != 'Function' or not n['attributes'].get('isKernel'):
             continue
-        stack, guarded = list(n['children']['body']), False
-        while stack and not guarded:
+        used, compared, stack = set(), set(), list(n['children']['body'])
+        while stack:
             node = nodes[stack.pop()]
+            if axis(node):
+                used.add(axis(node))
             if node['kind'] == 'Binary' and node['attributes']['operator'] in ('<', '<=', '>', '>='):
-                guarded = any(nodes[c]['kind'] == 'GridIndex' for r in ('left', 'right') for c in node['children'][r])
+                compared.update(axis(nodes[c]) for r in ('left', 'right') for c in node['children'][r] if axis(nodes[c]))
             stack.extend(c for cs in node['children'].values() for c in cs)
-        if not guarded:
-            warnings.append(f'{n["attributes"]["name"]}: no bounds guard on the thread index')
+        if used - compared:
+            warnings.append(f'{n["attributes"]["name"]}: no bounds guard on the thread index'
+                            + (f' ({", ".join(sorted(used - compared))})' if len(used) > 1 else ''))
     return warnings

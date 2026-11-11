@@ -91,6 +91,8 @@ class PipelineChecker(TypeChecker):
             self.require(stage, kernel['id'] in self.order and kernel['attributes'].get('isKernel', False), 'DISPATCH_TARGET', 'Dispatch requires a local kernel')
             self.require(stage, grid['id'] in local and grid['attributes']['kind'] == 'shape', 'DISPATCH_GRID', 'Grid must be a local shape')
             self.require(stage, stage['attributes']['completionBarrier'], 'BARRIER', 'Each stage must complete before the next')
+            if self.domain(kernel) != 'Grid3D':
+                self.require(stage, stage['attributes'].get('blockHeight', 1) == stage['attributes'].get('blockDepth', 1) == 1, 'BLOCK_SHAPE', 'A Grid1D kernel needs a one-dimensional block')
             params, bindings = self.children(kernel, 'parameters'), self.children(stage, 'bindings')
             self.require(stage, len(params) == len(bindings), 'DISPATCH_ARITY', 'Bind every parameter exactly once')
             effects, seen, written = self.effects(kernel), set(), set()

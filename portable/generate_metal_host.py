@@ -116,7 +116,10 @@ def generate(plan, shader):
             lines.append(f"    buffers[{name!r}] = torch.empty(sizes[{r['extent']!r}], device=device, dtype=torch.{BUFFER_TYPES[r['type']]})")
     for s in plan['stages']:
         args = ', '.join(f"buffers[{b['resource']!r}]" for b in s['bindings'])
-        lines.append(f"    getattr(lib, {s['kernel']!r})({args}, threads=sizes[{s['grid']!r}], group_size={s['blockSize']})")
+        if s.get('domain') == 'grid3d':
+            lines.append(f"    getattr(lib, {s['kernel']!r})({args}, threads=dims[{s['grid']!r}], group_size={tuple(s['blockShape'])!r})")
+        else:
+            lines.append(f"    getattr(lib, {s['kernel']!r})({args}, threads=sizes[{s['grid']!r}], group_size={s['blockSize']})")
         lines.append('    torch.mps.synchronize()')
     lines.append('    return {' + ', '.join(f'{n!r}: buffers[{n!r}]' for n in outputs) + '}')
     return '\n'.join(lines) + '\n'
