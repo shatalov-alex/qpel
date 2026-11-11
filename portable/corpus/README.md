@@ -12,3 +12,6 @@ declaration-only header stubs so clang can parse the files offline.
 `coverage.json` is the recorded result; `--check` (run by check_all.py) fails
 when it changes. Multi-file vendored trees (`llama.cpp/`) carry a `SHA256SUMS`
 for every file, headers included, checked by `tests/test_corpus.py`. See IMPORT.md, "Real-source corpus and coverage".
+
+Entries may pin single kernels as `programs` (one kernel imported on its own, its
+fixture, argument rules for the behaviour rows); see IMPORT.md.

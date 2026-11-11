@@ -33,6 +33,13 @@ CORPUS = HERE/'corpus'  # unmodified real sources; entries with a fixture must i
 
 def corpus_entries():
     return json.loads((CORPUS/'corpus.json').read_text())
+
+
+def corpus_programs():
+    """(entry, program) for every corpus kernel pinned as its own fixture (llama.cpp's operations)."""
+    for entry in corpus_entries():
+        for program in entry.get('programs', ()):
+            yield entry, program
 SUFFIX = {'cuda': '.cu', 'metal': '.metal'}
 
 
@@ -126,6 +133,12 @@ def rows(fixtures=None):
         for port in entry.get('ports', ()):  # hand ports to the other language must give the same program
             path = HERE/port
             yield f'{"cuda" if path.suffix == ".cu" else "metal"} -> qpel', port, check(fixture(entry['fixture']), path, plan, validate)
+    for entry, program in corpus_programs():
+        source = CORPUS/entry['source']
+        include = [CORPUS/folder for folder in entry.get('include', ())]
+        dialect = 'cuda' if source.suffix == '.cu' else 'metal'
+        yield (f'{dialect} -> qpel', f'corpus/{entry["source"]} {",".join(program["kernels"])}',
+               check(fixture(program['fixture']), source, None, validate, include, program['kernels'], program['fixture']))
 
 
 def reimport(program):
@@ -144,9 +157,9 @@ def reimport(program):
     return results
 
 
-def check(original, source, plan, validate, include=()):
+def check(original, source, plan, validate, include=(), kernels=None, module=None):
     try:
-        program, _ = import_source(source, plan=plan, include=include)
+        program, _ = import_source(source, plan=plan, include=include, kernels=kernels, module=module)
         validate(program)
     except ValueError as error:
         return str(error)

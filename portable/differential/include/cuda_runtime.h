@@ -70,3 +70,115 @@ inline float __fsqrt_rn(float a) { return std::sqrt(a); }
 inline float __fsub_rn(float a, float b) { volatile float r = a - b; return r; }
 inline float __fmul_rn(float a, float b) { volatile float r = a * b; return r; }
 inline float __fdiv_rn(float a, float b) { volatile float r = a / b; return r; }
+
+// --- The rest of the SDK surface library headers use (llama.cpp's common.cuh) ---
+// Library headers declare helpers for many kernels; only what a simulated kernel
+// actually calls has to work. Anything that needs threads running together aborts.
+#include <cstddef>
+#include <cstring>
+#define __launch_bounds__(...)
+#define __shared__ static
+struct int2 { int x, y; };
+struct int3 { int x, y, z; };
+struct int4 { int x, y, z, w; };
+struct uint2 { unsigned int x, y; };
+struct uint4 { unsigned int x, y, z, w; };
+struct float2 { float x, y; };
+struct float3 { float x, y, z; };
+struct float4 { float x, y, z, w; };
+struct char4 { signed char x, y, z, w; };
+struct uchar4 { unsigned char x, y, z, w; };
+struct short2 { short x, y; };
+struct ushort2 { unsigned short x, y; };
+struct double2 { double x, y; };
+struct longlong2 { long long x, y; };
+inline int2 make_int2(int x, int y) { return {x, y}; }
+inline int3 make_int3(int x, int y, int z) { return {x, y, z}; }
+inline int4 make_int4(int x, int y, int z, int w) { return {x, y, z, w}; }
+inline uint2 make_uint2(unsigned int x, unsigned int y) { return {x, y}; }
+inline uint3 make_uint3(unsigned int x, unsigned int y, unsigned int z) { return {x, y, z}; }
+inline float2 make_float2(float x, float y) { return {x, y}; }
+inline float3 make_float3(float x, float y, float z) { return {x, y, z}; }
+inline float4 make_float4(float x, float y, float z, float w) { return {x, y, z, w}; }
+inline char4 make_char4(signed char x, signed char y, signed char z, signed char w) { return {x, y, z, w}; }
+
+[[noreturn]] inline void qpel_simulator_needs_threads(const char* what) {
+  std::fprintf(stderr, "qpel simulator: %s needs threads that run together\n", what);
+  std::abort();
+}
+template <class T> T __shfl_sync(unsigned, T, int, int = 32) { qpel_simulator_needs_threads("__shfl_sync"); }
+template <class T> T __shfl_xor_sync(unsigned, T, int, int = 32) { qpel_simulator_needs_threads("__shfl_xor_sync"); }
+template <class T> T __shfl_up_sync(unsigned, T, unsigned, int = 32) { qpel_simulator_needs_threads("__shfl_up_sync"); }
+template <class T> T __shfl_down_sync(unsigned, T, unsigned, int = 32) { qpel_simulator_needs_threads("__shfl_down_sync"); }
+inline int __any_sync(unsigned, int) { qpel_simulator_needs_threads("__any_sync"); }
+inline int __all_sync(unsigned, int) { qpel_simulator_needs_threads("__all_sync"); }
+inline unsigned __ballot_sync(unsigned, int) { qpel_simulator_needs_threads("__ballot_sync"); }
+inline void __syncwarp(unsigned = 0xffffffffu) { qpel_simulator_needs_threads("__syncwarp"); }
+inline unsigned __activemask() { qpel_simulator_needs_threads("__activemask"); }
+inline int __syncthreads_count(int) { qpel_simulator_needs_threads("__syncthreads_count"); }
+inline int __syncthreads_or(int) { qpel_simulator_needs_threads("__syncthreads_or"); }
+inline int __syncthreads_and(int) { qpel_simulator_needs_threads("__syncthreads_and"); }
+inline void __threadfence() {}
+inline void __threadfence_block() {}
+inline void __trap() { std::abort(); }
+inline unsigned __umulhi(unsigned a, unsigned b) { return (unsigned)(((unsigned long long)a * b) >> 32); }
+inline int __popc(unsigned x) { return __builtin_popcount(x); }
+inline int __clz(int x) { return x ? __builtin_clz((unsigned)x) : 32; }
+inline int __ffs(int x) { return __builtin_ffs(x); }
+inline int __dp4a(int a, int b, int c) {
+  for (int k = 0; k < 4; ++k) c += (signed char)(a >> 8 * k) * (signed char)(b >> 8 * k);
+  return c;
+}
+inline unsigned __byte_perm(unsigned x, unsigned y, unsigned s) {
+  unsigned long long v = (unsigned long long)y << 32 | x; unsigned r = 0;
+  for (int k = 0; k < 4; ++k) r |= (unsigned)((v >> 8 * ((s >> 4 * k) & 7)) & 0xff) << 8 * k;
+  return r;
+}
+inline float __expf(float x) { return std::exp(x); }
+inline float __logf(float x) { return std::log(x); }
+inline float __fdividef(float a, float b) { return a / b; }
+inline float __saturatef(float x) { return x < 0 ? 0.0f : x > 1 ? 1.0f : x; }
+inline float __int_as_float(int x) { float f; std::memcpy(&f, &x, 4); return f; }
+inline int __float_as_int(float f) { int x; std::memcpy(&x, &f, 4); return x; }
+inline unsigned __float_as_uint(float f) { unsigned x; std::memcpy(&x, &f, 4); return x; }
+inline float __uint_as_float(unsigned x) { float f; std::memcpy(&f, &x, 4); return f; }
+inline int __float2int_rn(float x) { return (int)std::nearbyint(x); }
+inline int __float2int_rz(float x) { return (int)x; }
+inline float __frcp_rn(float x) { volatile float r = 1.0f / x; return r; }
+inline float rsqrtf(float x) { return 1.0f / std::sqrt(x); }
+using std::fabsf; using std::fminf; using std::fmaxf; using std::floorf; using std::ceilf; using std::truncf;
+using std::roundf; using std::copysignf; using std::sqrtf; using std::expf; using std::exp2f; using std::logf;
+using std::log2f; using std::sinf; using std::cosf; using std::tanhf; using std::erff; using std::expm1f;
+using std::log1pf; using std::powf; using std::ldexpf; using std::fmodf;
+inline long long atomicAdd(long long* a, long long v) { long long o = *a; *a = (long long)((unsigned long long)o + (unsigned long long)v); return o; }
+inline unsigned long long atomicAdd(unsigned long long* a, unsigned long long v) { unsigned long long o = *a; *a = o + v; return o; }
+inline int atomicCAS(int* a, int c, int v) { int o = *a; if (o == c) *a = v; return o; }
+inline unsigned atomicCAS(unsigned* a, unsigned c, unsigned v) { unsigned o = *a; if (o == c) *a = v; return o; }
+inline unsigned long long atomicCAS(unsigned long long* a, unsigned long long c, unsigned long long v) { unsigned long long o = *a; if (o == c) *a = v; return o; }
+
+// Runtime API: declarations only. Host code in library headers mentions them; the
+// simulator never calls them (host functions of the simulated file are blanked).
+typedef struct CUevent_st* cudaEvent_t;
+typedef struct CUgraph_st* cudaGraph_t;
+typedef struct CUgraphExec_st* cudaGraphExec_t;
+typedef struct CUgraphNode_st* cudaGraphNode_t;
+struct cudaDeviceProp { char name[256]; size_t totalGlobalMem; int major, minor, multiProcessorCount, warpSize; size_t sharedMemPerBlock, sharedMemPerBlockOptin; int integrated; };
+enum { cudaSuccess = 0, cudaErrorNotReady = 600, cudaEventDisableTiming = 2, cudaStreamNonBlocking = 1 };
+enum cudaMemcpyKind { cudaMemcpyHostToHost = 0, cudaMemcpyHostToDevice = 1, cudaMemcpyDeviceToHost = 2, cudaMemcpyDeviceToDevice = 3, cudaMemcpyDefault = 4 };
+enum cudaFuncAttribute { cudaFuncAttributeMaxDynamicSharedMemorySize = 8 };
+extern "C" {
+cudaError_t cudaGetLastError();
+cudaError_t cudaGetDevice(int*);
+cudaError_t cudaSetDevice(int);
+const char* cudaGetErrorString(cudaError_t);
+cudaError_t cudaFuncSetAttribute(const void*, int, int);
+cudaError_t cudaMemcpyAsync(void*, const void*, size_t, int, cudaStream_t);
+cudaError_t cudaMemsetAsync(void*, int, size_t, cudaStream_t);
+cudaError_t cudaStreamCreateWithFlags(cudaStream_t*, unsigned);
+cudaError_t cudaStreamDestroy(cudaStream_t);
+cudaError_t cudaEventCreateWithFlags(cudaEvent_t*, unsigned);
+cudaError_t cudaEventDestroy(cudaEvent_t);
+cudaError_t cudaEventRecord(cudaEvent_t, cudaStream_t);
+cudaError_t cudaStreamWaitEvent(cudaStream_t, cudaEvent_t, unsigned);
+cudaError_t cudaConfigureCall(dim3, dim3, unsigned long, cudaStream_t);
+}

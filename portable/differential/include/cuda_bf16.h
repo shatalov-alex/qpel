@@ -15,3 +15,11 @@ inline __nv_bfloat16 __float2bfloat16_rn(float f) {
   r.bits = (unsigned short)(w >> 16);
   return r;
 }
+typedef __nv_bfloat16 nv_bfloat16;
+struct __nv_bfloat162 { __nv_bfloat16 x, y; };
+typedef __nv_bfloat162 nv_bfloat162;
+inline __nv_bfloat16 __float2bfloat16(float f) { return __float2bfloat16_rn(f); }
+inline float __bfloat162float(__nv_bfloat16 b) { return (float)b; }
+inline __nv_bfloat162 __floats2bfloat162_rn(float a, float b) { return {__float2bfloat16_rn(a), __float2bfloat16_rn(b)}; }
+#include "cuda_runtime.h"
+inline float2 __bfloat1622float2(__nv_bfloat162 b) { return {(float)b.x, (float)b.y}; }

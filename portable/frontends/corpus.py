@@ -115,7 +115,21 @@ def main(argv=None):
     parser.add_argument('--details', action='store_true', help='list every blocker with its location')
     parser.add_argument('--messages', action='store_true', help='rank blocker messages over the whole corpus')
     parser.add_argument('--check', action='store_true', help='fail when the result differs from coverage.json')
+    parser.add_argument('--fixtures', action='store_true',
+                        help='write the fixture of every corpus program (one kernel imported on its own)')
     args = parser.parse_args(argv)
+    if args.fixtures:
+        from .c_import import import_source
+        fixtures = HERE/'tests/fixtures/qpel_ir'
+        for entry in entries():
+            for program in entry.get('programs', ()):
+                imported, _ = import_source(CORPUS/entry['source'], include=[CORPUS/f for f in entry.get('include', ())],
+                                            kernels=program['kernels'], module=program['fixture'])
+                folder = fixtures/program['fixture']
+                folder.mkdir(exist_ok=True)
+                (folder/'program.qpel.json').write_text(json.dumps(imported, indent=2) + '\n')
+                print('wrote', folder.relative_to(HERE))
+        return 0
     if args.messages:
         with ProcessPoolExecutor() as pool:
             total = sum(pool.map(source_messages, entries()), Counter())

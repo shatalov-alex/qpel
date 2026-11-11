@@ -432,6 +432,28 @@ def run_math_ops(name, host, plan):
     return cases
 
 
+# --- corpus kernels (llama.cpp operations): the oracle is the original source itself ---
+
+def corpus_fixtures():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from frontends.roundtrip import corpus_programs
+    return {program['fixture'] for _, program in corpus_programs()}
+
+
+def run_corpus_fixture(name):
+    """qpel's Metal on the Apple GPU against the unmodified original on the CPU simulator."""
+    from differential.matrix import rows
+    cases = 0
+    for row, label, error in rows([name], gpu=True):
+        if row.endswith('-> metal'):
+            if error:
+                raise AssertionError(f'{label}: {error}')
+            cases += 1
+    if not cases:
+        raise AssertionError('no Metal row ran')
+    return cases
+
+
 # --- SAM 2 connected components, imported from the unmodified CUDA original ---
 
 def sam2_oracle(mask, w, h):
@@ -500,9 +522,14 @@ TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fm
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('fixtures', nargs='*', help='Fixture names (default: all)')
+    parser.add_argument('--skip-corpus', action='store_true',
+                        help='leave out corpus programs, whose Metal rows the behaviour rows already run')
     args = parser.parse_args(argv)
     names = args.fixtures or sorted(p.name for p in FIXTURES.iterdir() if p.is_dir())
-    missing = [n for n in names if n not in TESTS]
+    if args.skip_corpus:
+        names = [n for n in names if n not in corpus_fixtures()]
+    corpus = corpus_fixtures()
+    missing = [n for n in names if n not in TESTS and n not in corpus]
     if missing:
         sys.exit('No GPU test for: ' + ', '.join(missing))
     if not torch.backends.mps.is_available():
@@ -512,6 +539,9 @@ def main(argv=None):
     with tempfile.TemporaryDirectory(prefix='qpel-gpu-') as temp:
         for name in names:
             try:
+                if name in corpus:
+                    print(f'PASS {name}: {run_corpus_fixture(name)} cases')
+                    continue
                 host, plan = load_host(name, Path(temp))
                 print(f'PASS {name}: {TESTS[name](name, host, plan)} cases')
             except Exception:

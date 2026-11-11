@@ -89,12 +89,28 @@ def read_unit(stream):
     return unit
 
 
+_CACHE = {}  # (path, mtime, dialect, include) -> (unit, text); the importer never changes a unit
+_CACHE_SIZE = 4
+
+
 def parse(path, dialect, include=()):
     """Return (translation unit, source text). Locations are annotated, see annotate().
 
     `include` lists extra header folders, such as stubs for a library the source includes.
-    Declarations from system headers are left out (see SYSTEM)."""
+    Declarations from system headers are left out (see SYSTEM). The last few results are
+    kept: importing several kernels of one library file parses it once."""
     path = Path(path)
+    key = (str(path.resolve()), path.stat().st_mtime_ns, dialect, tuple(str(Path(f).resolve()) for f in include))
+    if key in _CACHE:
+        return _CACHE[key]
+    result = _parse(path, dialect, include)
+    if len(_CACHE) >= _CACHE_SIZE:
+        _CACHE.pop(next(iter(_CACHE)))
+    _CACHE[key] = result
+    return result
+
+
+def _parse(path, dialect, include):
     with tempfile.TemporaryFile('w+') as errors:
         process = subprocess.Popen(command(path, dialect, include), stdout=subprocess.PIPE, stderr=errors, text=True,
                                    bufsize=1 << 20)

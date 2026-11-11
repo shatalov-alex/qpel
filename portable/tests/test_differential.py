@@ -73,7 +73,8 @@ class Simulator(unittest.TestCase):
         names = {(name, dialect) for name, _, dialect, *_ in matrix.sources()}
         self.assertIn(('sam2_cc', 'cuda'), names)
         self.assertIn(('sam2_cc', 'metal'), names)
-        self.assertEqual(sum(1 for _ in matrix.sources()), 2*len(matrix.roundtrip.EXAMPLES) + 2)
+        programs = sum(1 for _ in matrix.roundtrip.corpus_programs())
+        self.assertEqual(sum(1 for _ in matrix.sources()), 2*len(matrix.roundtrip.EXAMPLES) + 2 + programs)
 
 
 @unittest.skipUnless(np is not None and shutil.which('clang++') and shutil.which('clang'), 'NumPy and clang required')
@@ -81,7 +82,11 @@ class CudaRows(unittest.TestCase):
     """The rows that need no GPU: CUDA originals against qpel's CUDA, on the simulator."""
 
     def test_cuda_to_qpel_to_cuda(self):
-        failures = [(row, label, error) for row, label, error in matrix.rows(gpu=False)
+        # The examples and SAM 2; the corpus programs (minutes of simulation) run in check_all's
+        # behaviour-rows step.
+        corpus = {program['fixture'] for _, program in matrix.roundtrip.corpus_programs()}
+        names = {name for name, *_ in matrix.sources()} - corpus
+        failures = [(row, label, error) for row, label, error in matrix.rows(names, gpu=False)
                     if row.endswith('-> cuda') and row.startswith('cuda') and error]
         self.assertEqual(failures, [])
 

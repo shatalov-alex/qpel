@@ -83,5 +83,20 @@ def grid_stride(plan, seed):
 SPECIAL = {'scale_offset': scale_offset, 'sam2_cc': sam2_cc, 'grid_stride': grid_stride}
 
 
-def for_program(name, plan, seed=20261111):
-    return SPECIAL.get(name, generic)(plan, seed)
+def for_program(name, plan, seed=20261111, values=None):
+    """Cases for a program. `values` constrains scalar arguments: 'volume' is the number of
+    elements of the dispatch shape (a count the buffers must hold), 'W', 'H' or 'N' one of its
+    sizes, and an integer is used as is."""
+    cases = SPECIAL.get(name, generic)(plan, seed)
+    for rule_name, rule in (values or {}).items():
+        for case in cases:
+            shape = case.shapes[next(iter(s['grid'] for s in plan['stages']))]
+            if rule == 'volume':
+                case.values[rule_name] = volume(shape)
+            elif rule in ('W', 'H', 'N'):
+                case.values[rule_name] = shape['WHN'.index(rule)]
+            elif type(rule) is int:
+                case.values[rule_name] = rule
+            else:
+                raise ValueError(f'unknown value rule {rule!r} for {rule_name}')
+    return cases

@@ -14,6 +14,8 @@ between cases (sizes, scalar values, launch geometry) is read from files.
 """
 import ast
 import operator
+import os
+import shutil
 from pathlib import Path
 import struct
 import subprocess
@@ -108,11 +110,27 @@ class Program:
         self.resources = {r['name']: r for r in plan['resources']}
         self.scalars = []  # names of the 32-bit words in scalars.bin, in order
         source = Path(source).resolve()
+        include = [Path(folder).resolve() for folder in include]
+        bodies = {Path(f).resolve(): spans for f, spans in (original or {}).get('header_host_bodies', {}).items()}
+        if bodies:
+            # Library headers with host code: simulate a copy of their tree with those bodies
+            # replaced by ';' (declarations stay); quoted includes still resolve inside the copy.
+            root = Path(os.path.commonpath([source.parent] + [f.parent for f in bodies]))
+            tree = self.work/'tree'
+            shutil.copytree(root, tree, dirs_exist_ok=True)
+            for f, spans in bodies.items():
+                copy = tree/f.relative_to(root)
+                text = bytearray(copy.read_bytes())
+                for start, end in sorted(spans, reverse=True):
+                    text[start:end] = b';' + bytes(b if b == 10 else 32 for b in text[start + 1:end])
+                copy.write_bytes(bytes(text))
+            include = [tree/d.relative_to(root) for d in include if d.is_relative_to(root)] + include
+            source = tree/source.relative_to(root)
         if original and original.get('host_spans'):
             text = bytearray(source.read_bytes())
             for start, end in original['host_spans']:  # blank host code, keeping line numbers
                 text[start:end] = bytes(b if b == 10 else 32 for b in text[start:end])
-            device = self.work/('device_' + source.name)
+            device = source.with_name('device_' + source.name)
             device.write_bytes(bytes(text))
             source = device
         main = self.work/'main.cpp'

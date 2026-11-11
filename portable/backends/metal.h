@@ -150,7 +150,7 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long, -9223372036854775808.0f, 9223372
 #define QPEL_MATH_FLOOR(x) metal::floor((x))
 #define QPEL_MATH_CEIL(x) metal::ceil((x))
 #define QPEL_MATH_TRUNC(x) metal::trunc((x))
-#define QPEL_MATH_ROUND(x) metal::round((x))
+#define QPEL_MATH_ROUND(x) metal::copysign(metal::round((x)), (x))  // Metal's round drops the sign of a zero result
 #define QPEL_MATH_COPYSIGN(a, b) metal::copysign((a), (b))
 #define QPEL_MATH_SQRT(x) metal::precise::sqrt((x))
 #define QPEL_MATH_EXP(x) metal::precise::exp((x))

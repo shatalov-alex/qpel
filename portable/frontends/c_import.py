@@ -364,6 +364,7 @@ class Importer:
         self.header = False
         decls = []
         main_ids = {id(node) for node in main}
+        self.header_host_bodies = header_host_bodies(unit, main_ids, self.dialect)
         for node in unit.get('inner', ()):
             if id(node) in main_ids:
                 self.header = False
@@ -432,6 +433,12 @@ class Importer:
             finally:
                 self.namespace = outer
         if kind == 'FunctionTemplateDecl':
+            pattern = next((d for d in node.get('inner', ()) if d['kind'] == 'FunctionDecl'), None)
+            if pattern is not None and self.dialect.is_host(pattern):
+                if not self.header:  # CPU code: blank the whole template, `template <...>` included
+                    self.host.append(node['name'])
+                    self.host_spans.append(clang_ast.span(node))
+                return []
             uses = [d for d in node.get('inner', ()) if d['kind'] == 'FunctionDecl' and body_of(d) is not None
                     and any(c['kind'] == 'TemplateArgument' for c in d.get('inner', ()))]
             if self.header:
@@ -602,7 +609,24 @@ class Importer:
             entry['issues'].append({'code': error.code, 'at': error.location, 'message': error.args[0].split('] ', 1)[1]})
         return results
 
-    def run(self, plan=None, block_size=64):
+    def select(self, kernels):
+        """Keep only these kernels and the device functions they reach."""
+        by_name = {d['name']: d for d in self.decls}
+        missing = [k for k in kernels if k not in by_name or not self.dialect.is_kernel(by_name[k])]
+        if missing:
+            raise ValueError(f'{", ".join(missing)}: not kernels in {self.path}')
+        needed, stack = set(), list(kernels)
+        while stack:
+            name = stack.pop()
+            if name in needed or name not in by_name:
+                continue
+            needed.add(name)
+            stack.extend(self.callee(n) for n in walk(body_of(by_name[name])) if n.get('kind') == 'CallExpr')
+        self.decls = [d for d in self.decls if d['name'] in needed]
+
+    def run(self, plan=None, block_size=64, kernels=None):
+        if kernels:
+            self.select(kernels)
         self.register()
         plan_groups = {}
         if plan:
@@ -625,7 +649,7 @@ class Importer:
         self.scope = {}
         self.kernel = kernel
         self.assigned = assigned_decls(body_of(decl))
-        self.names = {p.get('name') for p in params_of(decl)}  # qpel names are unique per function
+        self.names = {self.safe_name(p['name']) for p in params_of(decl) if p.get('name')}  # unique per function
         params = []
         position = 0
         shape_param = None
@@ -652,7 +676,7 @@ class Importer:
             if kind is None:  # a survey already recorded why this parameter has no qpel type
                 self.scope[p['id']] = ('untyped', p['name'])
                 continue
-            attrs = {'name': p['name']}
+            attrs = {'name': self.safe_name(p['name'])}
             if kernel:
                 attrs.update(binding=self.dialect.binding(p, position), isBuffer=True)
                 if kind == 'shape3':
@@ -714,9 +738,9 @@ class Importer:
             elif entry[0] == 'extent':
                 item.update(source='extent', parameter=self.graph.nodes[entry[1]]['attributes']['name'], axis=entry[2])
             elif entry[0] == 'count':
-                item.update(source='volume', parameter=p['name'])
+                item.update(source='volume', parameter=self.safe_name(p['name']))
             else:
-                item.update(source='parameter', parameter=p['name'])
+                item.update(source='parameter', parameter=self.safe_name(p['name']))
             out.append(item)
         return out
 
@@ -979,8 +1003,23 @@ class Importer:
         self.scope[decl['id']] = ('local', ir, t[1])
         return [ir]
 
+    def safe_name(self, name):
+        """A C name that qpel or a backend reserves (min, max, kernel, half, ...) gets a trailing _."""
+        if is_identifier(name) or name.startswith('qpel_'):
+            return name  # (qpel_ names are the backends' own builtins in re-imported code)
+        renamed = name + '_'
+        if not is_identifier(renamed):
+            renamed = 'v_' + name  # a name that only a prefix makes safe
+        if not is_identifier(renamed):
+            raise Unsupported(None, 'name', f'{name} cannot be a qpel name')
+        message = f'{self.current}: {name} is reserved in qpel or a backend and was renamed {renamed}'
+        if message not in self.adaptations:
+            self.adaptations.append(message)
+        return renamed
+
     def unique_name(self, name):
         """C allows one name in sibling blocks; qpel names are unique in a function."""
+        name = self.safe_name(name)
         if name not in self.names:
             self.names.add(name)
             return name
@@ -1283,6 +1322,15 @@ class Importer:
             allowed = INTEGER_TERMS | {'f32', 'f16', 'bf16'} if scalar_of(n) == 'f32' else {'f32'}
             if source == scalar_of(n) == 'f16':
                 return self.core(operand, False, False)  # (half)h is h
+            inner = n['inner'][0]
+            if has_explicit_cast(inner):  # (float)(int)i: convert to int first, then to float
+                source = scalar_of(inner)
+                if source not in allowed:
+                    raise Unsupported(n, 'conversion', f'conversion from {source} to {scalar_of(n)} is not in qpel')
+                value = self.expr(inner)
+                if scalar_of(inner) == scalar_of(n):
+                    return value  # the conversion to float is already inside (a NoOp cast around it)
+                return add('F32Cast' if scalar_of(n) == 'f32' else 'F16Cast', children={'operand': value})
             if source not in allowed:
                 raise Unsupported(n, 'conversion', f'conversion from {source} to {scalar_of(n)} is not in qpel')
             value = self.core(operand, False, False)
@@ -1366,9 +1414,16 @@ class Importer:
         if message not in self.adaptations:
             self.adaptations.append(message)
 
+    def callee_name(self, node):
+        """The callee of node when it is a call, else None."""
+        node = peel(node)
+        return self.callee(node) if node['kind'] == 'CallExpr' else None
+
     def callee(self, call):
         """Name of the function a call reaches; a template instantiation has its own name."""
         target = peel(call['inner'][0])
+        if target['kind'] == 'UnaryOperator' and target['opcode'] == '&':
+            target = peel(target['inner'][0])  # a function passed as a template argument: op = &op_abs
         if target['kind'] == 'DeclRefExpr':
             return self.instances.get(target['referencedDecl']['id'], target['referencedDecl'].get('name'))
         return decl_name(call['inner'][0])
@@ -1401,6 +1456,10 @@ class Importer:
             need(2)
             return add('Binary', {'operator': '/' if callee.endswith('div') else '%'},
                        {'left': self.expr(args[0]), 'right': self.expr(args[1])})
+        if callee in ('copysign', 'copysignf') and len(args) == 2 and self.callee_name(args[0]) in ('round', 'roundf') \
+                and same_expression(peel(args[0])['inner'][1], args[1]):
+            # qpel's Metal spelling of round, which keeps the sign of a zero result
+            return add('Math', {'function': 'round'}, {'arguments': [self.expr(args[1])]})
         if callee in MATH_CALLS and all(scalar_of(a) == 'f32' for a in args):
             function = MATH_CALLS[callee]
             need(MATH[function])
@@ -1598,6 +1657,35 @@ def instance_name(base, arguments):
     return re.sub(r'_+', '_', base + '_' + '_'.join(parts)).strip('_')
 
 
+def header_host_bodies(unit, main_ids, dialect):
+    """{header path: [[start, end], ...]}: bodies of CPU functions in the library's own headers.
+
+    A simulator runs GPU code as C++; host code in headers may use <<<>>> launches, so it
+    blanks these bodies (keeping the declarations, which other host code may call)."""
+    out = {}
+
+    def visit(node, template=False):
+        kind = node.get('kind')
+        if kind in ('NamespaceDecl', 'LinkageSpecDecl'):
+            for child in node.get('inner', ()):
+                visit(child)
+        elif kind == 'FunctionTemplateDecl':
+            pattern = next((d for d in node.get('inner', ()) if d.get('kind') == 'FunctionDecl'), None)
+            if pattern is not None:
+                visit(pattern, True)
+        elif kind == 'FunctionDecl' and dialect.is_host(node):
+            body = body_of(node)
+            if body is not None and body.get('range'):
+                begin = body['range']['begin']
+                file = begin.get('expansionLoc', begin).get('_file')
+                if file:
+                    out.setdefault(file, []).append(clang_ast.span(body))
+    for node in unit.get('inner', ()):
+        if id(node) not in main_ids and not node.get('isImplicit'):
+            visit(node)
+    return out
+
+
 def reachable_functions(unit, main, dialect):
     """Clang ids of the functions GPU code in the main file calls, directly or not."""
     functions = {}
@@ -1638,6 +1726,26 @@ def contains_any(node, ids):
         return True
     return any(contains_any(c, ids) for c in node.get('inner', ())
                if c.get('kind') in ('FunctionDecl', 'FunctionTemplateDecl', 'NamespaceDecl', 'LinkageSpecDecl'))
+
+
+def has_explicit_cast(node):
+    """True when the chain of conversions above node's core includes a cast written in the source."""
+    while node['kind'] in PASSTHROUGH and node.get('inner'):
+        if node['kind'] in EXPLICIT_CASTS:
+            return True
+        node = node['inner'][0]
+    return False
+
+
+def same_expression(a, b):
+    """True when two clang expressions are the same computation (kinds, operators, names, values)."""
+    a, b = peel(a), peel(b)
+    if a['kind'] != b['kind'] or a.get('opcode') != b.get('opcode') or a.get('value') != b.get('value') \
+            or a.get('name') != b.get('name') \
+            or a.get('referencedDecl', {}).get('id') != b.get('referencedDecl', {}).get('id'):
+        return False
+    ia, ib = a.get('inner', ()), b.get('inner', ())
+    return len(ia) == len(ib) and all(same_expression(x, y) for x, y in zip(ia, ib))
 
 
 def conversion_step(node):
@@ -1740,11 +1848,12 @@ def assigned_decls(body):
     return out
 
 
-def import_source(path, dialect=None, module=None, plan=None, block_size=64, include=()):
+def import_source(path, dialect=None, module=None, plan=None, block_size=64, include=(), kernels=None):
     """Import every kernel and device function in `path`. Returns (program, report).
 
     `plan` is an optional launch plan (the pipeline.json qpel writes); without one,
-    each kernel becomes one dispatch over the single shape parameter."""
+    each kernel becomes one dispatch over the single shape parameter. `kernels`
+    imports only those kernels and the functions they call."""
     path = Path(path)
     dialect = dialect or clang_ast.dialect_of(path)
     unit, source = clang_ast.parse(path, dialect, include)
@@ -1753,13 +1862,13 @@ def import_source(path, dialect=None, module=None, plan=None, block_size=64, inc
         raise ValueError(f'{module!r} cannot be a qpel module name; pass one explicitly')
     plan = normalize_plan(plan) if plan else plan
     importer = Importer(unit, source, path, dialect, module)
-    program = importer.run(plan, block_size)
+    program = importer.run(plan, block_size, kernels)
     report = {'source': str(path), 'dialect': dialect, 'module': module,
               'kernels': [d['name'] for d in importer.decls if importer.functions[d['name']][2]],
               'helpers': [d['name'] for d in importer.decls if not importer.functions[d['name']][2]],
               'adaptations': importer.adaptations, 'warnings': unguarded_kernels(program),
               'qualified': {k: importer.qualified[k] for k in importer.arguments}, 'arguments': importer.arguments,
-              'host_spans': importer.host_spans}
+              'host_spans': importer.host_spans, 'header_host_bodies': importer.header_host_bodies}
     return program, report
 
 

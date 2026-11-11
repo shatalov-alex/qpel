@@ -32,7 +32,8 @@ def main(argv=None):
     # Originals against what qpel makes of them; the Metal rows need the Apple GPU.
     steps.append(('behaviour rows', [args.python, '-m', 'differential.matrix'] + ([] if args.gpu else ['--cpu'])))
     if args.gpu:
-        steps.append(('Apple GPU', [args.python, str(HERE/'gpu_tests/run_gpu_tests.py')]))
+        # Corpus programs are checked on the GPU by the behaviour rows above (their Metal rows).
+        steps.append(('Apple GPU', [args.python, str(HERE/'gpu_tests/run_gpu_tests.py'), '--skip-corpus']))
     results = []
     for label, command in steps:
         print(f'\n=== {label}', flush=True)
