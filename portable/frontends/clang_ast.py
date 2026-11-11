@@ -6,7 +6,9 @@ generates code; the AST is only read.
 """
 import json
 from pathlib import Path
+import re
 import subprocess
+import tempfile
 
 INCLUDE = Path(__file__).resolve().parent/'include'
 DIALECTS = {'.cu': 'cuda', '.cuh': 'cuda', '.metal': 'metal'}
@@ -19,7 +21,7 @@ class SourceError(ValueError):
 def command(path, dialect, include=()):
     extra = [arg for folder in include for arg in ('-I', str(folder))]
     if dialect == 'cuda':
-        return ['clang', '-x', 'cuda', '--cuda-host-only', '-nocudainc', '-nocudalib',
+        return ['clang', '-std=c++17', '-x', 'cuda', '--cuda-host-only', '-nocudainc', '-nocudalib',
                 '-I', str(INCLUDE), *extra, '-include', 'cuda_runtime.h',  # nvcc includes it implicitly
                 '-fsyntax-only', '-Xclang', '-ast-dump=json', str(path)]
     if dialect == 'metal':
@@ -34,16 +36,79 @@ def dialect_of(path):
         raise ValueError(f'Cannot tell the dialect of {path}; use .cu or .metal') from None
 
 
+# Declarations from these folders (the C++ standard library, the macOS SDK, the
+# Metal toolchain) are never imported, and are most of the AST of a real file:
+# llama.cpp's headers pull in <vector>, <unordered_map>, ... (~600 MB of JSON).
+SYSTEM = ('/Applications/Xcode', '/Library/Developer/', '/usr/include/', '/usr/lib/', '/opt/homebrew/')
+FILE = re.compile(r'"file": "((?:[^"\\]|\\.)*)"')
+LINE = re.compile(r'"line": (\d+)')
+INCLUDED_FROM = re.compile(r'"includedFrom": \{[^{}]*\}')
+
+
+def is_system(file):
+    return file is not None and file.startswith(SYSTEM)
+
+
+def last_location(text, state):
+    """Update state {'file', 'line'} to the last location written in `text` (clang's JSON order)."""
+    text = INCLUDED_FROM.sub('', text)
+    events = [(m.start(), 'file', json.loads('"' + m.group(1) + '"')) for m in FILE.finditer(text)]
+    events += [(m.start(), 'line', int(m.group(1))) for m in LINE.finditer(text)]
+    for _, key, value in sorted(events):
+        state[key] = value
+
+
+def read_unit(stream):
+    """The translation unit from clang's JSON dump, without system-header declarations.
+
+    clang prints one top-level declaration per 4-space-indented block, and writes a
+    location's file and line only when they change, so each kept declaration gets
+    the file and line in effect before it ('_seed', used by annotate)."""
+    head, decls, chunk, state, started = [], [], None, {'file': None, 'line': None}, False
+    for line in stream:
+        if chunk is None:
+            if line == '    {\n':
+                chunk, started = [line], True
+            elif not started:
+                head.append(line)
+            continue
+        chunk.append(line)
+        if line in ('    },\n', '    }\n'):
+            text = ''.join(chunk)
+            before = dict(state)
+            at = dict(state)  # where the declaration itself is: its "loc", written before its "range"
+            last_location(text[:text.find('"range"')], at)
+            last_location(text, state)
+            if not is_system(at['file']):
+                decl = json.loads(text.rstrip().rstrip(','))
+                decl['_seed'] = before
+                decls.append(decl)
+            chunk = None
+    unit = json.loads(re.sub(r',\s*"inner": \[\s*$', '', ''.join(head)) + '}')
+    unit['inner'] = decls
+    return unit
+
+
 def parse(path, dialect, include=()):
     """Return (translation unit, source text). Locations are annotated, see annotate().
 
-    `include` lists extra header folders, such as stubs for a library the source includes."""
+    `include` lists extra header folders, such as stubs for a library the source includes.
+    Declarations from system headers are left out (see SYSTEM)."""
     path = Path(path)
-    result = subprocess.run(command(path, dialect, include), capture_output=True, text=True)
-    if result.returncode != 0:
-        errors = [line for line in result.stderr.splitlines() if 'error:' in line]
-        raise SourceError(f'{path}: clang rejected the source:\n' + '\n'.join(errors[:10] or [result.stderr[-2000:]]))
-    unit = json.loads(result.stdout)
+    with tempfile.TemporaryFile('w+') as errors:
+        process = subprocess.Popen(command(path, dialect, include), stdout=subprocess.PIPE, stderr=errors, text=True,
+                                   bufsize=1 << 20)
+        with process.stdout:
+            try:
+                unit = read_unit(process.stdout)
+            except json.JSONDecodeError:
+                unit = None
+        process.wait()
+        errors.seek(0)
+        stderr = errors.read()
+    if process.returncode != 0 or unit is None:
+        lines = [line for line in stderr.splitlines() if 'error:' in line]
+        raise SourceError(f'{path}: clang rejected the source:\n' + '\n'.join(lines[:10] or [stderr[-2000:]]))
     annotate(unit)
     return unit, path.read_text()
 
@@ -74,6 +139,8 @@ def annotate(unit):
             point(loc)
 
     def visit(node):
+        if '_seed' in node:  # first kept declaration after left-out ones, see read_unit()
+            state.update(node.pop('_seed'))
         location(node.get('loc'))
         r = node.get('range')
         if r:

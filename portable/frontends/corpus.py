@@ -10,10 +10,14 @@ the result changes, so progress (or a regression) is always a visible diff:
 
     python3 -m frontends.corpus            # print the report
     python3 -m frontends.corpus --update   # rewrite coverage.json after a change
+    python3 -m frontends.corpus --messages # every blocker message, most frequent first
+    python3 -m frontends.corpus --check    # fail if the result differs (check_all runs this)
 """
 import argparse
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
 import json
+import re
 from pathlib import Path
 
 from . import clang_ast
@@ -56,8 +60,25 @@ def kernels(functions):
     return out
 
 
+def source_messages(entry):
+    """Counter of (code, message with numbers blanked) over every function of one source."""
+    found = Counter()
+    for info in survey(entry).values():
+        for issue in info['issues']:
+            found[(issue['code'], re.sub(r'\b\d+\b', 'N', issue['message']))] += 1
+    return found
+
+
+def source_coverage(entry):
+    return kernels(survey(entry))
+
+
 def coverage():
-    return {entry['source']: kernels(survey(entry)) for entry in entries()}
+    """{source: {kernel: blockers}} for the whole corpus; sources are surveyed in parallel."""
+    listed = entries()
+    with ProcessPoolExecutor() as pool:
+        found = list(pool.map(source_coverage, listed))
+    return {entry['source']: result for entry, result in zip(listed, found)}
 
 
 def report(result):
@@ -83,9 +104,20 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--update', action='store_true', help='rewrite corpus/coverage.json')
     parser.add_argument('--details', action='store_true', help='list every blocker with its location')
+    parser.add_argument('--messages', action='store_true', help='rank blocker messages over the whole corpus')
+    parser.add_argument('--check', action='store_true', help='fail when the result differs from coverage.json')
     args = parser.parse_args(argv)
+    if args.messages:
+        with ProcessPoolExecutor() as pool:
+            total = sum(pool.map(source_messages, entries()), Counter())
+        for (code, message), count in total.most_common():
+            print(f'{count:5} {code:22} {message}')
+        return 0
     result = coverage()
     print(report(result))
+    if args.check and result != json.loads(COVERAGE.read_text()):
+        print('corpus coverage changed; check it, then run python3 -m frontends.corpus --update')
+        return 1
     if args.details:
         for source, found in result.items():
             for kernel, blockers in found.items():

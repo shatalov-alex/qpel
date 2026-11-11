@@ -108,6 +108,22 @@ The nvcc check compiles every fixture (sm_75–sm_90), the Metal check compiles 
 - **Exit criterion:** every corpus kernel passes all five rows of the matrix, and the MCP/IDE import path is retired.
 
 ### Phase 2: IR v2, text syntax and real-world coverage (3–6 weeks)
+**Status 2026-11-11: survey done, work order set by it.** The corpus now holds a pinned slice of llama.cpp (commit 91d2fc3, MIT, `corpus/llama.cpp/` with `SHA256SUMS`): ten CUDA files (arange, scale, clamp, fill, softcap, unary, diag_mask, argmax, sum_rows, cumsum) and all of `ggml-metal.metal`. clang parses them offline against declaration-only SDK stubs; system-header declarations are dropped while clang's JSON streams in (a llama.cpp file is ~600 MB of AST JSON, nearly all of it libc++). Coverage: **6 of 129 kernels** import (the SAM 2 ones). `python3 -m frontends.corpus --messages` ranks every blocker. Grouped, in order of how many kernels they block:
+
+| Blocker | Where | Needed for |
+|---|---|---|
+| 64/16/8-bit integers (`int64_t`/`size_t` sizes and strides, `short`/`ushort`, writable `uint8_t`) | both | almost every kernel |
+| Byte-addressed buffers and typed row pointers (`device const char* src0`, `(device float*)(src0 + i01*nb01)`, `const float* row = x + i*n`) | Metal (all), CUDA (row kernels) | ggml's tensor layout: strides are in bytes |
+| Argument structs (`constant ggml_metal_kargs_* & args`) | Metal | every Metal kernel |
+| Templates used with several types; non-type template parameters; Metal function constants | both | unary, binary, getrows, ... |
+| Launch geometry beyond one thread per element: `blockIdx.y` rows, `threadIdx.x` loops with `blockDim.x` stride, grid-stride loops, Metal `tgpig`/`tpitg`/`ntg` | both | most kernels |
+| Math library (`expf`, `tanhf`, `sqrtf`, `fabs`, `fminf`/`fmaxf`, `sin`/`cos`, `log`, `erf`, `floor`/`round`, `select`) | both | unary ops, norms, softmax |
+| Device functions in the library's own headers (`common.cuh`: `ggml_cuda_pdl_sync`, `fastdiv`, `warp_reduce_sum`) | CUDA | most CUDA kernels |
+| Threadgroup memory, barriers, `simd_sum`/warp shuffles | both | reductions (Phase 3 core) |
+| Vectors (`float4`, `half4`), `float[N]` locals, matrices | Metal | vectorised variants, matmul (Phase 3) |
+
+**Work order:** (1) IR v3 types as constructors: `i8…u64`, `bool`, `f16`, `bf16`, `f32`, and `buffer<T, read|write|atomic>`, with v1/v2 migration. (2) Importer: header device functions, template instantiations imported one by one, 64-bit and 16-bit integers. (3) Pointers into buffers and byte-addressed buffers, argument structs (flattened), function constants as specialisation constants. (4) Launch geometry in the IR: group id, local id, group size, explicit launch plans. (5) Math functions with a stated accuracy per function (NUMERICS.md), so the behaviour rows compare them within ULP bounds instead of bit for bit. (6) Text syntax. (7) Feature sets per program and backend. (8) Fuzzing. Then the NVIDIA gate. Shared memory and simdgroup reductions stay in Phase 3, which the survey confirms is the next wall for reductions.
+
 - Redesign types as constructors: scalars `u8/u16/u32/u64/i8…i64/f16/bf16/f32`, `vec<T,N>`, `buffer<T, read|write|atomic>`, `shared<T,N>`. Add an IR migration from v1.
 - Add `break`/`continue` and explicit `barrier(workgroup)`, and generalise the existing uniformity checks.
 - **Text syntax** (`.qpel`) with a parser to IR and a printer from IR that round-trip. This becomes the main way of writing qpel; MPS stays optional.

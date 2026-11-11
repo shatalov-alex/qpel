@@ -45,7 +45,9 @@ void launch(float* s, unsigned int n) { lib::k<<<1, 1>>>(s, s, n); }
         self.assertEqual(codes['twice'], ['template'])
         # the switch is reported, and so is what is inside it
         self.assertEqual(sorted(set(codes['lowest'])), ['atomic-type', 'local-type', 'switch'])
-        self.assertIn('call-rejected', codes['k'])
+        # k's own blocker (float atomics, through lowest's parameter) and those of the functions it calls
+        self.assertEqual(codes['k'], ['atomic-type'])
+        self.assertTrue(any(b.startswith('template at twice') for b in corpus.kernels(results)['k']))
         self.assertEqual(results['k']['calls'], ['lowest', 'twice'])
 
     def test_one_parameter_blocker_is_reported_once(self):
@@ -82,15 +84,24 @@ void launch(unsigned int* out, unsigned int n) { k<<<(n + 63) / 64, 64>>>(out, n
 
 @unittest.skipUnless(HAS_CLANG, 'clang required')
 class Coverage(unittest.TestCase):
-    def test_coverage_matches_the_recorded_result(self):
+    # The whole corpus takes minutes, so check_all runs `frontends.corpus --check`; SAM 2 stays a unit test.
+    def test_sam2_coverage_matches_the_recorded_result(self):
         recorded = json.loads(corpus.COVERAGE.read_text())
-        self.assertEqual(corpus.coverage(), recorded,
+        entry = next(e for e in corpus.entries() if e['source'].startswith('sam2/'))
+        self.assertEqual(corpus.source_coverage(entry), recorded[entry['source']],
                          'corpus coverage changed; check it, then run python3 -m frontends.corpus --update')
 
     def test_corpus_sources_are_unmodified(self):
         for entry in corpus.entries():
             data = (corpus.CORPUS/entry['source']).read_bytes()
             self.assertEqual(hashlib.sha256(data).hexdigest(), entry['sha256'], entry['source'])
+
+    def test_vendored_headers_are_unmodified(self):
+        for sums in corpus.CORPUS.glob('*/SHA256SUMS'):
+            for line in sums.read_text().splitlines():
+                digest, name = line.split(maxsplit=1)
+                data = (sums.parent/name).read_bytes()
+                self.assertEqual(hashlib.sha256(data).hexdigest(), digest, sums.parent.name + '/' + name)
 
 
 if __name__ == '__main__':

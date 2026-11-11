@@ -103,7 +103,11 @@ def peel(node):
 
 
 def decl_name(node):
-    node = peel(node)
+    """The name a node refers to, or None (also when a conversion on the way is not in qpel)."""
+    try:
+        node = peel(node)
+    except Unsupported:
+        return None
     if node['kind'] == 'DeclRefExpr':
         return node['referencedDecl'].get('name')
     return None
@@ -361,6 +365,10 @@ class Importer:
                 arguments = ', '.join(c.get('type', {}).get('qualType', '?') for c in uses[0]['inner'] if c['kind'] == 'TemplateArgument')
                 self.adaptations.append(f'template {node["name"]} is used only with <{arguments}> and was imported for it')
                 return self.top_level(uses[0])
+            error = Unsupported(node, 'template', f'template {node.get("name", "")} is used with {len(uses)} types; qpel has no templates')
+            if self.issues is not None:  # survey the first instantiation, so the template's other blockers show too
+                self.issues.append((node.get('name'), error))
+                return self.top_level(uses[0])
             self.rejected.add(node.get('name'))
             self.current = node.get('name')
             raise Unsupported(node, 'template', f'template {node.get("name", "")} is used with {len(uses)} types; qpel has no templates')
@@ -405,7 +413,7 @@ class Importer:
                 t = describe(p['type']['qualType'])
                 if t[0] == 'pointer' and t[2] in ATOMIC_ELEMENTS.values():
                     atomic.add((fname, i))
-                if self.dialect.is_kernel(decl):
+                if self.dialect.is_kernel(decl) and plan_groups is not None:  # a survey reads kernels independently
                     group = plan_groups.get((fname, p['name']), p['name'])
                     union((fname, i), ('resource', group))
         for decl in self.decls:
@@ -481,11 +489,11 @@ class Importer:
         Returns {function: {'kind': 'kernel' | 'device', 'issues': [...], 'calls': [...]}};
         CUDA host functions are listed with kind 'host'."""
         self.register()
-        types = self.parameter_types({})
+        types = self.parameter_types(None)
         self.kernel_params = {}
         for decl in self.decls:
             self.current = decl['name']
-            self.function(decl, types)
+            self.attempt(lambda: self.function(decl, types))
         results = {name: {'kind': 'host', 'issues': [], 'calls': []} for name in self.host}
         for decl in self.decls:
             calls = sorted({decl_name(n['inner'][0]) for n in walk(body_of(decl)) if n['kind'] == 'CallExpr'}
