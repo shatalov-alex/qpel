@@ -289,6 +289,32 @@ class Lowering:
         if target=='f16':return 'QPEL_TO_F16('+text+')'
         if target=='bf16':return 'QPEL_TO_BF16('+text+')'
         raise ValueError('Unsupported conversion target '+target)
+    def features(self):
+        """The backend features this program uses, from its types and nodes (not from generated text).
+        The build enables the matching support in backends/*.h; see FEATURE_DEFINES in build_backends."""
+        nodes=self.nodes.values()
+        terms=set(self.expression_types.values())|{term(n) for n in nodes if n['kind'] in TYPE_KINDS}
+        scalars={element(t) if is_buffer(t) else t for t in terms}
+        kinds={n['kind'] for n in nodes}
+        found=set()
+        if 'f16' in scalars or 'F16Cast' in kinds:found.add('float16_storage')
+        if 'bf16' in scalars:found.add('bfloat16_storage')
+        if 'i32' in scalars or kinds&INT32_KINDS:found.add('int32')
+        if scalars&{'i8','u16','i16'}:found.add('int8_16')
+        if scalars&{'u64','i64'}:found.add('int64')
+        if any(is_buffer(t) and t not in LEGACY_MACROS for t in terms):found.add('typed_buffers')
+        if 'ReduceSumF32' in kinds:found.add('ordered_sum_f32')
+        if 'WorkgroupSumF32' in kinds:found.add('workgroup_sum_f32')
+        if 'Grid3D' in kinds:found.add('grid_3d')
+        if 'Groups' in kinds:found.add('groups')
+        if 'Math' in kinds:found.add('math')
+        for n in nodes:
+            if n['kind']=='Parameter' and n['attributes'].get('isBuffer'):
+                t=term(self.child(n,'type'))
+                if not is_buffer(t) and t!='shape3':found.add('scalar_arguments')
+            if n['kind']=='Cast' and n['attributes']['to'] in INTEGER_TERMS and \
+                    self.expression_types.get(self.child(n,'operand')['id'])=='f32':found.add('float_to_int')
+        return sorted(found)
     def plan(self):
         p=self.nodes[self.program['roots']['pipeline']];module=self.nodes[self.program['roots']['module']]
         resources=[]
@@ -305,7 +331,7 @@ class Lowering:
                 # Explicit geometry: groups of blockShape threads, counted per axis from the grid shape.
                 stage.update(domain='groups',groups=[s['attributes'].get('groups'+a,'1') for a in 'XYZ'])
             stages.append(stage)
-        plan=dict(schema=2,module=module['attributes']['name'],resources=resources,stages=stages)
+        plan=dict(schema=2,module=module['attributes']['name'],resources=resources,stages=stages,features=self.features())
         structs={d['attributes']['name']:[[f['attributes']['name'],term(self.child(f,'type'))] for f in self.children(d,'fields')] for d in self.children(module,'structs')}
         if structs:plan['structs']=structs  # layouts, so hosts can pack struct arguments
         return plan

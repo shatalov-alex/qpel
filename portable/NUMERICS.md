@@ -80,6 +80,10 @@ Metal has no `erf`, `expm1` or `log1p`; qpel will define them itself rather than
 - **Views**: a local of buffer type is a pointer into a buffer; it may start without a value and be assigned later. `View {element}` reads a buffer's bytes as another element type (`(device float*)(src0 + offset)`); `buffer + integer` offsets in elements of the buffer's type, so on an `i8` buffer it offsets in bytes. As in C, a view must be aligned for its element type and stay inside the buffer. A writable buffer may be read through a read view. Pipeline effects follow views and buffer locals (initializer and every assignment) back to their parameters.
 - **Function constants** (Metal) are not part of the IR: the importer specialises a kernel to given values (`constants=`), folding the branches they decide, as Metal does when it builds the pipeline. Each specialisation is its own qpel program.
 
+## Features
+
+Each program's features (`float16_storage`, `int64`, `groups`, `math`, `scalar_arguments`, ...) come from its IR: `qpel_ir.Lowering.features()` reads its types and nodes. The launch plan and the build manifest record them, and the build enables exactly the matching support blocks of `backends/cuda.h` and `backends/metal.h` (`build_backends.FEATURE_DEFINES`); a backend profile adds what a feature needs on that target (`METAL_STANDARD`: bf16 needs Metal 3.1). Before 2026-11-11 the build searched the generated text for macro names; the switch left every generated source byte-identical.
+
 ## Single emitter
 
 Since 2026-10-19 MPS no longer generates code; it exports IR only, and this numeric emitter is the only one. `build_backends.build` rejects source without the `u32-modulo-v1` contract line, and every manifest records `numeric_contract: u32-modulo-v1` (plus `i32-wrap-v1` when the program uses i32, `integers-v3` when it uses a version 3 construct, and `f32-strict-v1` when it computes in float32).

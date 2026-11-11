@@ -48,6 +48,27 @@ def launch_header(plan):
             lines.append('QPEL_STAGE('+', '.join([kernel,grid,str(block)]+args)+')')
     return '\n'.join(lines)+'\n'
 
+# Program features (qpel_ir.Lowering.features, recorded in the launch plan) -> the support
+# blocks of backends/*.h they need, in this order.
+FEATURE_DEFINES = [('float16_storage', 'QPEL_F16_ENABLED'), ('ordered_sum_f32', 'QPEL_SUM_F32_ENABLED'),
+                   ('workgroup_sum_f32', 'QPEL_GROUP_SUM_F32_ENABLED'), ('int32', 'QPEL_I32_ENABLED'),
+                   ('scalar_arguments', 'QPEL_VALUE_ENABLED'), ('grid_3d', 'QPEL_GRID3D_ENABLED'),
+                   (('int8_16', 'int64', 'typed_buffers'), 'QPEL_INT_WIDTHS_ENABLED'),
+                   ('bfloat16_storage', 'QPEL_BF16_ENABLED'), ('float_to_int', 'QPEL_F32_TO_INT_ENABLED'),
+                   ('groups', 'QPEL_GROUPS_ENABLED'), ('math', 'QPEL_MATH_ENABLED')]
+# Backend profiles: what each target needs beyond its baseline for a feature.
+METAL_STANDARD = {'bfloat16_storage': 'metal3.1'}  # bfloat needs Metal 3.1 (macOS 14); the baseline is metal3.0
+
+
+def defines(features):
+    lines = b''
+    for feature, define in FEATURE_DEFINES:
+        wanted = feature if isinstance(feature, tuple) else (feature,)
+        if set(wanted) & set(features):
+            lines += f'#define {define} 1\n'.encode()
+    return lines
+
+
 def build(source, output, plan_path=None):
     body = source.read_bytes()
     if CONTRACT not in body: raise ValueError('Source lacks the qpel numeric contract; build it with qpel.py')
@@ -61,18 +82,9 @@ def build(source, output, plan_path=None):
     outputs = {}
     for backend, suffix in [('metal', 'metal'), ('cuda', 'cu')]:
         support = (HERE / 'backends' / (backend + '.h')).read_bytes()
-        half = b'#define QPEL_F16_ENABLED 1\n' if any(token in body for token in (b'QPEL_F16', b'QPEL_READ_F16', b'QPEL_WRITE_F16', b'QPEL_TO_F16')) else b''
-        reduction = b'#define QPEL_SUM_F32_ENABLED 1\n' if b'QPEL_SUM_F32(' in body else b''
-        group = b'#define QPEL_GROUP_SUM_F32_ENABLED 1\n' if b'QPEL_GROUP_SUM_F32(' in body else b''
-        signed = b'#define QPEL_I32_ENABLED 1\n' if b'QPEL_I32' in body or b'QPEL_ATOMIC_I32' in body else b''
-        values = b'#define QPEL_VALUE_ENABLED 1\n' if b'QPEL_VALUE(' in body else b''
-        grid3d = b'#define QPEL_GRID3D_ENABLED 1\n' if b'QPEL_GRID3D_PARAM' in body else b''
-        widths = b'#define QPEL_INT_WIDTHS_ENABLED 1\n' if any(t in body for t in (b'QPEL_I8', b'QPEL_U16', b'QPEL_I16', b'QPEL_U64', b'QPEL_I64', b'QPEL_READ(', b'QPEL_WRITE(')) else b''
-        brain = b'#define QPEL_BF16_ENABLED 1\n' if b'QPEL_BF16' in body or b'QPEL_TO_BF16' in body else b''
-        saturate = b'#define QPEL_F32_TO_INT_ENABLED 1\n' if b'QPEL_F32_TO_' in body else b''
-        groups = b'#define QPEL_GROUPS_ENABLED 1\n' if b'QPEL_GROUPS_PARAM' in body else b''
-        maths = b'#define QPEL_MATH_ENABLED 1\n' if b'QPEL_MATH_' in body else b''
-        result = half + reduction + group + signed + values + grid3d + widths + brain + saturate + groups + maths + b'// Generated backend package. Edit the MPS model or backend support.\n' + support + b'\n' + body
+        if 'features' not in plan:
+            raise ValueError('Launch plan lacks the program features; build it with qpel.py')
+        result = defines(plan['features']) + b'// Generated backend package. Edit the MPS model or backend support.\n' + support + b'\n' + body
         path = output / (module+'.'+suffix)
         path.write_bytes(result)
         if backend == 'metal':
@@ -83,15 +95,16 @@ def build(source, output, plan_path=None):
             (output / 'cuda_host.py').write_bytes(cuda_host)
         outputs[backend] = {'file': path.name, 'sha256': hashlib.sha256(result).hexdigest(),
                             'support_sha256': hashlib.sha256(support).hexdigest()}
-        if backend == 'metal' and brain:
-            outputs[backend]['standard'] = 'metal3.1'  # bfloat needs Metal 3.1 (macOS 14)
+        standards = sorted({METAL_STANDARD[f] for f in plan['features'] if f in METAL_STANDARD})
+        if backend == 'metal' and standards:
+            outputs[backend]['standard'] = standards[-1]
     (output / (module+'.qpel.h')).write_bytes(body)
     (output / 'pipeline.inc').write_text(dispatch)
     (output / 'pipeline.json').write_bytes(plan_bytes)
     contract = 'u32-modulo-v1' + (', i32-wrap-v1' if b'qpel numeric contract: i32-wrap-v1' in body else '') + \
         (', integers-v3' if b'qpel numeric contract: integers-v3' in body else '') + \
         (', f32-strict-v1' if b'qpel numeric contract: f32-strict-v1' in body else '')
-    manifest = {'numeric_contract': contract, 'neutral_source': str(source.resolve()), 'neutral_source_sha256': hashlib.sha256(body).hexdigest(),
+    manifest = {'numeric_contract': contract, 'features': plan['features'], 'neutral_source': str(source.resolve()), 'neutral_source_sha256': hashlib.sha256(body).hexdigest(),
                 'neutral_pipeline':str(plan_path.resolve()),'pipeline_sha256':hashlib.sha256(plan_bytes).hexdigest(),
                 'metal_host_sha256':hashlib.sha256(host).hexdigest(),
                 'cuda_host_sha256':hashlib.sha256(cuda_host).hexdigest(),

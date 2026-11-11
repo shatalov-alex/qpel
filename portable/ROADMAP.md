@@ -132,12 +132,14 @@ The nvcc check compiles every fixture (sm_75–sm_90), the Metal check compiles 
 
 **Step 6 done (2026-11-11): text syntax.** `qpel_text.py` prints any program as text and parses text back to IR; every fixture round-trips (parse(print(p)) = p, print again = same text). `qpel.py` builds `.qpel` files, prints and parses, and imports CUDA/Metal straight to text. TEXT.md describes the syntax; `examples/saxpy.qpel` is written by hand and runs.
 
+**Step 7 done (2026-11-11): declared features** (see the struck-through item below).
+
 **Work order:** (1) IR v3 types as constructors: `i8…u64`, `bool`, `f16`, `bf16`, `f32`, and `buffer<T, read|write|atomic>`, with v1/v2 migration. (2) Importer: header device functions, template instantiations imported one by one, 64-bit and 16-bit integers. (3) Pointers into buffers and byte-addressed buffers, argument structs (flattened), function constants as specialisation constants. (4) Launch geometry in the IR: group id, local id, group size, explicit launch plans. (5) Math functions with a stated accuracy per function (NUMERICS.md), so the behaviour rows compare them within ULP bounds instead of bit for bit. (6) Text syntax. (7) Feature sets per program and backend. (8) Fuzzing. Then the NVIDIA gate. Shared memory and simdgroup reductions stay in Phase 3, which the survey confirms is the next wall for reductions.
 
 - Redesign types as constructors: scalars `u8/u16/u32/u64/i8…i64/f16/bf16/f32`, `vec<T,N>`, `buffer<T, read|write|atomic>`, `shared<T,N>`. Add an IR migration from v1.
 - Add `break`/`continue` and explicit `barrier(workgroup)`, and generalise the existing uniformity checks.
 - **Text syntax** (`.qpel`) with a parser to IR and a printer from IR that round-trip. This becomes the main way of writing qpel; MPS stays optional.
-- Replace substring capability detection with a declared feature set per program and per backend profile (CUDA sm_XX, Metal version).
+- ~~Replace substring capability detection with a declared feature set per program and per backend profile (CUDA sm_XX, Metal version).~~ Done 2026-11-11: `Lowering.features()` derives the program's features from its IR, the launch plan and manifest record them, and `build_backends.FEATURE_DEFINES` / `METAL_STANDARD` map them to backend support blocks and the Metal language version. All 144 generated sources stayed byte-identical. No feature needs more than sm_75 on CUDA yet.
 - Grow the corpus to real code: llama.cpp `ggml-cuda` and `ggml-metal` element-wise and reduction kernels, and PyTorch MPS custom kernels. Publish a **coverage metric** (% importable, % round-trip-clean) per corpus and direction.
 - Add differential fuzzing across backends to the round-trip matrix.
 - **Milestone gate:** at the end of this phase, run the deferred NVIDIA execution tests (GPGPU-Sim, then one real card).
