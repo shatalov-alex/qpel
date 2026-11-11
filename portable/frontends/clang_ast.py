@@ -16,13 +16,14 @@ class SourceError(ValueError):
     """The source could not be parsed by clang at all."""
 
 
-def command(path, dialect):
+def command(path, dialect, include=()):
+    extra = [arg for folder in include for arg in ('-I', str(folder))]
     if dialect == 'cuda':
         return ['clang', '-x', 'cuda', '--cuda-host-only', '-nocudainc', '-nocudalib',
-                '-I', str(INCLUDE), '-include', 'cuda_runtime.h',  # nvcc includes it implicitly
+                '-I', str(INCLUDE), *extra, '-include', 'cuda_runtime.h',  # nvcc includes it implicitly
                 '-fsyntax-only', '-Xclang', '-ast-dump=json', str(path)]
     if dialect == 'metal':
-        return ['xcrun', 'metal', '-std=metal3.0', '-fsyntax-only', '-Xclang', '-ast-dump=json', str(path)]
+        return ['xcrun', 'metal', '-std=metal3.0', *extra, '-fsyntax-only', '-Xclang', '-ast-dump=json', str(path)]
     raise ValueError('Unknown dialect: ' + str(dialect))
 
 
@@ -33,10 +34,12 @@ def dialect_of(path):
         raise ValueError(f'Cannot tell the dialect of {path}; use .cu or .metal') from None
 
 
-def parse(path, dialect):
-    """Return (translation unit, source text). Locations are annotated, see locate()."""
+def parse(path, dialect, include=()):
+    """Return (translation unit, source text). Locations are annotated, see annotate().
+
+    `include` lists extra header folders, such as stubs for a library the source includes."""
     path = Path(path)
-    result = subprocess.run(command(path, dialect), capture_output=True, text=True)
+    result = subprocess.run(command(path, dialect, include), capture_output=True, text=True)
     if result.returncode != 0:
         errors = [line for line in result.stderr.splitlines() if 'error:' in line]
         raise SourceError(f'{path}: clang rejected the source:\n' + '\n'.join(errors[:10] or [result.stderr[-2000:]]))

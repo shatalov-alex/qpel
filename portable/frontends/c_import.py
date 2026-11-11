@@ -191,6 +191,10 @@ class Dialect:
     def is_kernel(self, decl):
         raise NotImplementedError
 
+    def is_host(self, decl):
+        """True for CPU code that a GPU source may also contain."""
+        return False
+
     def binding(self, param, position):
         return position
 
@@ -206,6 +210,10 @@ class Cuda(Dialect):
 
     def is_kernel(self, decl):
         return 'CUDAGlobalAttr' in attributes(decl)
+
+    def is_host(self, decl):
+        attrs = attributes(decl)
+        return 'CUDAGlobalAttr' not in attrs and 'CUDADeviceAttr' not in attrs
 
 
 class Metal(Dialect):
@@ -293,8 +301,14 @@ class Graph:
 # --- importer --------------------------------------------------------------
 
 class Importer:
-    def __init__(self, unit, source, path, dialect, module):
+    def __init__(self, unit, source, path, dialect, module, survey=False):
         self.dialect = DIALECT[dialect]
+        # In a survey every blocker is recorded as (function, error) and the rest of the
+        # source is still read; otherwise the first one is raised.
+        self.issues = [] if survey else None
+        self.current = None
+        self.host = []  # CUDA host functions, which are not GPU code
+        self.rejected = set()  # functions that could not be read at all, such as templates
         self.source = source
         self.path = path
         self.module = module
@@ -306,16 +320,37 @@ class Importer:
         self.adaptations = []
         decls = []
         for node in clang_ast.main_file_decls(unit, path):
-            decls.extend(self.top_level(node))
+            decls.extend(self.attempt(lambda: self.top_level(node), []))
         self.decls = decls
+
+    def attempt(self, read, fallback=None):
+        """read(), or in a survey record its Unsupported and return fallback."""
+        if self.issues is None:
+            return read()
+        try:
+            return read()
+        except Unsupported as error:
+            self.issues.append((self.current, error))
+            return fallback
 
     def top_level(self, node):
         kind = node['kind']
         if kind == 'LinkageSpecDecl':
             return [d for child in node.get('inner', ()) for d in self.top_level(child)]
+        if kind == 'NamespaceDecl':
+            # qpel has one flat module; function names must still be unique, which run() checks.
+            self.adaptations.append(f'namespace {node.get("name", "(anonymous)")} was flattened')
+            return [d for child in node.get('inner', ()) for d in self.attempt(lambda: self.top_level(child), [])]
+        if kind == 'FunctionTemplateDecl':
+            self.rejected.add(node.get('name'))
+            self.current = node.get('name')
+            raise Unsupported(node, 'template', f'template {node.get("name", "")} is not in qpel; write it for one type')
         if kind == 'FunctionDecl':
             if body_of(node) is None or node.get('name', '').startswith('qpel_'):
                 return []  # declarations and qpel backend helpers
+            if self.dialect.is_host(node):
+                self.host.append(node['name'])
+                return []
             return [node]
         if kind in ('StaticAssertDecl', 'UsingDirectiveDecl', 'TypedefDecl') or \
                 (kind == 'CXXRecordDecl' and node.get('name') == 'QpelShape'):
@@ -375,27 +410,68 @@ class Importer:
                 if self.dialect.is_kernel(decl) and self.dialect.builtin(p):
                     continue  # thread builtins are not kernel arguments
                 t = describe(p['type']['qualType'])
-                if t[0] == 'pointer':
-                    scalar = 'atomic' if t[2] == 'u32' and find((decl['name'], i)) in atomic_groups else t[2]
-                    kind = BUFFER_KIND.get((scalar, t[1] and scalar != 'atomic'))
-                    if kind is None:
-                        raise Unsupported(p, 'buffer-type', f'{p["type"]["qualType"]} buffers are not in qpel yet')
-                elif t[0] == 'shape':
-                    kind = 'Shape3DType'
-                elif t[0] == 'scalar' and t[1] in SCALAR_KIND and t[1] != 'void':
-                    kind = SCALAR_KIND[t[1]]
-                else:
-                    raise Unsupported(p, 'parameter-type', f'parameter type {p["type"]["qualType"]} is not in qpel yet')
-                types[(decl['name'], i)] = kind
+                self.current = decl['name']
+                types[(decl['name'], i)] = self.attempt(lambda: self.parameter_type(decl, i, p, find, atomic_groups))
         return types
+
+    def parameter_type(self, decl, i, p, find, atomic_groups):
+        t = describe(p['type']['qualType'])
+        if t[0] == 'pointer':
+            scalar = 'atomic' if t[2] == 'u32' and find((decl['name'], i)) in atomic_groups else t[2]
+            kind = BUFFER_KIND.get((scalar, t[1] and scalar != 'atomic'))
+            if kind is None:
+                raise Unsupported(p, 'buffer-type', f'{p["type"]["qualType"]} buffers are not in qpel yet')
+            return kind
+        if t[0] == 'shape':
+            return 'Shape3DType'
+        if t[0] == 'scalar' and t[1] in SCALAR_KIND and t[1] != 'void':
+            return SCALAR_KIND[t[1]]
+        raise Unsupported(p, 'parameter-type', f'parameter type {p["type"]["qualType"]} is not in qpel yet')
 
     # -- functions --
 
-    def run(self, plan=None, block_size=64):
+    def register(self):
+        unique = []
         for decl in self.decls:
+            self.current = decl['name']
             if decl['name'] in self.functions:
-                raise Unsupported(decl, 'overload', 'overloaded or repeated function ' + decl['name'])
+                self.attempt(lambda: self.reject(Unsupported(decl, 'overload', 'overloaded or repeated function ' + decl['name'])))
+                continue
             self.functions[decl['name']] = (decl, self.graph.reserve(), self.dialect.is_kernel(decl))
+            unique.append(decl)
+        self.decls = unique
+
+    @staticmethod
+    def reject(error):
+        raise error
+
+    def survey(self):
+        """Read every function, recording each blocker instead of stopping at the first.
+
+        Returns {function: {'kind': 'kernel' | 'device', 'issues': [...], 'calls': [...]}};
+        CUDA host functions are listed with kind 'host'."""
+        self.register()
+        types = self.parameter_types({})
+        self.kernel_params = {}
+        for decl in self.decls:
+            self.current = decl['name']
+            self.function(decl, types)
+        results = {name: {'kind': 'host', 'issues': [], 'calls': []} for name in self.host}
+        for decl in self.decls:
+            calls = sorted({decl_name(n['inner'][0]) for n in walk(body_of(decl)) if n['kind'] == 'CallExpr'}
+                           & (set(self.functions) | self.rejected))
+            results[decl['name']] = {'kind': 'kernel' if self.functions[decl['name']][2] else 'device',
+                                     'issues': [], 'calls': calls}
+        for function, error in self.issues:
+            if error.code == 'untyped':
+                continue  # a consequence of a parameter blocker that is already listed
+            kind = 'template' if function in self.rejected else 'other'
+            entry = results.setdefault(function or '(file)', {'kind': kind, 'issues': [], 'calls': []})
+            entry['issues'].append({'code': error.code, 'at': error.location, 'message': error.args[0].split('] ', 1)[1]})
+        return results
+
+    def run(self, plan=None, block_size=64):
+        self.register()
         plan_groups = {}
         if plan:
             for stage in plan['stages']:
@@ -420,7 +496,7 @@ class Importer:
         position = 0
         shape_param = None
         self.grid3d = kernel and self.uses_grid3d(decl)
-        count = self.element_count(decl, types) if kernel and not self.grid3d else None
+        count = self.attempt(lambda: self.element_count(decl, types)) if kernel and not self.grid3d else None
         for i, p in enumerate(params_of(decl)):
             builtin = self.dialect.builtin(p) if kernel else None
             if builtin == 'grid':
@@ -431,6 +507,9 @@ class Importer:
                 self.scope[p['id']] = ('builtin', p['name'])
                 continue
             kind = types[(name, i)]
+            if kind is None:  # a survey already recorded why this parameter has no qpel type
+                self.scope[p['id']] = ('untyped', p['name'])
+                continue
             attrs = {'name': p['name']}
             if kernel:
                 attrs.update(binding=self.dialect.binding(p, position), isBuffer=True)
@@ -439,7 +518,8 @@ class Importer:
                 elif count is not None and p['id'] == count['id']:
                     kind = 'Shape3DType'
                 elif kind not in BUFFER_KIND.values() and kind not in VALUE_KINDS:
-                    raise Unsupported(p, 'scalar-kernel-argument', 'kernel arguments can be unsigned int, int or float')
+                    self.attempt(lambda: self.reject(Unsupported(
+                        p, 'scalar-kernel-argument', 'kernel arguments can be unsigned int, int or float')))
             position += 1
             ir = self.graph.add('Parameter', attrs, {'type': self.graph.add(kind)})
             self.scope[p['id']] = ('param', ir, kind)
@@ -450,12 +530,14 @@ class Importer:
                 self.scope[count['id']] = ('count', entry[1], entry[2])
                 self.adaptations.append(f'{name}: count {count["name"]} became a shape (count, 1, 1)')
             elif shape_param is None:
-                raise Unsupported(decl, 'no-extent', 'a 2D/3D kernel needs a uint3 shape argument' if self.grid3d else
-                                  'a kernel needs a uint3 shape, or an unsigned element count that the thread index is compared with')
+                self.attempt(lambda: self.reject(Unsupported(
+                    decl, 'no-extent', 'a 2D/3D kernel needs a uint3 shape argument' if self.grid3d else
+                    'a kernel needs a uint3 shape, or an unsigned element count that the thread index is compared with')))
             self.kernel_params[name] = {self.graph.nodes[p]['attributes']['name']: p for p in params}
         result = describe(decl['type']['qualType'].split('(')[0])
         if result[0] != 'scalar' or result[1] not in SCALAR_KIND:
-            raise Unsupported(decl, 'result-type', 'unsupported result type ' + decl['type']['qualType'])
+            self.attempt(lambda: self.reject(Unsupported(decl, 'result-type', 'unsupported result type ' + decl['type']['qualType'])))
+            result = ('scalar', 'void')
         body = self.block(body_of(decl))
         statements = self.graph.nodes[body]['children'].get('statements', [])
         if len(statements) == 1 and self.graph.nodes[statements[0]]['kind'] == 'Block':
@@ -521,6 +603,9 @@ class Importer:
         return self.graph.add('Block', children={'statements': self.statement(node)})
 
     def statement(self, node):
+        return self.attempt(lambda: self.read_statement(node), [])
+
+    def read_statement(self, node):
         kind = node['kind']
         add = self.graph.add
         if kind == 'CompoundStmt':
@@ -567,6 +652,12 @@ class Importer:
             return [add('Return', children={'value': value})]
         later = {'DoStmt': 'do-loop', 'SwitchStmt': 'switch', 'GotoStmt': 'goto', 'LabelStmt': 'goto'}
         if kind in later:
+            if self.issues is not None:  # a survey still reads what is inside, for further blockers
+                for child in node.get('inner', ()):
+                    if child.get('kind', '').endswith('Stmt'):
+                        self.as_block(child)
+                    elif child:
+                        self.attempt(lambda: self.expr(child))
             raise Unsupported(node, later[kind], f'{kind[:-4].lower()} statements are not in qpel yet')
         return [self.expression_statement(node)]
 
@@ -580,6 +671,7 @@ class Importer:
         if name.startswith('qpel_') and decl.get('storageClass') != 'auto' and 'init' not in decl:
             self.scope[decl['id']] = ('builtin', name)  # backend scratch for workgroup collectives
             return []
+        self.scope[decl['id']] = ('untyped', name)  # until it is read, so later uses are not reported again
         t = describe(decl['type']['qualType'])
         if t[0] != 'scalar' or t[1] not in SCALAR_KIND or t[1] == 'void':
             raise Unsupported(decl, 'local-type', f'local {name} of type {decl["type"]["qualType"]} is not in qpel yet')
@@ -629,7 +721,7 @@ class Importer:
     def lvalue(self, node):
         core = peel(node)
         if core['kind'] == 'DeclRefExpr':
-            entry = self.scope.get(core['referencedDecl']['id'])
+            entry = self.typed(self.scope.get(core['referencedDecl']['id']), node)
             if entry and entry[0] in ('param', 'local'):
                 return self.graph.add('Name', links={'declaration': entry[1]})
             raise Unsupported(node, 'assign-target', 'cannot assign to ' + core['referencedDecl'].get('name', '?'))
@@ -732,12 +824,18 @@ class Importer:
     def name(self, ident):
         return self.graph.add('Name', links={'declaration': ident})
 
+    def typed(self, entry, node):
+        """Stop at a use of a parameter whose type a survey has already reported."""
+        if entry and entry[0] == 'untyped':
+            raise Unsupported(node, 'untyped', f'{entry[1]} has no qpel type')
+        return entry
+
     def core(self, n, statement, address):
         add = self.graph.add
         kind = n['kind']
         if kind == 'DeclRefExpr':
             ref = n['referencedDecl']
-            entry = self.scope.get(ref['id'])
+            entry = self.typed(self.scope.get(ref['id']), n)
             if entry is None:
                 if ref.get('name') in ('threadIdx', 'blockIdx', 'blockDim', 'gridDim'):
                     raise Unsupported(n, 'thread-builtin', 'only blockIdx.x * blockDim.x + threadIdx.x is supported')
@@ -826,6 +924,7 @@ class Importer:
     def buffer(self, node):
         core = peel(node)
         entry = self.scope.get(core.get('referencedDecl', {}).get('id')) if core['kind'] == 'DeclRefExpr' else None
+        self.typed(entry, node)
         if not entry or entry[0] != 'param' or entry[2] not in BUFFER_KIND.values():
             raise Unsupported(node, 'buffer', 'only buffer parameters can be indexed')
         return self.name(entry[1])
@@ -873,6 +972,9 @@ class Importer:
             need(1 + has_value + has_order)
             if has_order and decl_name(args[-1]) != 'memory_order_relaxed':
                 raise Unsupported(n, 'memory-order', 'only memory_order_relaxed atomics are in qpel')
+            pointee = describe(peel(args[0]).get('type', {}).get('qualType', ''))
+            if pointee[0] == 'pointer' and pointee[2] not in ('u32', 'atomic'):
+                raise Unsupported(n, 'atomic-type', f'{callee} on {pointee[2]} is not in qpel yet; atomics are on unsigned int')
             value = self.expr(args[1]) if has_value else None
             if kind == 'AtomicAdd' and peel(args[1])['kind'] == 'IntegerLiteral' and int(peel(args[1])['value']) == 0:
                 kind, value = 'AtomicLoad', None  # CUDA's atomic read idiom
@@ -882,6 +984,8 @@ class Importer:
             if value is not None:
                 children['value'] = value
             return add(kind, children=children)
+        if callee in self.rejected:
+            raise Unsupported(n, 'call-rejected', f'{callee} could not be imported, see its own blockers')
         raise Unsupported(n, 'call', f'{callee} is not a qpel operation or a function in this file')
 
     # -- pipeline --

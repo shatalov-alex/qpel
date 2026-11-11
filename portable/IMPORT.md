@@ -33,8 +33,9 @@ kernels.cu:21:30: [do-loop] do statements are not in qpel yet
 - Programs that need `else`, `for`, `int`, shifts or `~` are written as IR version 2; all others stay version 1.
 
 - Scalar kernel arguments of type `unsigned int`, `int` and `float` (in Metal, `constant T&` parameters) stay ordinary arguments; the hosts take them as `values=`.
+- CUDA host functions (neither `__global__` nor `__device__`) are skipped and listed as host code; kernel launches in them parse but are not imported. Namespaces are flattened (function names must still be unique), which is listed as an adaptation.
 
-Rejected for now, each with its own code: `do`/`switch`/`goto`, `double`, float-to-integer conversion, narrowing to `unsigned char`, raw `threadIdx`/`blockIdx`/`blockDim` outside the global index (block-local indices), 2D/3D kernels sized by scalar width/height arguments instead of a `uint3`, shared memory and barriers in user code, other scalar argument types, and buffers of other types.
+Rejected for now, each with its own code: templates, atomics on anything but `unsigned int`, `do`/`switch`/`goto`, `double`, float-to-integer conversion, narrowing to `unsigned char`, raw `threadIdx`/`blockIdx`/`blockDim` outside the global index (block-local indices), 2D/3D kernels sized by scalar width/height arguments instead of a `uint3`, shared memory and barriers in user code, other scalar argument types, and buffers of other types.
 
 ## Adaptations and warnings
 
@@ -46,6 +47,25 @@ Rejected for now, each with its own code: `do`/`switch`/`goto`, `double`, float-
 ## Launch plan
 
 Source files do not say how kernels are launched. Without `--plan`, each kernel becomes one dispatch in source order with `--block` threads per group. Parameters with the same name share one resource, and the single shape parameter is the grid. With `--plan`, the given `pipeline.json` (the format qpel writes) is used instead. Buffers that a stage reads before any stage writes them must be inputs, so an accumulator needs an initialising kernel first, as in the `components` fixture.
+
+## Real-source corpus and coverage
+
+`corpus/` holds unmodified third-party GPU sources with their licences, listed in `corpus/corpus.json` with origin and SHA-256. Header stubs in `corpus/include/` (PyTorch, ATen, pybind11) only let clang parse them. `python3 -m frontends.corpus` reads each one in survey mode: the importer records every blocker instead of stopping at the first, keeps reading inside a rejected statement, and reports a parameter or local without a qpel type once rather than at every use. A kernel is importable when it and the device functions it calls have no blockers.
+
+`corpus/coverage.json` records the result per kernel (`code at function:line`). `tests/test_corpus.py` fails when it changes, so a new feature shows up as kernels becoming importable, and a regression cannot slip through; after checking the change, run `python3 -m frontends.corpus --update`. `--details` lists every blocker.
+
+First entry, 2026-11-11: SAM 2 `sam2/csrc/connected_components.cu` (commit 2b90b9f), 0 of 6 kernels importable:
+
+| Blocker | Kernels | Where |
+|---|---|---|
+| `no-extent` | 6 | every kernel is 2D and sized by scalar `W`, `H` arguments, not a `uint3` |
+| `atomic-type` | 2 | `atomicMin` on `int32_t` labels (`union_`), `atomicAdd` on `int32_t` counts |
+| `do-loop` | 1 | `do { ... } while (!done)` in `union_` |
+| `uninitialized-local` | 1 | `bool done;` in `union_` |
+| `template` | 1 | `hasBit<T>` |
+| `buffer-type` | 1 | `merge` takes a non-const `uint8_t*` image it only reads |
+
+It needs no shared memory or barriers. Scalar `W`/`H` sizing alone would make 4 of the 6 kernels importable; i32 atomics a fifth. The original also launches one thread per 2 × 2 pixel block. qpel's shape-sized grid would run 4 times as many threads, which the kernels' own guards make harmless but wasteful. Launch geometry lives in host code, which is the host-layer part of the roadmap.
 
 ## Round-trip matrix
 

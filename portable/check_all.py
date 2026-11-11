@@ -25,6 +25,7 @@ def main(argv=None):
     env = {'PYTHONDONTWRITEBYTECODE': '1'}
     steps = [('unit tests', [args.python, '-m', 'unittest', 'discover', '-s', str(HERE/'tests'), '-p', 'test_*.py']),
              ('round trips', [sys.executable, '-m', 'frontends.roundtrip']),
+             ('corpus coverage', [sys.executable, '-m', 'frontends.corpus']),
              ('Metal compile', [sys.executable, str(HERE/'metal_check.py')])]
     if not args.no_nvcc:
         steps.append(('nvcc compile', [sys.executable, str(HERE/'nvcc_check.py')]))
