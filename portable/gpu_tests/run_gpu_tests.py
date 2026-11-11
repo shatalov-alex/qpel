@@ -332,6 +332,29 @@ def run_components(name, host, plan):
     return len(cases)
 
 
+
+# --- an ordered float sum written as a plain loop (cuda_examples/window_sum.cu) ---
+
+def run_window_sum(name, host, plan):
+    rng = np.random.default_rng(20261112)
+    cases = 0
+    for w, h, n in [(1, 1, 1), (3, 1, 1), (4, 1, 1), (17, 3, 2), (257, 1, 1), (33, 17, 2)]:
+        size = w*h*n
+        pixels = (rng.standard_normal(size)*np.exp2(rng.integers(-8, 9, size))).astype(np.float32)
+        mask = rng.integers(0, 3, size).astype(np.uint8)
+        expected = np.zeros(size, np.float32)
+        for i in range(size):
+            total = np.float32(0)
+            for k in range(min(4, size - i)):
+                total = np.float32(total + pixels[i + k])  # in order, rounded at every step
+            expected[i] = total if mask[i] else np.float32(0)
+        result = host.run({'pixels': torch.from_numpy(pixels).to('mps'), 'mask': torch.from_numpy(mask).to('mps')},
+                          {'count': (w, h, n)})['output'].cpu().numpy()
+        np.testing.assert_array_equal(result.view(np.uint32), expected.view(np.uint32))
+        cases += 1
+    return cases
+
+
 # --- SAM 2 connected components, imported from the unmodified CUDA original ---
 
 def sam2_oracle(mask, w, h):
@@ -394,7 +417,7 @@ def run_sam2_cc(name, host, plan):
 TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fma32': run_fma32,
          'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components,
          'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset, 'box_sum': run_box_sum,
-         'sam2_cc': run_sam2_cc}
+         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum}
 
 
 def main(argv=None):

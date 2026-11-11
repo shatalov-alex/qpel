@@ -1,6 +1,6 @@
 """Run every check that needs no NVIDIA hardware; exit nonzero if any of them fails.
 
-    python3 portable/check_all.py                 # unit tests, round trips, Metal and nvcc compile
+    python3 portable/check_all.py                 # unit tests, round trips, Metal and nvcc compile, CUDA behaviour rows
     python3 portable/check_all.py --gpu           # also run gpu_tests/ on the Apple GPU
     python3 portable/check_all.py --gpu --python .venv/bin/python   # interpreter with torch
 
@@ -29,6 +29,8 @@ def main(argv=None):
              ('Metal compile', [sys.executable, str(HERE/'metal_check.py')])]
     if not args.no_nvcc:
         steps.append(('nvcc compile', [sys.executable, str(HERE/'nvcc_check.py')]))
+    # Originals against what qpel makes of them; the Metal rows need the Apple GPU.
+    steps.append(('behaviour rows', [args.python, '-m', 'differential.matrix'] + ([] if args.gpu else ['--cpu'])))
     if args.gpu:
         steps.append(('Apple GPU', [args.python, str(HERE/'gpu_tests/run_gpu_tests.py')]))
     results = []

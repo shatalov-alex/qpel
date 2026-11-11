@@ -310,7 +310,11 @@ class Importer:
         self.issues = [] if survey else None
         self.current = None
         self.host = []  # CUDA host functions, which are not GPU code
+        self.host_spans = []  # their [start, end) byte offsets, for running the device code alone
         self.rejected = set()  # functions that could not be read at all, such as templates
+        self.qualified = {}  # function -> name with its namespaces, for calling the original
+        self.arguments = {}  # kernel -> how each original argument is fed from the qpel pipeline
+        self.namespace = ''
         self.source = source
         self.path = path
         self.module = module
@@ -342,7 +346,12 @@ class Importer:
         if kind == 'NamespaceDecl':
             # qpel has one flat module; function names must still be unique, which run() checks.
             self.adaptations.append(f'namespace {node.get("name", "(anonymous)")} was flattened')
-            return [d for child in node.get('inner', ()) for d in self.attempt(lambda: self.top_level(child), [])]
+            outer = self.namespace
+            self.namespace = outer + node.get('name', '') + '::'
+            try:
+                return [d for child in node.get('inner', ()) for d in self.attempt(lambda: self.top_level(child), [])]
+            finally:
+                self.namespace = outer
         if kind == 'FunctionTemplateDecl':
             uses = [d for d in node.get('inner', ()) if d['kind'] == 'FunctionDecl' and body_of(d) is not None
                     and any(c['kind'] == 'TemplateArgument' for c in d.get('inner', ()))]
@@ -360,7 +369,9 @@ class Importer:
                 return []  # declarations and qpel backend helpers
             if self.dialect.is_host(node):
                 self.host.append(node['name'])
+                self.host_spans.append(clang_ast.span(node))
                 return []
+            self.qualified[node['name']] = self.namespace + node['name']
             return [node]
         if kind in ('StaticAssertDecl', 'UsingDirectiveDecl', 'TypedefDecl') or \
                 (kind == 'CXXRecordDecl' and node.get('name') == 'QpelShape'):
@@ -560,6 +571,7 @@ class Importer:
                     decl, 'no-extent', 'a 2D/3D kernel needs a uint3 shape argument' if self.grid3d else
                     'a kernel needs a uint3 shape, or an unsigned element count that the thread index is compared with')))
             self.kernel_params[name] = {self.graph.nodes[p]['attributes']['name']: p for p in params}
+            self.arguments[name] = self.argument_map(decl)
         result = describe(decl['type']['qualType'].split('(')[0])
         if result[0] != 'scalar' or result[1] not in SCALAR_KIND:
             self.attempt(lambda: self.reject(Unsupported(decl, 'result-type', 'unsupported result type ' + decl['type']['qualType'])))
@@ -574,6 +586,26 @@ class Importer:
             children['domain'] = self.graph.add('Grid3D' if self.grid3d else 'Grid1D')
             self.domains[name] = 'grid3d' if self.grid3d else 'grid1d'
         return self.graph.put(ident, 'Function', attrs, children)
+
+    def argument_map(self, decl):
+        """How to call the original kernel with a qpel pipeline's data: one entry per argument."""
+        out, position = [], 0
+        for p in params_of(decl):
+            if self.dialect.builtin(p):
+                continue
+            entry = self.scope.get(p['id'])
+            item = {'name': p['name'], 'binding': self.dialect.binding(p, position), 'type': describe(p['type']['qualType'])[-1]}
+            position += 1
+            if entry is None or entry[0] == 'untyped':
+                item['source'] = 'unknown'
+            elif entry[0] == 'extent':
+                item.update(source='extent', parameter=self.graph.nodes[entry[1]]['attributes']['name'], axis=entry[2])
+            elif entry[0] == 'count':
+                item.update(source='volume', parameter=p['name'])
+            else:
+                item.update(source='parameter', parameter=p['name'])
+            out.append(item)
+        return out
 
     def axis_of(self, node):
         """'x', 'y' or 'z' when node is a thread-index axis (CUDA expression or Metal position member)."""
@@ -804,8 +836,9 @@ class Importer:
                                                                'value': self.graph.add(*ZERO[t[1]][:1], {'value': ZERO[t[1]][1]})})
             self.scope[decl['id']] = ('local', ir, SCALAR_KIND[t[1]])
             return [ir]
-        if self.kernel and grid_axis(init) and decl['id'] not in self.assigned:
-            self.scope[decl['id']] = ('grid', grid_axis(init))
+        axis = grid_axis(init) or (self.axis_of(init) if peel(init)['kind'] in ('MemberExpr', 'ExtVectorElementExpr') else None)
+        if self.kernel and axis and decl['id'] not in self.assigned:
+            self.scope[decl['id']] = ('grid', axis)  # a name for the thread index (CUDA expression or Metal position.y)
             return []
         value = self.expr(init)
         name = self.unique_name(name)
@@ -1173,7 +1206,7 @@ class Importer:
             pointee = describe(peel(args[0]).get('type', {}).get('qualType', ''))
             if pointee[0] == 'pointer' and pointee[2] not in ('u32', 'i32', 'atomic', 'atomic_i32'):
                 raise Unsupported(n, 'atomic-type', f'{callee} on {pointee[2]} is not in qpel yet; atomics are on unsigned int and int')
-            value = self.expr(args[1]) if has_value else None
+            value = self.atomic_value(args[1], pointee) if has_value else None
             if kind == 'AtomicAdd' and peel(args[1])['kind'] == 'IntegerLiteral' and int(peel(args[1])['value']) == 0:
                 kind, value = 'AtomicLoad', None  # CUDA's atomic read idiom
             if kind == 'AtomicStore' and self.dialect.name == 'cuda' and not statement:
@@ -1185,6 +1218,15 @@ class Importer:
         if callee in self.rejected:
             raise Unsupported(n, 'call-rejected', f'{callee} could not be imported, see its own blockers')
         raise Unsupported(n, 'call', f'{callee} is not a qpel operation or a function in this file')
+
+    def atomic_value(self, node, pointee):
+        """The value of an atomic call in the buffer's element type. Metal's atomic functions
+        are templates, so clang leaves e.g. a uint stored into an atomic_int unconverted."""
+        element = 'i32' if pointee[0] == 'pointer' and pointee[2] in ('i32', 'atomic_i32') else 'u32'
+        core = peel(node)
+        if core['kind'] == 'IntegerLiteral':
+            return self.literal(core, element)
+        return self.convert_types(self.expr(node), scalar_of(node), element, node)
 
     # -- pipeline --
 
@@ -1369,7 +1411,9 @@ def import_source(path, dialect=None, module=None, plan=None, block_size=64, inc
     report = {'source': str(path), 'dialect': dialect, 'module': module,
               'kernels': [d['name'] for d in importer.decls if importer.functions[d['name']][2]],
               'helpers': [d['name'] for d in importer.decls if not importer.functions[d['name']][2]],
-              'adaptations': importer.adaptations, 'warnings': unguarded_kernels(program)}
+              'adaptations': importer.adaptations, 'warnings': unguarded_kernels(program),
+              'qualified': {k: importer.qualified[k] for k in importer.arguments}, 'arguments': importer.arguments,
+              'host_spans': importer.host_spans}
     return program, report
 
 

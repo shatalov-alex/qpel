@@ -63,6 +63,10 @@ First entry: SAM 2 `sam2/csrc/connected_components.cu` (commit 2b90b9f). On 2026
 
 The original launches one thread per 2 × 2 pixel block and loops over the batch on the host. qpel runs one thread per pixel of a `(W, H, 1)` shape. Threads past the original's grid fail the kernels' own guards, so the result is the same, but 4 times as many threads are launched. Launch geometry belongs to the host layer (Phase 4).
 
+## Behaviour rows
+
+`python3 -m differential.matrix` runs every original (the example pairs, SAM 2 and its Metal port) and qpel's CUDA and Metal for it on the same cases, and requires identical outputs: CUDA on a CPU simulator, Metal on the Apple GPU. See `differential/README.md`.
+
 ## Round-trip matrix
 
 `python3 -m frontends.roundtrip` (also part of `check_all.py` and the unit tests) checks:

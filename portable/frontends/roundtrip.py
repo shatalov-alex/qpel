@@ -17,9 +17,10 @@ from .c_import import import_source
 
 HERE = Path(__file__).resolve().parents[1]
 FIXTURES = HERE/'tests/fixtures/qpel_ir'
-# Hand-written sources, each with the fixture it must import to.
+# Hand-written CUDA and Metal sources, each with the fixture it must import to.
 EXAMPLES = {'threshold': 'import', 'classify_bytes': 'classify', 'combine_masks': 'masks', 'masked_copy': 'count',
-            'signed_delta': 'signed_delta', 'scale_offset': 'scale_offset', 'box_sum': 'box_sum'}
+            'signed_delta': 'signed_delta', 'scale_offset': 'scale_offset', 'box_sum': 'box_sum',
+            'float_scale': 'float32', 'fma_bias': 'fma32', 'half_bias': 'half', 'window_sum': 'window_sum'}
 SOURCE_DIRS = {'cuda': HERE/'cuda_examples', 'metal': HERE/'metal_examples'}
 CORPUS = HERE/'corpus'  # unmodified real sources; entries with a fixture must import to it
 
@@ -108,6 +109,9 @@ def rows(fixtures=None):
         include = [CORPUS/folder for folder in entry.get('include', ())]
         dialect = 'cuda' if source.suffix == '.cu' else 'metal'
         yield f'{dialect} -> qpel', 'corpus/' + entry['source'], check(fixture(entry['fixture']), source, plan, validate, include)
+        for port in entry.get('ports', ()):  # hand ports to the other language must give the same program
+            path = HERE/port
+            yield f'{"cuda" if path.suffix == ".cu" else "metal"} -> qpel', port, check(fixture(entry['fixture']), path, plan, validate)
 
 
 def reimport(program):

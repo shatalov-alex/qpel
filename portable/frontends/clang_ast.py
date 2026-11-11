@@ -92,6 +92,16 @@ def position(node):
     return loc.get('_file'), loc.get('_line'), loc.get('col')
 
 
+def span(node):
+    """[start, end) byte offsets of a node in its file, after macro expansion."""
+    def offset(loc):
+        loc = loc.get('expansionLoc', loc)
+        return loc['offset'], loc.get('tokLen', 0)
+    start, _ = offset(node['range']['begin'])
+    end, length = offset(node['range']['end'])
+    return [start, end + length]
+
+
 def main_file_decls(unit, path):
     """Top-level declarations written in `path` itself (not in included headers)."""
     target = str(Path(path))
