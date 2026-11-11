@@ -2,7 +2,8 @@
 import hashlib
 import keyword
 
-BUFFER_TYPES = {'ReadOnlyF16BufferType': 'float16', 'F16BufferType': 'float16', 'ReadOnlyF32BufferType': 'float32', 'F32BufferType': 'float32', 'ReadOnlyU8BufferType': 'uint8', 'U32BufferType': 'int32', 'AtomicU32BufferType': 'int32'}
+BUFFER_TYPES = {'ReadOnlyF16BufferType': 'float16', 'F16BufferType': 'float16', 'ReadOnlyF32BufferType': 'float32', 'F32BufferType': 'float32', 'ReadOnlyU8BufferType': 'uint8', 'U32BufferType': 'int32', 'AtomicU32BufferType': 'int32', 'ReadOnlyI32BufferType': 'int32', 'I32BufferType': 'int32'}
+READ_ONLY = {'ReadOnlyU8BufferType', 'ReadOnlyI32BufferType', 'ReadOnlyF32BufferType', 'ReadOnlyF16BufferType'}
 
 
 def validate_resources(plan):
@@ -18,7 +19,7 @@ def validate_resources(plan):
             extent = resources.get(r.get('extent'))
             if extent is None or extent['kind'] != 'shape':
                 raise ValueError('Buffer requires a shape extent')
-            if kind != 'input' and typ in {'ReadOnlyU8BufferType', 'ReadOnlyF32BufferType', 'ReadOnlyF16BufferType'}:
+            if kind != 'input' and typ in READ_ONLY:
                 raise ValueError('Read-only buffers must be inputs')
         else:
             raise ValueError('Unsupported resource kind: ' + kind)

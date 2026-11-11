@@ -18,7 +18,8 @@ from .c_import import import_source
 HERE = Path(__file__).resolve().parents[1]
 FIXTURES = HERE/'tests/fixtures/qpel_ir'
 # Hand-written sources, each with the fixture it must import to.
-EXAMPLES = {'threshold': 'import', 'classify_bytes': 'classify', 'combine_masks': 'masks', 'masked_copy': 'count'}
+EXAMPLES = {'threshold': 'import', 'classify_bytes': 'classify', 'combine_masks': 'masks', 'masked_copy': 'count',
+            'signed_delta': 'signed_delta'}
 SOURCE_DIRS = {'cuda': HERE/'cuda_examples', 'metal': HERE/'metal_examples'}
 SUFFIX = {'cuda': '.cu', 'metal': '.metal'}
 
@@ -94,6 +95,22 @@ def rows(fixtures=None):
         for dialect in ('cuda', 'metal'):
             source = SOURCE_DIRS[dialect]/(source_name + SUFFIX[dialect])
             yield f'{dialect} -> qpel', source.name, check(original, source, plan, validate)
+
+
+def reimport(program):
+    """Build any program to CUDA and Metal and import both back: {dialect: difference or None}."""
+    from qpel import compile_program
+    from qpel_ir import validate
+    results = {}
+    with tempfile.TemporaryDirectory(prefix='qpel-reimport-') as work:
+        saved = Path(work)/'program.qpel.json'
+        saved.write_text(json.dumps(program))
+        compile_program(saved, Path(work)/'out')
+        generated = Path(work)/'out/package/generated'
+        plan = json.loads((generated/'pipeline.json').read_text())
+        for dialect in ('cuda', 'metal'):
+            results[dialect] = check(program, next(generated.glob('*' + SUFFIX[dialect])), plan, validate)
+    return results
 
 
 def check(original, source, plan, validate):

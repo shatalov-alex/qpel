@@ -98,6 +98,30 @@ def run_u8_pair(name, host, plan):
     return len(cases)
 
 
+# --- IR version 2: signed arithmetic, if/else and a loop with continue/break ---
+
+def signed_delta_oracle(a, b):
+    def div(x, y): return np.sign(x)*(np.abs(x)//y)  # C truncates toward zero; y > 0 here
+    def rem(x, y): return x - div(x, y)*y
+    d = a.astype(np.int64) - b.astype(np.int64)
+    delta = np.where(d < 0, div(d, 3) + rem(d, 5)*7, np.where(d > 100, (rem(d, 7) - 3)*4, (~d) >> 1))
+    v = a.astype(np.uint32)
+    ones = sum(((v >> k) & 1) for k in range(8))
+    bits = (np.minimum(ones, 3) << 4) | (~v & 15)
+    return delta.astype(np.int32), bits.astype(np.uint32)
+
+
+def run_signed_delta(name, host, plan):
+    cases = u8_pair_cases()
+    for a, b in cases:
+        n, h, w = a.shape
+        result = host.run({'a': torch.from_numpy(a).to('mps'), 'b': torch.from_numpy(b).to('mps')}, {'shape': (w, h, n)})
+        delta, bits = signed_delta_oracle(a.reshape(-1), b.reshape(-1))
+        np.testing.assert_array_equal(result['delta'].cpu().numpy(), delta)
+        np.testing.assert_array_equal(result['bits'].cpu().numpy().view(np.uint32), bits)
+    return len(cases)
+
+
 # --- floating point kernels ---
 
 def run_float32(name, host, plan):
@@ -265,7 +289,8 @@ def run_components(name, host, plan):
 
 
 TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fma32': run_fma32,
-         'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components}
+         'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components,
+         'signed_delta': run_signed_delta}
 
 
 def main(argv=None):

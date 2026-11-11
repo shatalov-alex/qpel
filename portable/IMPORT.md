@@ -18,20 +18,21 @@ Anything without a qpel equivalent is rejected with its location and a reason co
 
 ```
 kernels.cu:14:9: [for-loop] for statements are not in qpel yet
-kernels.cu:21:30: [signed-integer] signed int arithmetic needs IR v2 (use unsigned int)
+kernels.cu:21:30: [do-loop] do statements are not in qpel yet
 ```
 
 ## What is accepted
 
 - Any number of kernels and device helper functions in one file; helpers must come before their callers.
 - The 1D thread index `blockIdx.x * blockDim.x + threadIdx.x` (operands in any order, in a local or inline), or a Metal `[[thread_position_in_grid]]` parameter.
-- Buffers of `unsigned char` (read-only), `unsigned int`, `float` and `half`/`__half`; a `uint3` shape, either by value or as `constant uint3&`.
+- Buffers of `unsigned char` (read-only), `unsigned int`, `int`, `float` and `half`/`__half`; a `uint3` shape, either by value or as `constant uint3&`.
 - CUDA atomic buffers are plain `unsigned int*`. A buffer counts as atomic when an atomic call uses it, either directly or through a helper, or through another kernel that shares its resource. `atomicAdd(p, 0u)` becomes an atomic load. Metal atomics must use `memory_order_relaxed`.
-- `if` (without `else`), `while`, `return`, locals with an initializer, `=`, `+=` and the other compound assignments, and `++`/`--` on unsigned locals.
-- Arithmetic, comparison, logical and `& | ^` operators; `?:`; `min`/`max`; `fmaf`/`__fmaf_rn`/`fma`; float/half conversions, both implicit and explicit.
-- C's promotion of `unsigned char` to `int` is accepted, because those values never go negative.
+- `if`/`else`, `while`, `for`, `break`, `continue`, `return`, locals with an initializer, `=`, the compound assignments (computed in C's type and converted back, as C does) and `++`/`--` on 32-bit integers.
+- `unsigned int` and `int` arithmetic, comparison, logical, bitwise, shift and `~` operators; `?:`; `min`/`max`; `fmaf`/`__fmaf_rn`/`fma`; float/half conversions; int/unsigned conversions, both implicit and explicit. Signed arithmetic gets qpel's defined wrapping (NUMERICS.md).
+- C promotes `unsigned char` to `int`. When such a value provably can't go negative (a comparison of two bytes, `&`/`|`/`^` of bytes), it stays unsigned, so byte kernels don't turn into signed code.
+- Programs that need `else`, `for`, `int`, shifts or `~` are written as IR version 2; all others stay version 1.
 
-Rejected for now, each with its own code (these are the next IR additions): `else`, `for`, `do`, `break`/`continue`, signed `int` arithmetic, shifts and `~`, `double`, 2D/3D thread indices, shared memory and barriers in user code, scalar kernel arguments other than one element count, and buffers of other types.
+Rejected for now, each with its own code: `do`/`switch`/`goto`, `double`, float-to-integer conversion, narrowing to `unsigned char`, 2D/3D thread indices, shared memory and barriers in user code, scalar kernel arguments other than one element count, and buffers of other types.
 
 ## Adaptations and warnings
 
@@ -54,6 +55,8 @@ Source files do not say how kernels are launched. Without `--plan`, each kernel 
 | qpel → Metal → qpel | all 12 fixtures |
 | CUDA → qpel | `cuda_examples/*.cu` must import to their fixture |
 | Metal → qpel | `metal_examples/*.metal` must import to the same fixture |
+
+The fifth example, `signed_delta`, is the version 2 case: signed arithmetic, an `if`/`else if`/`else` chain and a `for` loop with `continue` and `break`. Its fixture was made by importing the CUDA file, so its CUDA row only guards against regressions. The independent checks are the Metal file importing to the same program, both re-imports, nvcc and Metal compiling it, and the Apple GPU test against a NumPy model of C's semantics. Re-importing generated code also reads back qpel's own spellings: wrapping `(int)((unsigned)a + (unsigned)b)`, `qpel_i32_div`/`qpel_i32_rem` and masked shift counts.
 
 Programs are compared as trees, so node ids, literal suffixes and float spelling don't count. CUDA → Metal and Metal → CUDA follow from these rows. A source that imports to a fixture's IR produces exactly that fixture's CUDA and Metal, and those are covered by the nvcc, Metal and Apple GPU checks.
 

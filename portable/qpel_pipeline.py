@@ -3,7 +3,7 @@
 A write marks a resource produced, not every element initialized. This is not a
 bounds, path-coverage or race proof. Every stage must complete before the next.
 """
-from qpel_types import BUFFERS, TypeChecker
+from qpel_types import BUFFERS, READ_ONLY, TypeChecker
 
 READ, WRITE = 1, 2
 
@@ -80,7 +80,7 @@ class PipelineChecker(TypeChecker):
             else:
                 self.require(resource, typ in BUFFERS, 'RESOURCE_TYPE', 'Data resource requires buffer type')
                 self.require(resource, extent in local and self.nodes[extent]['attributes']['kind'] == 'shape' and self.declared(self.nodes[extent]) == 'Shape3DType', 'EXTENT', 'Extent must reference a local shape')
-                self.require(resource, typ not in {'ReadOnlyU8BufferType', 'ReadOnlyF32BufferType', 'ReadOnlyF16BufferType'} or kind == 'input', 'RESOURCE_ACCESS', 'Read-only buffers must be inputs')
+                self.require(resource, typ not in READ_ONLY or kind == 'input', 'RESOURCE_ACCESS', 'Read-only buffers must be inputs')
                 if kind == 'input':
                     ready.add(resource['id'])
         for stage in self.children(self.pipeline, 'stages'):

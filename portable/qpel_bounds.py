@@ -18,7 +18,8 @@ class BoundsChecker(TypeChecker):
         if k == 'Unary':
             x = self.constant(self.child(node, 'operand'))
             if x is not None:
-                return not x if node['attributes']['operator'] == '!' else (-x) & MASK
+                op = node['attributes']['operator']
+                return not x if op == '!' else (~x) & MASK if op == '~' else (-x) & MASK
         if k == 'Select':
             condition = self.constant(self.child(node, 'condition'))
             if condition is not None:
@@ -41,7 +42,8 @@ class BoundsChecker(TypeChecker):
                       '<': lambda: left<right, '<=': lambda: left<=right,
                       '>': lambda: left>right, '>=': lambda: left>=right,
                       '==': lambda: left==right, '!=': lambda: left!=right,
-                      '&&': lambda: bool(left and right), '||': lambda: bool(left or right)}
+                      '&&': lambda: bool(left and right), '||': lambda: bool(left or right),
+                      '<<': lambda: (left << (right & 31)) & MASK, '>>': lambda: left >> (right & 31)}
         return operations[op]()
 
     def origin_offset(self, node):

@@ -54,7 +54,8 @@ def build(source, output, plan_path=None):
         half = b'#define QPEL_F16_ENABLED 1\n' if any(token in body for token in (b'QPEL_F16', b'QPEL_READ_F16', b'QPEL_WRITE_F16', b'QPEL_TO_F16')) else b''
         reduction = b'#define QPEL_SUM_F32_ENABLED 1\n' if b'QPEL_SUM_F32(' in body else b''
         group = b'#define QPEL_GROUP_SUM_F32_ENABLED 1\n' if b'QPEL_GROUP_SUM_F32(' in body else b''
-        result = half + reduction + group + b'// Generated backend package. Edit the MPS model or backend support.\n' + support + b'\n' + body
+        signed = b'#define QPEL_I32_ENABLED 1\n' if b'QPEL_I32' in body else b''
+        result = half + reduction + group + signed + b'// Generated backend package. Edit the MPS model or backend support.\n' + support + b'\n' + body
         path = output / (module+'.'+suffix)
         path.write_bytes(result)
         if backend == 'metal':
@@ -68,7 +69,8 @@ def build(source, output, plan_path=None):
     (output / (module+'.qpel.h')).write_bytes(body)
     (output / 'pipeline.inc').write_text(dispatch)
     (output / 'pipeline.json').write_bytes(plan_bytes)
-    manifest = {'numeric_contract': 'u32-modulo-v1', 'neutral_source': str(source.resolve()), 'neutral_source_sha256': hashlib.sha256(body).hexdigest(),
+    contract = 'u32-modulo-v1' + (', i32-wrap-v1' if b'qpel numeric contract: i32-wrap-v1' in body else '')
+    manifest = {'numeric_contract': contract, 'neutral_source': str(source.resolve()), 'neutral_source_sha256': hashlib.sha256(body).hexdigest(),
                 'neutral_pipeline':str(plan_path.resolve()),'pipeline_sha256':hashlib.sha256(plan_bytes).hexdigest(),
                 'metal_host_sha256':hashlib.sha256(host).hexdigest(),
                 'cuda_host_sha256':hashlib.sha256(cuda_host).hexdigest(),

@@ -11,16 +11,41 @@ from qpel_bounds import validate_static_bounds
 
 TYPES={'F16Type':'QPEL_F16','ReadOnlyF16BufferType':'QPEL_READ_F16','F16BufferType':'QPEL_WRITE_F16','F32Type':'QPEL_F32','ReadOnlyF32BufferType':'QPEL_READ_F32','F32BufferType':'QPEL_WRITE_F32','VoidType':'void','BoolType':'bool','U8Type':'QPEL_U8','U32Type':'QPEL_U32',
        'ReadOnlyU8BufferType':'QPEL_READ_U8','U32BufferType':'QPEL_WRITE_U32',
-       'AtomicU32BufferType':'QPEL_ATOMIC_U32','Shape3DType':'QPEL_SHAPE'}
-KINDS=set(TYPES)|set('GpuModule Function Parameter Block Variable Name Literal F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin Pipeline Resource Dispatch Binding'.split())
-COMMON_FEATURES={'integer_buffers','grid_1d','control_flow','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32'}
+       'AtomicU32BufferType':'QPEL_ATOMIC_U32','Shape3DType':'QPEL_SHAPE',
+       'I32Type':'QPEL_I32','ReadOnlyI32BufferType':'QPEL_READ_I32','I32BufferType':'QPEL_WRITE_I32'}
+KINDS=set(TYPES)|set('GpuModule Function Parameter Block Variable Name Literal I32Literal I32Cast U32Cast For Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin Pipeline Resource Dispatch Binding'.split())
+COMMON_FEATURES={'integer_buffers','grid_1d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32'}
 PROFILES={'metal':COMMON_FEATURES,'cuda':COMMON_FEATURES}
+SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2'}
+# Version 2 adds else, for/break/continue, signed 32-bit integers, shifts and ~.
+V2_KINDS={'For','Break','Continue','I32Type','ReadOnlyI32BufferType','I32BufferType','I32Literal','I32Cast','U32Cast'}
+BINARY_OPERATORS={'+','-','*','/','%','&','|','^','==','!=','<','>','<=','>=','&&','||','<<','>>'}
+UNARY_OPERATORS={'!','-','~'}
+INT32_KINDS={'I32Type','ReadOnlyI32BufferType','I32BufferType','I32Literal','I32Cast'}
+
+
+def version_2_features(nodes):
+    """Names of the version 2 constructs a program uses."""
+    used=set()
+    for n in nodes:
+        k,a=n['kind'],n['attributes']
+        if k in V2_KINDS:used.add(k)
+        if k=='If' and n['children'].get('elseBody'):used.add('else')
+        if k=='Binary' and a.get('operator') in ('<<','>>'):used.add('shift')
+        if k=='Unary' and a.get('operator')=='~':used.add('~')
+    return used
+
+
+def minimum_version(program):
+    return 2 if version_2_features(program['nodes']) else 1
 
 
 def validate(program, backend=None):
     validate_envelope(program)
-    if program.get('format')!='qpel.ir' or program.get('version')!=1 or program.get('semantics')!='qpel-portable-core-v1':
+    if program.get('format')!='qpel.ir' or SEMANTICS.get(program.get('version'))!=program.get('semantics'):
         raise ValueError('Unsupported qpel IR version/semantics')
+    if program['version']<2 and version_2_features(program['nodes']):
+        raise ValueError('IR version 1 cannot use: '+', '.join(sorted(version_2_features(program['nodes'])))+'; declare version 2')
     nodes={n['id']:n for n in program['nodes']}
     if len(nodes)!=len(program['nodes']):raise ValueError('Duplicate IR node id')
     required={'integer_buffers','grid_1d'}
@@ -32,12 +57,13 @@ def validate(program, backend=None):
         if n['kind']=='F32Fma':required.add('float32_fma')
         if 'F32' in n['kind']:required.add('float32')
         if n['kind'].startswith('Atomic'):required.add('device_relaxed_u32_atomics')
-        if n['kind'] in ('If','While'):required.add('control_flow')
+        if n['kind'] in ('If','While','For'):required.add('control_flow')
+        if n['kind'] in INT32_KINDS:required.add('int32')
         targets=list(n['links'].values())+[v for values in n['children'].values() for v in values]
         if any(t not in nodes for t in targets):raise ValueError('Dangling IR reference')
-        if n['kind']=='Binary' and n['attributes'].get('operator') not in ('+','-','*','/','%','&','|','^','==','!=','<','>','<=','>=','&&','||'):
+        if n['kind']=='Binary' and n['attributes'].get('operator') not in BINARY_OPERATORS:
             raise ValueError('Unsupported binary operator')
-        if n['kind']=='Unary' and n['attributes'].get('operator') not in ('!','-'):raise ValueError('Unsupported unary operator')
+        if n['kind']=='Unary' and n['attributes'].get('operator') not in UNARY_OPERATORS:raise ValueError('Unsupported unary operator')
     roots=program['roots']
     if set(roots)!= {'module','pipeline'} or any(r not in nodes for r in roots.values()) or nodes[roots['module']]['kind']!='GpuModule' or nodes[roots['pipeline']]['kind']!='Pipeline':raise ValueError('Invalid IR roots')
     if nodes[roots['pipeline']]['links'].get('module')!=roots['module']:raise ValueError('Pipeline targets a different module')
@@ -78,7 +104,9 @@ class Lowering:
         e=lambda role:self.emit(self.child(n,role))
         joined=lambda role,sep:sep.join(self.emit(x) for x in self.children(n,role))
         if k in TYPES:return TYPES[k]
-        if k=='GpuModule':return '// Generated from qpel IR. Do not edit.\n// qpel numeric contract: u32-modulo-v1\n'+joined('functions','\n')
+        if k=='GpuModule':
+            signed='// qpel numeric contract: i32-wrap-v1\n' if any(x['kind'] in INT32_KINDS for x in self.nodes.values()) else ''
+            return '// Generated from qpel IR. Do not edit.\n// qpel numeric contract: u32-modulo-v1\n'+signed+joined('functions','\n')
         if k=='Function':
             kernel=a.get('isKernel',False);args=joined('parameters',', ')
             return ('QPEL_KERNEL ' if kernel else 'QPEL_DEVICE ')+e('resultType')+' '+a['name']+'('+args+(' QPEL_GRID_PARAM(qpel_index)' if kernel else '')+') {\n'+('QPEL_GRID_LOCAL(qpel_index)\n' if kernel else '')+e('body')+'\n}\n'
@@ -88,6 +116,9 @@ class Lowering:
         if k=='Literal':
             value = a['value']
             return value if value in ('true','false') else str(int(value.rstrip('uU'))) + 'u'
+        if k=='I32Literal':return a['value']
+        if k=='I32Cast':return '((QPEL_I32)('+e('operand')+'))'
+        if k=='U32Cast':return '((QPEL_U32)('+e('operand')+'))'
         if k=='F32Literal':
             value = a['value']
             return value+('' if '.' in value or 'e' in value.lower() else '.0')+'f'
@@ -98,12 +129,29 @@ class Lowering:
         if k=='F32Cast':return '(QPEL_F32)('+e('operand')+')'
         if k=='Binary':
             left, right = e('left'), e('right')
+            op = a['operator']
+            left_type = self.expression_types[self.child(n,'left')['id']]
+            if op in ('<<','>>'):
+                # The count is taken modulo 32: C leaves larger counts undefined.
+                count = '((QPEL_U32)('+right+') & 31u)'
+                if left_type == 'I32Type':
+                    if op == '<<':return '((QPEL_I32)((QPEL_U32)('+left+') << '+count+'))'
+                    return '(('+left+') >> '+count+')'
+                return '((QPEL_U32)('+left+') '+op+' '+count+')'
+            if left_type == 'I32Type':
+                if op in ('+','-','*'):return '((QPEL_I32)((QPEL_U32)('+left+') '+op+' (QPEL_U32)('+right+')))'
+                if op in ('/','%'):return ('QPEL_I32_DIV(' if op=='/' else 'QPEL_I32_REM(')+left+', '+right+')'
+                return '('+left+' '+op+' '+right+')'
             if a['operator'] not in ('&&','||'):
                 if self.expression_types[self.child(n,'left')['id']] in NUMBERS:left = '(QPEL_U32)('+left+')'
                 if self.expression_types[self.child(n,'right')['id']] in NUMBERS:right = '(QPEL_U32)('+right+')'
             return '('+left+' '+a['operator']+' '+right+')'
         if k=='Unary':
             operand = e('operand')
+            operand_type = self.expression_types[self.child(n,'operand')['id']]
+            if operand_type == 'I32Type':
+                return '((QPEL_I32)(0u - (QPEL_U32)('+operand+')))' if a['operator']=='-' else '('+a['operator']+operand+')'
+            if a['operator']=='~':return '(~(QPEL_U32)('+operand+'))'
             if a['operator']=='-' and self.expression_types[self.child(n,'operand')['id']] in NUMBERS:operand = '(QPEL_U32)('+operand+')'
             return '('+a['operator']+operand+')'
         if k=='Index':return e('base')+'['+e('index')+']'
@@ -111,7 +159,8 @@ class Lowering:
         if k=='Call':return self.link(n,'function')['attributes']['name']+'('+joined('arguments',', ')+')'
         if k in ('Minimum','Maximum'):
             left, right = e('left'), e('right')
-            left, right = '(QPEL_U32)('+left+')', '(QPEL_U32)('+right+')'
+            if self.expression_types[n['id']] != 'I32Type':
+                left, right = '(QPEL_U32)('+left+')', '(QPEL_U32)('+right+')'
             return ('min' if k=='Minimum' else 'max')+'('+left+', '+right+')'
         if k=='Select':return '('+e('condition')+' ? '+e('yes')+' : '+e('no')+')'
         if k=='Block':return '{\n'+joined('statements','')+' }'
@@ -119,7 +168,12 @@ class Lowering:
         if k=='Assign':return e('target')+' = '+e('value')+';\n'
         if k=='Evaluate':return e('value')+';\n'
         if k=='Return':return 'return '+(e('value') if self.children(n,'value') else '')+';\n'
-        if k=='If':return 'if ('+e('condition')+') '+e('thenBody')+'\n'
+        if k=='If':return 'if ('+e('condition')+') '+e('thenBody')+(' else '+e('elseBody') if self.children(n,'elseBody') else '')+'\n'
+        if k=='For':
+            part = lambda role: self.emit(self.child(n,role)).strip().rstrip(';') if self.children(n,role) else ''
+            return 'for ('+part('init')+'; '+part('condition')+'; '+part('step')+') '+e('body')+'\n'
+        if k=='Break':return 'break;\n'
+        if k=='Continue':return 'continue;\n'
         if k=='While':return 'while ('+e('condition')+') '+e('body')+'\n'
         if k in ('AtomicLoad','AtomicStore','AtomicAdd','AtomicMin'):
             macro={'AtomicLoad':'QPEL_LOAD','AtomicStore':'QPEL_STORE','AtomicAdd':'QPEL_ADD','AtomicMin':'QPEL_MIN'}[k]

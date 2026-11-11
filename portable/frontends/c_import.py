@@ -32,13 +32,15 @@ QUALIFIERS = {'const', 'volatile', 'device', 'constant', 'threadgroup', 'thread'
               '__restrict', '__restrict__', 'restrict'}
 SCALARS = {'unsigned int': 'u32', 'unsigned': 'u32', 'uint': 'u32', 'uint32_t': 'u32',
            'unsigned char': 'u8', 'uchar': 'u8', 'uint8_t': 'u8', 'bool': 'bool', 'float': 'f32',
-           '__half': 'f16', 'half': 'f16', 'int': 'i32', 'void': 'void', 'double': 'f64',
+           '__half': 'f16', 'half': 'f16', 'int': 'i32', 'signed int': 'i32', 'signed': 'i32', 'int32_t': 'i32',
+           'void': 'void', 'double': 'f64',
            'atomic_uint': 'atomic'}
 SHAPES = {'uint3', 'QpelShape', 'dim3'}
-SCALAR_KIND = {'u32': 'U32Type', 'u8': 'U8Type', 'bool': 'BoolType', 'f32': 'F32Type',
+SCALAR_KIND = {'u32': 'U32Type', 'u8': 'U8Type', 'i32': 'I32Type', 'bool': 'BoolType', 'f32': 'F32Type',
                'f16': 'F16Type', 'void': 'VoidType'}
 BUFFER_KIND = {('u8', True): 'ReadOnlyU8BufferType', ('u32', False): 'U32BufferType',
-               ('atomic', False): 'AtomicU32BufferType', ('f32', True): 'ReadOnlyF32BufferType',
+               ('atomic', False): 'AtomicU32BufferType', ('i32', True): 'ReadOnlyI32BufferType',
+               ('i32', False): 'I32BufferType', ('f32', True): 'ReadOnlyF32BufferType',
                ('f32', False): 'F32BufferType', ('f16', True): 'ReadOnlyF16BufferType',
                ('f16', False): 'F16BufferType'}
 
@@ -222,8 +224,8 @@ MAXIMUM = {'max', 'umax'}
 FMA = {'__fmaf_rn', 'fmaf', 'fma'}
 TO_F16 = {'__float2half_rn', '__float2half'}
 TO_F32 = {'__half2float'}
-BINARY = {'+', '-', '*', '/', '%', '&', '|', '^', '==', '!=', '<', '>', '<=', '>=', '&&', '||'}
-LATER = {'<<': 'shift', '>>': 'shift', '~': 'bitwise-not'}
+COMPARISONS = {'==', '!=', '<', '>', '<=', '>='}
+BINARY = {'+', '-', '*', '/', '%', '&', '|', '^', '&&', '||', '<<', '>>'} | COMPARISONS
 
 
 # --- IR graph --------------------------------------------------------------
@@ -267,7 +269,11 @@ class Graph:
             nodes.append({'id': new[old], 'kind': n['kind'], 'attributes': n['attributes'],
                           'children': {r: [new[c] for c in v] for r, v in n['children'].items()},
                           'links': {r: new[t] for r, t in n['links'].items()}})
-        return dict(IR_HEADER, roots={'module': new[module], 'pipeline': new[pipeline]}, nodes=nodes)
+        from qpel_ir import minimum_version, SEMANTICS
+        program = dict(IR_HEADER, roots={'module': new[module], 'pipeline': new[pipeline]}, nodes=nodes)
+        version = minimum_version(program)  # stay on version 1 unless a version 2 construct is used
+        program.update(version=version, semantics=SEMANTICS[version])
+        return program
 
 
 # --- importer --------------------------------------------------------------
@@ -280,6 +286,7 @@ class Importer:
         self.module = module
         self.graph = Graph()
         self.functions = {}  # source name -> (decl, IR id, is kernel)
+        self.unsigned = 0  # > 0 while reading promoted unsigned chars as unsigned
         self.adaptations = []
         decls = []
         for node in clang_ast.main_file_decls(unit, path):
@@ -462,14 +469,35 @@ class Importer:
         if kind == 'NullStmt':
             return []
         if kind == 'DeclStmt':
-            return [s for d in node['inner'] for s in self.local(d)]
+            return self.local_group(node)
         if kind == 'IfStmt':
-            if node.get('hasElse'):
-                raise Unsupported(node, 'else', 'if/else needs IR v2 (planned)')
             if node.get('hasInit') or node.get('hasVar'):
                 raise Unsupported(node, 'if-declaration', 'declarations inside if (...) are not supported')
-            cond, then = node['inner']
-            return [add('If', children={'condition': self.expr(cond), 'thenBody': self.as_block(then)})]
+            cond, then, *otherwise = node['inner']
+            children = {'condition': self.expr(cond), 'thenBody': self.as_block(then)}
+            if otherwise:
+                children['elseBody'] = self.as_block(otherwise[0])
+            return [add('If', children=children)]
+        if kind == 'ForStmt':
+            init, variable, cond, step, body = node['inner']
+            if variable:
+                raise Unsupported(node, 'for-declaration', 'declarations inside the for condition are not supported')
+            children = {'body': None}
+            if init:
+                parts = self.local_group(init) if init['kind'] == 'DeclStmt' else [self.expression_statement(init)]
+                if len(parts) != 1 or self.graph.nodes[parts[0]]['kind'] not in ('Variable', 'Assign'):
+                    raise Unsupported(init, 'for-init', 'a for loop can start with one declaration or assignment')
+                children['init'] = parts[0]
+            if cond:
+                children['condition'] = self.expr(cond)
+            if step:
+                children['step'] = self.expression_statement(step)
+            children['body'] = self.as_block(body)
+            return [add('For', children=children)]
+        if kind == 'BreakStmt':
+            return [add('Break')]
+        if kind == 'ContinueStmt':
+            return [add('Continue')]
         if kind == 'WhileStmt':
             if node.get('hasVar'):
                 raise Unsupported(node, 'while-declaration', 'declarations inside while (...) are not supported')
@@ -478,11 +506,13 @@ class Importer:
         if kind == 'ReturnStmt':
             value = [self.expr(node['inner'][0])] if node.get('inner') else []
             return [add('Return', children={'value': value})]
-        later = {'ForStmt': 'for-loop', 'DoStmt': 'do-loop', 'BreakStmt': 'break', 'ContinueStmt': 'continue',
-                 'SwitchStmt': 'switch', 'GotoStmt': 'goto', 'LabelStmt': 'goto'}
+        later = {'DoStmt': 'do-loop', 'SwitchStmt': 'switch', 'GotoStmt': 'goto', 'LabelStmt': 'goto'}
         if kind in later:
             raise Unsupported(node, later[kind], f'{kind[:-4].lower()} statements are not in qpel yet')
         return [self.expression_statement(node)]
+
+    def local_group(self, node):
+        return [s for d in node['inner'] for s in self.local(d)]
 
     def local(self, decl):
         if decl['kind'] != 'VarDecl':
@@ -515,20 +545,25 @@ class Importer:
             target, value = node['inner']
             return add('Assign', children={'target': self.lvalue(target), 'value': self.expr(value)})
         if kind == 'CompoundAssignOperator':
+            # x op= y computes in C's computation type, then converts back to x's type.
             op = node['opcode'][:-1]
-            if op in LATER:
-                raise Unsupported(node, LATER[op], f'operator {op} is not in qpel yet')
             target, value = node['inner']
-            combined = add('Binary', {'operator': op}, {'left': self.expr(target), 'right': self.expr(value)})
-            return add('Assign', children={'target': self.lvalue(target), 'value': combined})
+            own = scalar_of(target)
+            computation = describe(node.get('computeLHSType', {}).get('qualType', target['type']['qualType']))
+            computation = computation[1] if computation[0] == 'scalar' else own
+            left = self.convert_types(self.expr(target), own, computation, node)
+            combined = add('Binary', {'operator': op}, {'left': left, 'right': self.expr(value)})
+            result = self.convert_types(combined, computation, own, node)
+            return add('Assign', children={'target': self.lvalue(target), 'value': result})
         if kind == 'CXXOperatorCallExpr' and decl_name(node['inner'][0]) == 'operator=':
             return add('Assign', children={'target': self.lvalue(node['inner'][1]), 'value': self.expr(node['inner'][2])})
         if kind == 'UnaryOperator' and node['opcode'] in ('++', '--'):
             target = node['inner'][0]
-            if scalar_of(target) != 'u32':
-                raise Unsupported(node, 'increment', 'only unsigned integers can be incremented')
+            one = {'u32': ('Literal', '1u'), 'i32': ('I32Literal', '1')}.get(scalar_of(target))
+            if one is None:
+                raise Unsupported(node, 'increment', 'only 32-bit integers can be incremented')
             step = add('Binary', {'operator': node['opcode'][0]},
-                       {'left': self.expr(target), 'right': add('Literal', {'value': '1u'})})
+                       {'left': self.expr(target), 'right': add(one[0], {'value': one[1]})})
             return add('Assign', children={'target': self.lvalue(target), 'value': step})
         return add('Evaluate', children={'value': self.expr(node, statement=True)})
 
@@ -546,26 +581,93 @@ class Importer:
     # -- expressions --
 
     def expr(self, node, statement=False, address=False):
+        wrapped = self.wrapping_idiom(node)
+        if wrapped is not None:
+            return wrapped
         core = peel(node)
+        target = scalar_of(node)
+        if core['kind'] == 'IntegerLiteral':
+            return self.literal(core, 'u32' if self.unsigned else target)
+        if target in ('u32', 'bool') and scalar_of(core) == 'i32' and nonnegative_int(core):
+            return self.as_unsigned(core)
         value = self.core(core, statement, address)
-        return self.convert(value, core, node)
+        return self.convert_types(value, scalar_of(core), target, node)
 
-    def convert(self, value, core, outer):
-        source, target = scalar_of(core), scalar_of(outer)
-        if source == target or 'pointer' in (source, target) or target == 'bool':
+    def wrapping_idiom(self, node):
+        """Read back how qpel spells wrapping int arithmetic in C, so that re-importing
+        generated code gives the original program:
+        (int)((unsigned)a op (unsigned)b) is a op b, and (int)(0u - (unsigned)a) is -a."""
+        n = strip_parens(node)
+        if n['kind'] not in EXPLICIT_CASTS or scalar_of(n) != 'i32':
+            return None
+        inner = strip_parens(cast_operand(n))
+        if inner['kind'] != 'BinaryOperator' or scalar_of(inner) != 'u32' or inner['opcode'] not in ('+', '-', '*', '<<'):
+            return None
+        left, right = (signed_operand(x) for x in inner['inner'])
+        op = inner['opcode']
+        if op == '<<' and left is not None:
+            return self.graph.add('Binary', {'operator': '<<'}, {'left': self.expr(left), 'right': self.shift_count(inner['inner'][1])})
+        if op == '-' and right is not None and is_zero(inner['inner'][0]):
+            return self.graph.add('Unary', {'operator': '-'}, {'operand': self.expr(right)})
+        if op != '<<' and left is not None and right is not None:
+            return self.graph.add('Binary', {'operator': op}, {'left': self.expr(left), 'right': self.expr(right)})
+        return None
+
+    def shift_count(self, node):
+        """qpel masks shift counts as ((unsigned)(c) & 31u); masking again changes nothing."""
+        n = strip_parens(node)
+        if n['kind'] == 'BinaryOperator' and n['opcode'] == '&' and peel(n['inner'][1])['kind'] == 'IntegerLiteral' \
+                and int(peel(n['inner'][1])['value']) == 31:
+            count = strip_parens(n['inner'][0])
+            if count['kind'] in EXPLICIT_CASTS and scalar_of(count) == 'u32':
+                count = cast_operand(count)
+            return self.expr(count)
+        return self.expr(node)
+
+    def as_unsigned(self, core):
+        """C promotes unsigned char to int. Where such an int provably never goes negative
+        (see nonnegative_int), qpel keeps it unsigned, as the source author meant."""
+        self.unsigned += 1
+        try:
+            return self.core(core, False, False)
+        finally:
+            self.unsigned -= 1
+
+    def literal(self, n, target):
+        value = int(n['value'])
+        if value > U32_MAX:
+            raise Unsupported(n, 'literal-range', 'integer literal does not fit in 32 bits')
+        if target == 'f32':
+            return self.graph.add('F32Literal', {'value': str(value)})
+        if target == 'i32':
+            return self.graph.add('I32Literal', {'value': str(value)})
+        unsigned = scalar_of(n) == 'u32' or value >= 2**31
+        return self.graph.add('Literal', {'value': str(value) + ('u' if unsigned else '')})
+
+    def convert_types(self, value, source, target, outer):
+        add = self.graph.add
+        if source == target or 'pointer' in (source, target):
             return value
-        if (source, target) == ('u8', 'i32') or (source == 'i32' and target == 'u32' and nonnegative_int(core)):
-            return value  # C promotes unsigned char to int; such values never go negative
-        if core['kind'] == 'IntegerLiteral' and target in ('u32', 'i32'):
+        if self.unsigned and (source, target) in (('u8', 'i32'), ('i32', 'u32'), ('u32', 'i32')):
             return value
+        if target == 'bool':
+            return value  # qpel conditions accept integers, as C does
         if (source, target) == ('u8', 'u32'):
             return value
-        if target == 'f32' and source in ('u32', 'u8', 'f16'):
-            return self.graph.add('F32Cast', children={'operand': value})
+        if source == 'bool' and target in ('u32', 'i32'):
+            one, zero = (('I32Literal', '1'), ('I32Literal', '0')) if target == 'i32' else (('Literal', '1u'), ('Literal', '0u'))
+            return add('Select', children={'condition': value, 'yes': add(one[0], {'value': one[1]}),
+                                           'no': add(zero[0], {'value': zero[1]})})
+        if target == 'i32' and source in ('u8', 'u32'):
+            return add('I32Cast', children={'operand': value})
+        if (source, target) == ('i32', 'u32'):
+            return add('U32Cast', children={'operand': value})
+        if target == 'f32' and source in ('u32', 'u8', 'i32', 'f16'):
+            return add('F32Cast', children={'operand': value})
         if (source, target) == ('f32', 'f16'):
-            return self.graph.add('F16Cast', children={'operand': value})
-        if 'i32' in (source, target):
-            raise Unsupported(outer, 'signed-integer', 'signed int values need IR v2 (use unsigned int)')
+            return add('F16Cast', children={'operand': value})
+        if target == 'u8':
+            raise Unsupported(outer, 'narrowing', f'conversion from {source} to unsigned char drops bits; qpel has no u8 arithmetic')
         raise Unsupported(outer, 'conversion', f'conversion from {source} to {target} is not in qpel')
 
     def name(self, ident):
@@ -591,11 +693,7 @@ class Importer:
                 raise Unsupported(n, 'thread-builtin', f'{entry[1]} is only supported as qpel uses it')
             return self.name(entry[1])
         if kind == 'IntegerLiteral':
-            value = int(n['value'])
-            if value > U32_MAX:
-                raise Unsupported(n, 'literal-range', 'integer literal does not fit in 32 bits')
-            unsigned = scalar_of(n) == 'u32' or value >= 2**31
-            return add('Literal', {'value': str(value) + ('u' if unsigned else '')})
+            return self.literal(n, 'u32' if self.unsigned else scalar_of(n))
         if kind == 'CXXBoolLiteralExpr':
             return add('Literal', {'value': 'true' if n['value'] else 'false'})
         if kind == 'FloatingLiteral':
@@ -608,13 +706,14 @@ class Importer:
             return add('GridIndex')
         if kind == 'BinaryOperator':
             op = n['opcode']
-            if op in LATER:
-                raise Unsupported(n, LATER[op], f'operator {op} is not in qpel yet')
             if op not in BINARY:
                 raise Unsupported(n, 'operator', f'operator {op} cannot be used inside an expression')
             left, right = n['inner']
-            if scalar_of(n) == 'i32' and not nonnegative_int(n):
-                raise Unsupported(n, 'signed-integer', 'signed int arithmetic needs IR v2 (use unsigned int)')
+            if op in COMPARISONS and not self.unsigned and all(
+                    scalar_of(x) == 'i32' and nonnegative_int(x) for x in (left, right)):
+                return self.as_unsigned(n)  # e.g. two unsigned chars compared after promotion to int
+            if op in ('<<', '>>'):
+                return add('Binary', {'operator': op}, {'left': self.expr(left), 'right': self.shift_count(right)})
             if scalar_of(n) == 'pointer':
                 if not address or op not in ('+', '-') or scalar_of(left) != 'pointer':
                     raise Unsupported(n, 'pointer', 'pointer arithmetic is only supported as an atomic address')
@@ -623,7 +722,7 @@ class Importer:
         if kind == 'UnaryOperator':
             op = n['opcode']
             operand = n['inner'][0]
-            if op in ('!', '-'):
+            if op in ('!', '-', '~'):
                 return add('Unary', {'operator': op}, {'operand': self.expr(operand)})
             if op == '+':
                 return self.expr(operand)
@@ -631,8 +730,6 @@ class Importer:
                 element = peel(operand)
                 base, index = element['inner']
                 return add('Binary', {'operator': '+'}, {'left': self.buffer(base), 'right': self.expr(index)})
-            if op in LATER:
-                raise Unsupported(n, LATER[op], f'operator {op} is not in qpel yet')
             raise Unsupported(n, 'operator', f'operator {op} is not supported here')
         if kind in EXPLICIT_CASTS:  # explicit cast to float or half, see peel()
             operand = peel(n['inner'][0])
@@ -691,6 +788,10 @@ class Importer:
         if callee in TO_F16 or callee in TO_F32:
             need(1)
             return add('F16Cast' if callee in TO_F16 else 'F32Cast', children={'operand': self.expr(args[0])})
+        if callee in ('qpel_i32_div', 'qpel_i32_rem'):  # qpel's defined signed / and %
+            need(2)
+            return add('Binary', {'operator': '/' if callee == 'qpel_i32_div' else '%'},
+                       {'left': self.expr(args[0]), 'right': self.expr(args[1])})
         if callee == 'qpel_sum_f32':
             need(3)
             return add('ReduceSumF32', children={'buffer': self.expr(args[0], address=True),
@@ -767,6 +868,33 @@ class Importer:
         for r in resources.values():
             r['extent'] = None if r['kind'] == 'shape' else shapes[0]
         return {'resources': list(resources.values()), 'stages': stages}
+
+
+def strip_parens(node):
+    while node['kind'] == 'ParenExpr':
+        node = node['inner'][0]
+    return node
+
+
+def cast_operand(cast):
+    """The operand of an explicit integer cast, before clang's implicit conversion."""
+    inner = cast['inner'][0]
+    while inner['kind'] == 'ImplicitCastExpr' and inner.get('castKind') == 'IntegralCast':
+        inner = inner['inner'][0]
+    return inner
+
+
+def signed_operand(node):
+    """x when node is an explicit (unsigned) cast of an int expression x."""
+    n = strip_parens(node)
+    if n['kind'] in EXPLICIT_CASTS and scalar_of(n) == 'u32' and scalar_of(cast_operand(n)) == 'i32':
+        return cast_operand(n)
+    return None
+
+
+def is_zero(node):
+    n = peel(node)
+    return n['kind'] == 'IntegerLiteral' and int(n['value']) == 0
 
 
 def nonnegative_int(node):

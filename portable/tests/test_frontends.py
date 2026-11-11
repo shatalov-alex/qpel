@@ -143,18 +143,17 @@ class CudaIdioms(Sources):
 
     def test_rejections_name_the_construct(self):
         cases = {
-            'for-loop': THRESHOLD_CU.replace('binary[i] =', 'for (unsigned j = 0; j < 2u; j++) {} binary[i] ='),
-            'else': THRESHOLD_CU.replace('return;', 'return; else {}'),
-            'signed-integer': THRESHOLD_CU.replace('intensity[i] >= cutoff[i]', '(int)i - 2 > 0'),
-            'shift': THRESHOLD_CU.replace('1u :', '(1u << 2u) :'),
+            'do-loop': THRESHOLD_CU.replace('binary[i] =', 'do {} while (false); binary[i] ='),
+            'narrowing': THRESHOLD_CU.replace('binary[i] =', 'unsigned char c = i; binary[i] ='),
+            'conversion': THRESHOLD_CU.replace('1u :', '(unsigned int)(0.5f) :'),
+            'for-init': THRESHOLD_CU.replace('binary[i] =', 'for (unsigned j = 0, k = 1; j < 2u; ++j) {} binary[i] ='),
             'double': THRESHOLD_CU.replace('intensity[i] >= cutoff[i]', '0.5 > 0.25'),
             'thread-builtin': THRESHOLD_CU.replace('blockIdx.x', 'blockIdx.y'),
             'call': THRESHOLD_CU.replace('binary[i] =', '__syncthreads(); binary[i] ='),
-            'buffer-type': THRESHOLD_CU.replace('unsigned int* binary', 'int* binary'),
+            'buffer-type': THRESHOLD_CU.replace('unsigned int* binary', 'short* binary'),
             'local-type': THRESHOLD_CU.replace('binary[i] =', '__shared__ unsigned int cache[64]; binary[i] ='),
             'scalar-kernel-argument': THRESHOLD_CU.replace('uint3 dimensions', 'uint3 dimensions, unsigned int extra'),
             'literal-range': THRESHOLD_CU.replace('1u :', '4294967296u :'),
-            'bitwise-not': THRESHOLD_CU.replace('1u :', '~1u :'),
         }
         for code, source in cases.items():
             with self.subTest(code=code):
@@ -162,6 +161,43 @@ class CudaIdioms(Sources):
                     self.program(source)
                 self.assertEqual(caught.exception.code, code)
                 self.assertRegex(str(caught.exception), r'sample\.cu:\d+:\d+: \[')
+
+    def test_version_2_constructs(self):
+        program, _ = self.program('''
+            __device__ int clamp_sum(const int* x, unsigned int n) {
+                int total = 0;
+                for (unsigned int k = 0; k < n; k++) {
+                    if (x[k] < 0) continue; else if (x[k] > 1000) break;
+                    total += x[k] << 1;
+                }
+                return total > 0 ? total : -total;
+            }
+            __global__ void k(const int* x, int* y, unsigned int* z, unsigned int n) {
+                unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+                if (i < n) {
+                    y[i] = clamp_sum(x, 4u) / -3 + (int)(i % 2u);
+                    z[i] = ~(unsigned)x[i] >> 3;
+                } else {
+                    return;
+                }
+            }''')
+        self.assertEqual(program['version'], 2)
+        kinds = self.kinds(program)
+        for kind in ['For', 'Break', 'Continue', 'I32Literal', 'I32Cast', 'U32Cast', 'I32BufferType', 'ReadOnlyI32BufferType']:
+            self.assertIn(kind, kinds)
+        self.assertTrue(any(n['kind'] == 'If' and 'elseBody' in n['children'] for n in program['nodes']))
+        if HAS_METAL:
+            self.assertEqual(roundtrip.reimport(program), {'cuda': None, 'metal': None})
+
+    def test_unsigned_chars_compared_as_int_stay_unsigned(self):
+        program, _ = self.program(THRESHOLD_CU)
+        self.assertEqual(program['version'], 1)
+        self.assertNotIn('I32Cast', self.kinds(program))
+
+    def test_mixed_compound_assignment_converts_like_c(self):
+        program, _ = self.program(THRESHOLD_CU.replace('binary[i] =', 'int s = 5; s += i; binary[i] = (unsigned)s +'))
+        self.assertIn('U32Cast', self.kinds(program))
+        self.assertIn('I32Cast', self.kinds(program))
 
     def test_qpel_checks_still_apply(self):
         for label, source in [('write input', THRESHOLD_CU.replace('binary[i] =', 'binary[i] = 0u; intensity[i] =')),
@@ -243,7 +279,7 @@ class Command(Sources):
 
     def test_rejected_source_writes_nothing(self):
         out = Path(self.tmp.name)/'pkg'
-        source = self.write(THRESHOLD_CU.replace('return;', 'return; else {}'), '.cu')
+        source = self.write(THRESHOLD_CU.replace('return;', 'return; do {} while (false);'), '.cu')
         with self.assertRaises(Unsupported):
             qpel.translate(source, out)
         self.assertFalse(out.exists())

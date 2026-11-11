@@ -43,7 +43,7 @@ A plain-text qpel frontend is possible later and would parse into this same grap
 
 ## Shared scalar typing (core v0)
 
-The editor-independent checker follows the existing native rules: u8 can widen to u32; implicit u32-to-u8 narrowing and bool-to-integer conversions are rejected. Locals are scalar, declarations become visible only after their initializer, and nested locals do not escape their block. Helpers must precede callers; recursion and direct calls to kernels are rejected. Numeric arithmetic is typed as u32, comparisons as bool; ordinary indexing and atomic operations have separate buffer contracts. Type judgments do not yet guarantee that every emitted C/C++ promotion matches this numeric model.
+The editor-independent checker follows the existing native rules: u8 can widen to u32; implicit u32-to-u8 narrowing and bool-to-integer conversions are rejected. Locals are scalar, declarations become visible only after their initializer, and nested locals do not escape their block. Helpers must precede callers; recursion and direct calls to kernels are rejected. Unsigned arithmetic is typed as u32 and signed arithmetic (IR version 2) as i32, with no implicit mixing; comparisons are bool; ordinary indexing and atomic operations have separate buffer contracts. Type judgments do not yet guarantee that every emitted C/C++ promotion matches this numeric model.
 
 The tests mutate valid saved native models to exercise type errors, read-only writes, helper calls, atomic operands, kernel bindings, self-references, nested visibility and unconditional returns. Both target validation paths and lowering reject these invalid programs. Every fixture is checked against the IR that MPS exports for the matching sandbox model (`test_fixtures_match_mps_export`).
 

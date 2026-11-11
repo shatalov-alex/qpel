@@ -64,6 +64,18 @@ __device__ __forceinline__ float qpel_group_sum_f32(float value, float* scratch,
 #define QPEL_GROUP_SUM_F32(value) qpel_group_sum_f32((value), qpel_group_scratch, threadIdx.x, blockDim.x)
 #endif
 
+#ifdef QPEL_I32_ENABLED
+#define QPEL_I32 int
+#define QPEL_READ_I32 const int*
+#define QPEL_WRITE_I32 int*
+// Signed division truncates toward zero. INT_MIN / -1 wraps to INT_MIN and
+// INT_MIN % -1 is 0 (C leaves both undefined). Divisors must be nonzero.
+__device__ __forceinline__ int qpel_i32_div(int a, int b) { return b == -1 ? (int)(0u - (unsigned int)a) : a / b; }
+__device__ __forceinline__ int qpel_i32_rem(int a, int b) { return b == -1 ? 0 : a % b; }
+#define QPEL_I32_DIV(a, b) qpel_i32_div((a), (b))
+#define QPEL_I32_REM(a, b) qpel_i32_rem((a), (b))
+#endif
+
 // Generated from qpel IR. Do not edit.
 // qpel numeric contract: u32-modulo-v1
 QPEL_KERNEL void initialize(QPEL_PARAM(QPEL_READ_U8, mask, 0), QPEL_PARAM(QPEL_ATOMIC_U32, parent, 1), QPEL_PARAM(QPEL_ATOMIC_U32, counts, 2), QPEL_PARAM(QPEL_SHAPE, shape, 3) QPEL_GRID_PARAM(qpel_index)) {

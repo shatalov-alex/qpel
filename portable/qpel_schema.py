@@ -6,9 +6,9 @@ import re
 import math
 import struct
 
-TYPE_KINDS = set('VoidType BoolType U8Type U32Type F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType Shape3DType'.split())
-EXPRESSIONS = set('Name Literal F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin'.split())
-STATEMENTS = set('Block Variable Assign Evaluate If While Return'.split())
+TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType Shape3DType'.split())
+EXPRESSIONS = set('Name Literal I32Literal I32Cast U32Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin'.split())
+STATEMENTS = set('Block Variable Assign Evaluate If While For Break Continue Return'.split())
 
 # Child role -> (allowed concepts, minimum count, maximum count or None).
 def one(kinds):
@@ -25,6 +25,8 @@ CHILDREN = {
     'Function': {'parameters': many('Parameter'), 'resultType': one(TYPE_KINDS), 'body': one('Block'), 'domain': optional('Grid1D')},
     'Parameter': {'type': one(TYPE_KINDS)},
     'F32Cast': {'operand': one(EXPRESSIONS)},
+    'I32Cast': {'operand': one(EXPRESSIONS)},
+    'U32Cast': {'operand': one(EXPRESSIONS)},
     'WorkgroupSumF32': {'value': one(EXPRESSIONS)},
     'ReduceSumF32': {role: one(EXPRESSIONS) for role in ('buffer','start','count')},
     'F16Cast': {'operand': one(EXPRESSIONS)},
@@ -39,8 +41,11 @@ CHILDREN = {
     'Select': {'condition': one(EXPRESSIONS), 'yes': one(EXPRESSIONS), 'no': one(EXPRESSIONS)},
     'Assign': {'target': one('Name Index'), 'value': one(EXPRESSIONS)},
     'Evaluate': {'value': one(EXPRESSIONS)},
-    'If': {'condition': one(EXPRESSIONS), 'thenBody': one('Block')},
+    'If': {'condition': one(EXPRESSIONS), 'thenBody': one('Block'), 'elseBody': optional('Block')},
     'While': {'condition': one(EXPRESSIONS), 'body': one('Block')},
+    # for (init; condition; step) body. A missing condition means true.
+    'For': {'init': optional('Variable Assign'), 'condition': optional(EXPRESSIONS),
+            'step': optional('Assign Evaluate'), 'body': one('Block')},
     'Return': {'value': optional(EXPRESSIONS)},
     'Pipeline': {'resources': many('Resource'), 'stages': many('Dispatch')},
     'Resource': {'type': one(TYPE_KINDS)},
@@ -65,7 +70,7 @@ LINKS = {
 ATTRIBUTES = {
     'GpuModule': {'name': str}, 'Function': {'name': str, 'isKernel': bool},
     'Parameter': {'name': str, 'binding': int, 'isBuffer': bool},
-    'Variable': {'name': str}, 'Literal': {'value': str}, 'F32Literal': {'value': str},
+    'Variable': {'name': str}, 'Literal': {'value': str}, 'I32Literal': {'value': str}, 'F32Literal': {'value': str},
     'Binary': {'operator': str}, 'Unary': {'operator': str},
     'Member': {'member': str}, 'Pipeline': {'name': str},
     'Resource': {'name': str, 'kind': str},
@@ -159,6 +164,10 @@ def validate_structure(nodes):
             if value not in ('true', 'false'):
                 if not re.fullmatch(r'[0-9]+[uU]?', value) or len(value.rstrip('uU')) > 10 or int(value.rstrip('uU')) > 4294967295:
                     fail('Expected boolean or unsigned 32-bit decimal literal')
+        if kind == 'I32Literal':
+            value = a['value']
+            if not re.fullmatch(r'[0-9]{1,10}', value) or int(value) > 2147483647:
+                fail('Expected nonnegative signed 32-bit decimal literal')
         if kind == 'F32Literal':
             value = a['value']
             if not re.fullmatch(r'(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?', value):

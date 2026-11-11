@@ -2,10 +2,16 @@
 
 Pipeline resource effects, bounds/races and numerical lowering remain separate.
 """
-NUMBERS = {'U8Type', 'U32Type'}
-CONDITIONS = NUMBERS | {'BoolType'}
+NUMBERS = {'U8Type', 'U32Type'}  # unsigned integers
+INTEGERS = NUMBERS | {'I32Type'}
+CONDITIONS = INTEGERS | {'BoolType'}
 SCALARS = CONDITIONS | {'F32Type', 'F16Type'}
-BUFFERS = {'ReadOnlyU8BufferType', 'U32BufferType', 'AtomicU32BufferType', 'ReadOnlyF32BufferType', 'F32BufferType', 'ReadOnlyF16BufferType', 'F16BufferType'}
+ELEMENTS = {'ReadOnlyU8BufferType': 'U8Type', 'U32BufferType': 'U32Type', 'ReadOnlyI32BufferType': 'I32Type',
+            'I32BufferType': 'I32Type', 'ReadOnlyF32BufferType': 'F32Type', 'F32BufferType': 'F32Type',
+            'ReadOnlyF16BufferType': 'F16Type', 'F16BufferType': 'F16Type'}
+READ_ONLY = {'ReadOnlyU8BufferType', 'ReadOnlyI32BufferType', 'ReadOnlyF32BufferType', 'ReadOnlyF16BufferType'}
+BUFFERS = set(ELEMENTS) | {'AtomicU32BufferType'}
+COMPARISONS = {'==', '!=', '<', '>', '<=', '>='}
 
 
 def fits(expected, actual):
@@ -58,6 +64,11 @@ class TypeChecker:
             return self.declared(target)
         if k == 'Literal':
             return 'BoolType' if a['value'] in ('true', 'false') else 'U32Type'
+        if k == 'I32Literal':
+            return 'I32Type'
+        if k in ('I32Cast', 'U32Cast'):
+            check(e('operand') in INTEGERS, 'CAST_TYPE', 'Integer conversion requires an integer')
+            return 'I32Type' if k == 'I32Cast' else 'U32Type'
         if k == 'F32Literal':return 'F32Type'
         if k == 'WorkgroupSumF32':
             parent = self.parents.get(node['id'])
@@ -77,7 +88,7 @@ class TypeChecker:
             check(e('operand') == 'F32Type', 'CAST_TYPE', 'Float16 storage conversion requires float32')
             return 'F16Type'
         if k == 'F32Cast':
-            check(e('operand') in NUMBERS | {'F32Type', 'F16Type'}, 'CAST_TYPE', 'Float32 conversion requires numeric scalar')
+            check(e('operand') in INTEGERS | {'F32Type', 'F16Type'}, 'CAST_TYPE', 'Float32 conversion requires numeric scalar')
             return 'F32Type'
         if k == 'GridIndex':
             check(function['attributes'].get('isKernel', False), 'GRID_CONTEXT', 'Grid index requires a kernel')
@@ -98,9 +109,9 @@ class TypeChecker:
             return 'U32Type'
         if k == 'Index':
             base, index = e('base'), e('index')
-            check(index in NUMBERS, 'INDEX_TYPE', 'Index must be unsigned integer')
-            check(base in {'ReadOnlyU8BufferType', 'U32BufferType', 'ReadOnlyF32BufferType', 'F32BufferType', 'ReadOnlyF16BufferType', 'F16BufferType'}, 'INDEX_BASE', 'Ordinary buffer required; use atomic operations for atomic buffers')
-            return {'ReadOnlyU8BufferType':'U8Type', 'U32BufferType':'U32Type', 'ReadOnlyF32BufferType':'F32Type', 'F32BufferType':'F32Type', 'ReadOnlyF16BufferType':'F16Type', 'F16BufferType':'F16Type'}[base]
+            check(index in INTEGERS, 'INDEX_TYPE', 'Index must be an integer')
+            check(base in ELEMENTS, 'INDEX_BASE', 'Ordinary buffer required; use atomic operations for atomic buffers')
+            return ELEMENTS[base]
         if k.startswith('Atomic'):
             check(e('address') == 'AtomicU32BufferType', 'ATOMIC_ADDRESS', 'Atomic buffer address required')
             if k != 'AtomicLoad':
@@ -110,19 +121,29 @@ class TypeChecker:
             operand = e('operand')
             if a['operator'] == '!' and operand in CONDITIONS:
                 return 'BoolType'
-            if a['operator'] == '-' and operand in NUMBERS:
+            if a['operator'] in ('-', '~') and operand in NUMBERS:
                 return 'U32Type'
+            if a['operator'] in ('-', '~') and operand == 'I32Type':
+                return 'I32Type'
             if a['operator'] == '-' and operand == 'F32Type':return 'F32Type'
             check(False, 'UNARY', 'Unsupported operand type')
         if k in {'Binary', 'Minimum', 'Maximum'}:
             left, right = e('left'), e('right')
             if k != 'Binary':
-                check(left in NUMBERS and right in NUMBERS, 'MINMAX_TYPE', 'Unsigned integers required')
+                if left == right == 'I32Type':
+                    return 'I32Type'
+                check(left in NUMBERS and right in NUMBERS, 'MINMAX_TYPE', 'Two unsigned or two signed integers required')
                 return 'U32Type'
             op = a['operator']
             divisor = self.child(node, 'right')
-            if op in {'/', '%'} and divisor['kind'] == 'Literal' and right in NUMBERS:
+            if op in {'/', '%'} and divisor['kind'] in ('Literal', 'I32Literal') and right in INTEGERS:
                 check(int(divisor['attributes']['value'].rstrip('uU')) != 0, 'ZERO_DIVISOR', 'Division/remainder by literal zero')
+            if op in {'<<', '>>'}:
+                check(left in INTEGERS and right in INTEGERS, 'SHIFT_TYPE', 'Shifts require integers')
+                return 'I32Type' if left == 'I32Type' else 'U32Type'
+            if left == right == 'I32Type':
+                if op in {'+', '-', '*', '/', '%', '&', '|', '^'}:return 'I32Type'
+                if op in COMPARISONS:return 'BoolType'
             if left == right == 'F32Type':
                 if op in {'+', '-', '*', '/'}:return 'F32Type'
                 if op in {'==', '!=', '<', '>', '<=', '>='}:return 'BoolType'
@@ -147,40 +168,62 @@ class TypeChecker:
             check(False, 'SELECT_TYPE', 'Incompatible branches')
         check(False, 'EXPRESSION', 'Unsupported expression')
 
-    def block(self, block, inherited, function, names):
+    def block(self, block, inherited, function, names, loops=0):
+        """Check a block in a copy of the scope; True if it always returns."""
         env, returns = set(inherited), False
         for node in self.children(block, 'statements'):
-            k = node['kind']
-            def e(role):
-                return self.expr(self.child(node, role), env, function)
-            def check(ok, code, message):
-                self.require(node, ok, code, message)
-            if k == 'Variable':
-                self.unique(node, names)
-                expected, actual = self.declared(node), e('value')
-                check(expected in SCALARS and fits(expected, actual), 'VARIABLE_TYPE', f'Invalid initializer {expected} <- {actual}')
-                env.add(node['id'])
-            elif k == 'Assign':
-                target = self.child(node, 'target')
-                expected, actual = e('target'), e('value')
-                writable = target['kind'] == 'Name' and expected in SCALARS
-                if target['kind'] == 'Index':
-                    writable = self.expr(self.child(target, 'base'), env, function) in {'U32BufferType', 'F32BufferType', 'F16BufferType'}
-                check(writable, 'READ_ONLY', 'Assignment target is not writable')
-                check(fits(expected, actual), 'ASSIGN_TYPE', f'Incompatible assignment {expected} <- {actual}')
-            elif k == 'Evaluate':
-                e('value')
-            elif k == 'Return':
-                actual = e('value') if self.children(node, 'value') else 'VoidType'
-                expected = self.child(function, 'resultType')['kind']
-                check(fits(expected, actual), 'RETURN_TYPE', f'Expected {expected}, got {actual}')
-                returns = True
-            elif k in {'If', 'While'}:
-                check(e('condition') in CONDITIONS, 'CONDITION', 'Scalar condition required')
-                self.block(self.child(node, 'thenBody' if k == 'If' else 'body'), env, function, names)
-            elif k == 'Block':
-                returns = self.block(node, env, function, names) or returns
+            returns = self.statement(node, env, function, names, loops) or returns
         return returns
+
+    def statement(self, node, env, function, names, loops):
+        """Check one statement; a Variable extends env. True if it always returns."""
+        k = node['kind']
+        def e(role):
+            return self.expr(self.child(node, role), env, function)
+        def check(ok, code, message):
+            self.require(node, ok, code, message)
+        if k == 'Variable':
+            self.unique(node, names)
+            expected, actual = self.declared(node), e('value')
+            check(expected in SCALARS and fits(expected, actual), 'VARIABLE_TYPE', f'Invalid initializer {expected} <- {actual}')
+            env.add(node['id'])
+        elif k == 'Assign':
+            target = self.child(node, 'target')
+            expected, actual = e('target'), e('value')
+            writable = target['kind'] == 'Name' and expected in SCALARS
+            if target['kind'] == 'Index':
+                writable = self.expr(self.child(target, 'base'), env, function) in BUFFERS - READ_ONLY
+            check(writable, 'READ_ONLY', 'Assignment target is not writable')
+            check(fits(expected, actual), 'ASSIGN_TYPE', f'Incompatible assignment {expected} <- {actual}')
+        elif k == 'Evaluate':
+            e('value')
+        elif k == 'Return':
+            actual = e('value') if self.children(node, 'value') else 'VoidType'
+            expected = self.child(function, 'resultType')['kind']
+            check(fits(expected, actual), 'RETURN_TYPE', f'Expected {expected}, got {actual}')
+            return True
+        elif k == 'If':
+            check(e('condition') in CONDITIONS, 'CONDITION', 'Scalar condition required')
+            then = self.block(self.child(node, 'thenBody'), env, function, names, loops)
+            otherwise = [self.block(b, env, function, names, loops) for b in self.children(node, 'elseBody')]
+            return then and bool(otherwise) and otherwise[0]
+        elif k == 'While':
+            check(e('condition') in CONDITIONS, 'CONDITION', 'Scalar condition required')
+            self.block(self.child(node, 'body'), env, function, names, loops + 1)
+        elif k == 'For':
+            inner = set(env)  # the init variable is visible only inside the loop
+            for init in self.children(node, 'init'):
+                self.statement(init, inner, function, names, loops)
+            for condition in self.children(node, 'condition'):
+                check(self.expr(condition, inner, function) in CONDITIONS, 'CONDITION', 'Scalar condition required')
+            for step in self.children(node, 'step'):
+                self.statement(step, inner, function, names, loops)
+            self.block(self.child(node, 'body'), inner, function, names, loops + 1)
+        elif k in ('Break', 'Continue'):
+            check(loops > 0, 'LOOP_CONTEXT', k.lower() + ' must be inside a loop')
+        elif k == 'Block':
+            return self.block(node, env, function, names, loops)
+        return False
 
     def validate(self):
         function_names = set()
@@ -212,7 +255,7 @@ class TypeChecker:
                     for ref in values:yield from descendants(self.nodes[ref])
             kinds = {n['kind'] for n in descendants(function)}
             if 'WorkgroupSumF32' in kinds:
-                self.require(function, not kinds & {'Return', 'While'}, 'COLLECTIVE_FLOW', 'Kernels with group sum cannot contain returns or loops; mask input and guard writes instead')
+                self.require(function, not kinds & {'Return', 'While', 'For', 'Break', 'Continue'}, 'COLLECTIVE_FLOW', 'Kernels with group sum cannot contain returns or loops; mask input and guard writes instead')
             returns = self.block(self.child(function, 'body'), env, function, names)
             self.require(function, result == 'VoidType' or returns, 'MISSING_RETURN', 'Non-void helper requires unconditional return')
 

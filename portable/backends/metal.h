@@ -57,3 +57,15 @@ inline float qpel_group_sum_f32(float value, threadgroup float* scratch, uint la
 }
 #define QPEL_GROUP_SUM_F32(value) qpel_group_sum_f32((value), qpel_group_scratch, qpel_lane, qpel_group_size)
 #endif
+
+#ifdef QPEL_I32_ENABLED
+#define QPEL_I32 int
+#define QPEL_READ_I32 device const int*
+#define QPEL_WRITE_I32 device int*
+// Signed division truncates toward zero. INT_MIN / -1 wraps to INT_MIN and
+// INT_MIN % -1 is 0 (C leaves both undefined). Divisors must be nonzero.
+inline int qpel_i32_div(int a, int b) { return b == -1 ? (int)(0u - (uint)a) : a / b; }
+inline int qpel_i32_rem(int a, int b) { return b == -1 ? 0 : a % b; }
+#define QPEL_I32_DIV(a, b) qpel_i32_div((a), (b))
+#define QPEL_I32_REM(a, b) qpel_i32_rem((a), (b))
+#endif
