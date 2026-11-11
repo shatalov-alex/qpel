@@ -1,0 +1,22 @@
+// z = a * x + y over n elements, written directly in qpel (TEXT.md).
+// python3 qpel.py build examples/saxpy.qpel --out /tmp/saxpy
+module saxpy {
+  fn axpy(a: f32, x: f32, y: f32) -> f32 {
+    return (a * x) + y;
+  }
+  kernel saxpy(x: buffer<f32, read> @0, y: buffer<f32, read> @1, z: buffer<f32, write> @2, a: f32 @3, n: i64 @4) groups {
+    let i: i64 = (cast<i64>(qpel.group.x) * cast<i64>(qpel.group_size.x)) + cast<i64>(qpel.local.x);
+    if (i < n) {
+      z[i] = axpy(a, x[i], y[i]);
+    }
+  }
+}
+pipeline saxpy_launch {
+  input x: buffer<f32, read> in size;
+  input y: buffer<f32, read> in size;
+  output z: buffer<f32, write> in size;
+  value a: f32;
+  value n: i64;
+  shape size;
+  dispatch saxpy over size block (256, 1, 1) groups ("(W*H*N + 255)/256", "1", "1") (x = x, y = y, z = z, a = a, n = n);
+}

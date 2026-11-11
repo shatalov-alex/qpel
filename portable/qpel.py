@@ -1,4 +1,6 @@
-"""Check or build a saved qpel program without the MPS IDE or GPU libraries."""
+"""Check or build a saved qpel program without the MPS IDE or GPU libraries.
+
+Programs are IR (program.qpel.json) or text (*.qpel, TEXT.md); both build the same way."""
 import argparse
 import hashlib
 import json
@@ -13,9 +15,19 @@ def save(path, value):
     path.write_text(json.dumps(value, indent=2) + '\n')
 
 
-def compile_program(source, out=None):
+def load_program(source):
+    """(IR, its JSON bytes) for a program.qpel.json or a .qpel text file."""
+    source = Path(source)
+    if source.suffix == '.qpel':
+        from qpel_text import parse_program
+        program = parse_program(source.read_text())
+        return program, (json.dumps(program, indent=1) + '\n').encode()
     raw = source.read_bytes()
-    program = json.loads(raw)
+    return json.loads(raw), raw
+
+
+def compile_program(source, out=None):
+    program, raw = load_program(source)
     checks = {target: validate(program, target) for target in ('metal', 'cuda')}
     report = {'status': 'checked', 'source_sha256': hashlib.sha256(raw).hexdigest(),
               'semantics': program['semantics'], 'checks': checks,
@@ -31,6 +43,8 @@ def compile_program(source, out=None):
         with tempfile.TemporaryDirectory(prefix='.qpel-', dir=out.parent) as temp:
             stage = Path(temp)
             (stage/'program.qpel.json').write_bytes(raw)
+            if Path(source).suffix == '.qpel':
+                (stage/'program.qpel').write_bytes(Path(source).read_bytes())
             neutral = Lowering(program).write(stage/'neutral')
             manifest = build(neutral, stage/'generated')
             # Record final provenance paths rather than deleted staging paths.
@@ -82,7 +96,12 @@ def translate(source, out, plan=None, module=None, block=64, include=()):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    check = commands.add_parser('check', help='Validate a program.qpel.json')
+    check = commands.add_parser('check', help='Validate a program.qpel.json or .qpel file')
+    show = commands.add_parser('print', help='Print a program.qpel.json as qpel text')
+    show.add_argument('source', type=Path)
+    parse = commands.add_parser('parse', help='Parse qpel text into a program.qpel.json')
+    parse.add_argument('source', type=Path)
+    parse.add_argument('--out', type=Path, required=True, help='program.qpel.json to write')
     check.add_argument('source', type=Path)
     build = commands.add_parser('build', help='Build CUDA and Metal from a program.qpel.json')
     build.add_argument('source', type=Path)
@@ -100,6 +119,17 @@ def main(argv=None):
                              help='Extra header folder, such as stubs for a library the source includes')
     args = parser.parse_args(argv)
     try:
+        if args.command == 'print':
+            from qpel_text import print_program
+            print(print_program(load_program(args.source)[0]), end='')
+            return
+        if args.command == 'parse':
+            if args.out.exists():
+                raise ValueError('Output already exists; choose a new file')
+            program, _ = load_program(args.source)
+            validate(program)
+            save(args.out, program)
+            return
         if args.command == 'check':
             report = compile_program(args.source)
         elif args.command == 'build':
@@ -108,7 +138,11 @@ def main(argv=None):
             if args.out.exists():
                 raise ValueError('Output already exists; choose a new file')
             program, report = import_program(args.source, args.plan, args.module, args.block, args.include)
-            save(args.out, program)
+            if args.out.suffix == '.qpel':  # the imported program as qpel text
+                from qpel_text import print_program
+                args.out.write_text(print_program(program))
+            else:
+                save(args.out, program)
         else:
             report = translate(args.source, args.out, args.plan, args.module, args.block, args.include)
     except (ValueError, OSError, RuntimeError) as error:

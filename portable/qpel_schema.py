@@ -97,7 +97,8 @@ DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer'},
              'Dispatch': {'blockHeight', 'blockDepth', 'groupsX', 'groupsY', 'groupsZ'}}
 # Every qpel name is emitted verbatim into both CUDA C++ and Metal Shading Language, so it
 # must avoid qpel keywords, C++ keywords, CUDA built-ins and Metal keywords and type names.
-QPEL_KEYWORDS = set('void bool uint int float return if while for true false kernel device min max'.split())
+QPEL_KEYWORDS = set('void bool uint int float return if while for true false kernel device min max'.split()) | \
+    set('let fn module pipeline dispatch cast view math atomic qpel'.split())  # the text syntax (TEXT.md)
 CPP_KEYWORDS = set('''alignas alignof and and_eq asm auto bitand bitor bool break case catch char char8_t char16_t
     char32_t class compl concept const consteval constexpr constinit const_cast continue co_await co_return
     co_yield decltype default delete do double dynamic_cast else enum explicit export extern false float for
