@@ -103,6 +103,11 @@ class FloatTests(unittest.TestCase):
 #define __forceinline__ inline
 struct Dim { unsigned int x; };
 static Dim blockIdx{0}, blockDim{1}, threadIdx{0};
+// separately rounded float operations (f32-strict-v1)
+inline float __fadd_rn(float a,float b){volatile float r=a+b;return r;}
+inline float __fsub_rn(float a,float b){volatile float r=a-b;return r;}
+inline float __fmul_rn(float a,float b){volatile float r=a*b;return r;}
+inline float __fdiv_rn(float a,float b){volatile float r=a/b;return r;}
 ''')
             module=Lowering(self.p).plan()['module']
             (folder/'main.cpp').write_text(('''#include <cassert>

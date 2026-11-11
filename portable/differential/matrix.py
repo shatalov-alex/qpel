@@ -55,10 +55,13 @@ def sources():
     return out
 
 
-def compare(expected, actual, names):
-    """None, or where the first difference is."""
+def compare(expected, actual, names, defined=None):
+    """None, or where the first difference is. `defined` limits outputs to their written prefix."""
     for name in names:
         a, b = np.asarray(expected[name]), np.asarray(actual[name])
+        if defined and name in defined:
+            a, b = a[:defined[name]], b[:defined[name]]
+            expected, actual = dict(expected, **{name: a}), dict(actual, **{name: b})
         if a.dtype.kind == 'f':
             a, b = a.view(f'u{a.itemsize}'), b.view(f'u{b.itemsize}')
         if a.shape != b.shape:
@@ -103,9 +106,9 @@ def check_source(name, path, dialect, plan, include, grids, work, gpu):
         else:
             yield f'{dialect} original', label, 'skipped: no Apple GPU'
             continue
-        yield rows['cuda'][0], label, compare(expected, simulated.run(case), outputs)
+        yield rows['cuda'][0], label, compare(expected, simulated.run(case), outputs, case.defined)
         if rows['metal'][1]:
-            yield rows['metal'][0], label, compare(expected, metal.run_generated(host, plan, case), outputs)
+            yield rows['metal'][0], label, compare(expected, metal.run_generated(host, plan, case), outputs, case.defined)
         else:
             yield rows['metal'][0], label, 'skipped: no Apple GPU'
 

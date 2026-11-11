@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from generate_metal_host import generate, validate_resources
 from generate_cuda_host import generate as generate_cuda
-from qpel_schema import is_identifier, is_block_size
+from qpel_schema import is_identifier, is_block_size, is_group_count
 from qpel_types import normalize_plan
 
 HERE = Path(__file__).resolve().parent
@@ -27,7 +27,8 @@ def launch_header(plan):
     for stage in plan['stages']:
         kernel=identifier(stage['kernel']); grid=identifier(stage['grid']); block=stage['blockSize']
         shape=stage.get('blockShape',[block,1,1])
-        if stage.get('domain','grid1d') not in ('grid1d','grid3d') or len(shape)!=3 or shape[0]!=block: raise ValueError('Invalid stage domain')
+        if stage.get('domain','grid1d') not in ('grid1d','grid3d','groups') or len(shape)!=3 or shape[0]!=block: raise ValueError('Invalid stage domain')
+        if stage.get('domain')=='groups' and (len(stage.get('groups',()))!=3 or not all(is_group_count(g) for g in stage['groups'])): raise ValueError('Invalid group counts')
         if not all(is_block_size(d) for d in shape) or shape[0]*shape[1]*shape[2]>256: raise ValueError('Invalid block size')
         if stage['completionBarrier'] is not True: raise ValueError('Stage completion is required')
         if grid not in resources or resources[grid]['kind'] != 'shape': raise ValueError('Invalid grid resource')
@@ -38,7 +39,10 @@ def launch_header(plan):
             resource=resources[name]
             if resource['kind'] not in ('shape','value') and resource['extent']!=grid: raise ValueError('Grid/extent mismatch')
             args.append(name)
-        if stage.get('domain')=='grid3d':
+        if stage.get('domain')=='groups':
+            counts=['('+g.replace('W','(('+grid+').x)').replace('H','(('+grid+').y)').replace('N','(('+grid+').z)')+')' for g in stage['groups']]
+            lines.append('QPEL_STAGE_GROUPS('+', '.join([kernel,grid]+counts+[str(d) for d in shape]+args)+')')
+        elif stage.get('domain')=='grid3d':
             lines.append('QPEL_STAGE3D('+', '.join([kernel,grid]+[str(d) for d in shape]+args)+')')
         else:
             lines.append('QPEL_STAGE('+', '.join([kernel,grid,str(block)]+args)+')')
@@ -66,7 +70,8 @@ def build(source, output, plan_path=None):
         widths = b'#define QPEL_INT_WIDTHS_ENABLED 1\n' if any(t in body for t in (b'QPEL_I8', b'QPEL_U16', b'QPEL_I16', b'QPEL_U64', b'QPEL_I64', b'QPEL_READ(', b'QPEL_WRITE(')) else b''
         brain = b'#define QPEL_BF16_ENABLED 1\n' if b'QPEL_BF16' in body or b'QPEL_TO_BF16' in body else b''
         saturate = b'#define QPEL_F32_TO_INT_ENABLED 1\n' if b'QPEL_F32_TO_' in body else b''
-        result = half + reduction + group + signed + values + grid3d + widths + brain + saturate + b'// Generated backend package. Edit the MPS model or backend support.\n' + support + b'\n' + body
+        groups = b'#define QPEL_GROUPS_ENABLED 1\n' if b'QPEL_GROUPS_PARAM' in body else b''
+        result = half + reduction + group + signed + values + grid3d + widths + brain + saturate + groups + b'// Generated backend package. Edit the MPS model or backend support.\n' + support + b'\n' + body
         path = output / (module+'.'+suffix)
         path.write_bytes(result)
         if backend == 'metal':
@@ -83,7 +88,8 @@ def build(source, output, plan_path=None):
     (output / 'pipeline.inc').write_text(dispatch)
     (output / 'pipeline.json').write_bytes(plan_bytes)
     contract = 'u32-modulo-v1' + (', i32-wrap-v1' if b'qpel numeric contract: i32-wrap-v1' in body else '') + \
-        (', integers-v3' if b'qpel numeric contract: integers-v3' in body else '')
+        (', integers-v3' if b'qpel numeric contract: integers-v3' in body else '') + \
+        (', f32-strict-v1' if b'qpel numeric contract: f32-strict-v1' in body else '')
     manifest = {'numeric_contract': contract, 'neutral_source': str(source.resolve()), 'neutral_source_sha256': hashlib.sha256(body).hexdigest(),
                 'neutral_pipeline':str(plan_path.resolve()),'pipeline_sha256':hashlib.sha256(plan_bytes).hexdigest(),
                 'metal_host_sha256':hashlib.sha256(host).hexdigest(),

@@ -147,12 +147,10 @@ class CudaIdioms(Sources):
         cases = {
             'switch': THRESHOLD_CU.replace('binary[i] =', 'switch (i) { default: break; } binary[i] ='),
             'atomic-update': THRESHOLD_CU.replace('binary[i] =', 'atomicAdd(binary, 1u); binary[i] +='),
-            'template': '''template <typename T> __device__ T twice(T v) { return v + v; }
-''' + THRESHOLD_CU.replace('1u :', 'twice(1u) + twice(1) :'),
             'conversion': THRESHOLD_CU.replace('1u :', '(unsigned int)(float)(i > 0u) :'),
             'for-init': THRESHOLD_CU.replace('binary[i] =', 'for (unsigned j = 0, k = 1; j < 2u; ++j) {} binary[i] ='),
             'double': THRESHOLD_CU.replace('intensity[i] >= cutoff[i]', '0.5 > 0.25'),
-            'thread-builtin': THRESHOLD_CU.replace('blockIdx.x', 'blockIdx.y'),
+            'thread-builtin': '__device__ unsigned int lane() { return threadIdx.x; }\n' + THRESHOLD_CU,
             'call': THRESHOLD_CU.replace('binary[i] =', '__syncthreads(); binary[i] ='),
             'buffer-type': THRESHOLD_CU.replace('unsigned int* binary', 'double* binary'),
             'local-type': THRESHOLD_CU.replace('binary[i] =', '__shared__ unsigned int cache[64]; binary[i] ='),
@@ -167,6 +165,29 @@ class CudaIdioms(Sources):
                     self.program(source)
                 self.assertEqual(caught.exception.code, code)
                 self.assertRegex(str(caught.exception), r'sample\.cu:\d+:\d+: \[')
+
+    def test_raw_thread_builtins_make_a_groups_kernel(self):
+        program, report = self.program('''
+            __global__ void scale(const float* x, float* y, float s, long long n) {
+                long long stride = (long long)blockDim.x * gridDim.x;
+                for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride)
+                    y[i] = s * x[i];
+            }''')
+        nodes = {n['id']: n for n in program['nodes']}
+        kinds = {n['kind'] for n in program['nodes']}
+        self.assertIn('Groups', kinds)
+        self.assertTrue({'GroupIndex', 'LocalIndex', 'GroupSize', 'GroupCount'} <= kinds)
+        params = [n for n in program['nodes'] if n['kind'] == 'Parameter']
+        self.assertEqual([p['attributes']['name'] for p in params], ['x', 'y', 's', 'n'])  # n stays an argument
+        stage = next(n for n in program['nodes'] if n['kind'] == 'Dispatch')
+        self.assertEqual(stage['attributes']['groupsX'], '(W*H*N + 63)/64')
+        self.assertTrue(any('no launch plan' in a for a in report['adaptations']))
+
+    def test_template_instantiations_become_functions(self):
+        program, report = self.program('''template <typename T> __device__ T twice(T v) { return v + v; }
+''' + THRESHOLD_CU.replace('1u :', '(twice(1u) + (unsigned)twice(1)) :'))
+        self.assertEqual(report['helpers'], ['twice_u32', 'twice_i32'])
+        self.assertTrue(any('one per instantiation' in a for a in report['adaptations']))
 
     def test_version_2_constructs(self):
         program, _ = self.program('''

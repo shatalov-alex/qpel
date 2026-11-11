@@ -75,6 +75,14 @@ def _value(value, kind):
         return value - 2**bits  # unsigned values travel as the bit pattern of the signed type
     return value
 
+def _groups(expressions, dims, block):
+    """Group counts of a Groups stage (expressions of W, H, N, checked by qpel) and the threads they hold."""
+    w, h, n = (int(v) for v in dims)
+    counts = tuple(eval(e.replace('/', '//'), {'__builtins__': {}}, {'W': w, 'H': h, 'N': n}) for e in expressions)
+    if any(c < 1 for c in counts):
+        raise ValueError("Group counts must be positive: " + repr(counts))
+    return counts, tuple(c * b for c, b in zip(counts, block))
+
 def _input(value, dtype, count, device):
     if value.device != device or value.dtype != dtype or value.numel() != count:
         raise ValueError("Input device, dtype or element count does not match Pipeline")
@@ -125,7 +133,10 @@ def generate(plan, shader):
             lines.append(f"    buffers[{name!r}] = torch.{allocate}(sizes[{r['extent']!r}], device=device, dtype=torch.{BUFFER_TYPES[element(r['type'])]})")
     for s in plan['stages']:
         args = ', '.join(f"buffers[{b['resource']!r}]" for b in s['bindings'])
-        if s.get('domain') == 'grid3d':
+        if s.get('domain') == 'groups':  # whole threadgroups, as CUDA launches whole blocks
+            lines.append(f"    _, threads = _groups({tuple(s['groups'])!r}, dims[{s['grid']!r}], {tuple(s['blockShape'])!r})")
+            lines.append(f"    getattr(lib, {s['kernel']!r})({args}, threads=threads, group_size={tuple(s['blockShape'])!r})")
+        elif s.get('domain') == 'grid3d':
             lines.append(f"    getattr(lib, {s['kernel']!r})({args}, threads=dims[{s['grid']!r}], group_size={tuple(s['blockShape'])!r})")
         else:
             lines.append(f"    getattr(lib, {s['kernel']!r})({args}, threads=sizes[{s['grid']!r}], group_size={s['blockSize']})")

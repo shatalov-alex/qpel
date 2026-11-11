@@ -9,7 +9,7 @@ import struct
 from qpel_types import INTEGER_TERMS, INTEGERS_BITS, SCALAR_TERMS, buffer, is_valid
 
 TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType'.split())
-EXPRESSIONS = set('Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin'.split())
+EXPRESSIONS = set('Name Literal I32Literal Constant Cast GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin'.split())
 STATEMENTS = set('Block Variable Assign Evaluate If While DoWhile For Break Continue Return'.split())
 
 # Child role -> (allowed concepts, minimum count, maximum count or None).
@@ -24,7 +24,7 @@ def optional(kinds):
 
 CHILDREN = {
     'GpuModule': {'functions': many('Function')},
-    'Function': {'parameters': many('Parameter'), 'resultType': one(TYPE_KINDS), 'body': one('Block'), 'domain': optional('Grid1D Grid3D')},
+    'Function': {'parameters': many('Parameter'), 'resultType': one(TYPE_KINDS), 'body': one('Block'), 'domain': optional('Grid1D Grid3D Groups')},
     'Parameter': {'type': one(TYPE_KINDS)},
     'F32Cast': {'operand': one(EXPRESSIONS)},
     'I32Cast': {'operand': one(EXPRESSIONS)},
@@ -80,13 +80,16 @@ ATTRIBUTES = {
     'Binary': {'operator': str}, 'Unary': {'operator': str},
     'Member': {'member': str}, 'Pipeline': {'name': str},
     'Resource': {'name': str, 'kind': str},
-    'Dispatch': {'blockSize': int, 'blockHeight': int, 'blockDepth': int, 'completionBarrier': bool},
+    'Dispatch': {'blockSize': int, 'blockHeight': int, 'blockDepth': int, 'completionBarrier': bool,
+                 'groupsX': str, 'groupsY': str, 'groupsZ': str},
     'ThreadIndex': {'axis': str},
     # IR version 3
     'ScalarType': {'scalar': str}, 'BufferType': {'element': str, 'access': str},
     'Cast': {'to': str}, 'Constant': {'value': str, 'scalar': str},
+    'GroupIndex': {'axis': str}, 'LocalIndex': {'axis': str}, 'GroupSize': {'axis': str}, 'GroupCount': {'axis': str},
 }
-DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer'}, 'Dispatch': {'blockHeight', 'blockDepth'}}
+DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer'},
+             'Dispatch': {'blockHeight', 'blockDepth', 'groupsX', 'groupsY', 'groupsZ'}}
 # Every qpel name is emitted verbatim into both CUDA C++ and Metal Shading Language, so it
 # must avoid qpel keywords, C++ keywords, CUDA built-ins and Metal keywords and type names.
 QPEL_KEYWORDS = set('void bool uint int float return if while for true false kernel device min max'.split())
@@ -110,6 +113,52 @@ def is_identifier(name):
     """True for a name that is safe to emit unchanged into every backend."""
     return (isinstance(name, str) and IDENTIFIER.fullmatch(name) is not None
             and not name.startswith('qpel_') and name not in RESERVED)
+
+
+def is_group_count(text):
+    """An expression for a number of groups: integers, W, H and N (the dispatch shape),
+    + - * / (C's division of non-negative numbers) and parentheses."""
+    return isinstance(text, str) and len(text) <= 200 and re.fullmatch(r'[0-9WHN+\-*/() ]+', text) is not None \
+        and _parses(text)
+
+
+def _parses(text):
+    import ast
+    try:
+        tree = ast.parse(text, mode='eval')
+    except SyntaxError:
+        return False
+    allowed = (ast.Expression, ast.BinOp, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Constant, ast.Name, ast.Load,
+               ast.UnaryOp, ast.USub)
+    return all(isinstance(n, allowed) for n in ast.walk(tree)) and \
+        all(type(n.value) is int for n in ast.walk(tree) if isinstance(n, ast.Constant))
+
+
+def group_count(text, shape):
+    """Evaluate a group-count expression for a shape (W, H, N)."""
+    import ast
+    names = dict(zip('WHN', shape))
+
+    def walk(n):
+        if isinstance(n, ast.Expression):
+            return walk(n.body)
+        if isinstance(n, ast.Constant):
+            return n.value
+        if isinstance(n, ast.Name):
+            return names[n.id]
+        if isinstance(n, ast.UnaryOp):
+            return -walk(n.operand)
+        a, b = walk(n.left), walk(n.right)
+        if isinstance(n.op, ast.Add):
+            return a + b
+        if isinstance(n.op, ast.Sub):
+            return a - b
+        if isinstance(n.op, ast.Mult):
+            return a * b
+        if b == 0:
+            raise ValueError('group count divides by zero: ' + text)
+        return int(a / b) if a * b < 0 else a // b  # C truncates
+    return walk(ast.parse(text, mode='eval'))
 
 
 def is_block_size(value):
@@ -208,7 +257,11 @@ def validate_structure(nodes):
             dims = (a['blockSize'], a.get('blockHeight', 1), a.get('blockDepth', 1))
             if not all(is_block_size(d) for d in dims) or dims[0]*dims[1]*dims[2] > MAX_BLOCK_SIZE:
                 fail(f'Block size must be between 1 and {MAX_BLOCK_SIZE} threads in total')
-        if kind == 'ThreadIndex' and a['axis'] not in ('x', 'y', 'z'):
-            fail('Thread index axis must be x, y or z')
+        if kind in ('ThreadIndex', 'GroupIndex', 'LocalIndex', 'GroupSize', 'GroupCount') and a['axis'] not in ('x', 'y', 'z'):
+            fail(f'{kind} axis must be x, y or z')
+        if kind == 'Dispatch':
+            for axis in 'XYZ':
+                if 'groups' + axis in a and not is_group_count(a['groups' + axis]):
+                    fail(f"groups{axis} must be an integer expression of W, H and N: {a['groups' + axis]!r}")
         if kind == 'Parameter' and a.get('binding', 0) < 0:
             fail('Binding must be nonnegative')

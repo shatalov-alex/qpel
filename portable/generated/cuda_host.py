@@ -35,6 +35,14 @@ def _grid3d(shape, block):
         raise ValueError("Shape is too tall or deep for one CUDA launch")
     return grid
 
+def _groups(expressions, dims, block):
+    """Group counts of a Groups stage (expressions of W, H, N, checked by qpel) and the threads they hold."""
+    w, h, n = (int(v) for v in dims)
+    counts = tuple(eval(e.replace('/', '//'), {'__builtins__': {}}, {'W': w, 'H': h, 'N': n}) for e in expressions)
+    if any(c < 1 for c in counts):
+        raise ValueError("Group counts must be positive: " + repr(counts))
+    return counts, tuple(c * b for c, b in zip(counts, block))
+
 def _value(value, kind):
     """A scalar kernel argument, checked against its qpel type."""
     if kind == 'f32':
@@ -51,7 +59,7 @@ def _value(value, kind):
 
 
 SHADER_FILE = 'components.cu'
-SHADER_SHA256 = 'a3a4c4a6f61d6a556f283cafe527c52eefcd40119e8e7697a3790aff8d67ca57'
+SHADER_SHA256 = 'e6cebd9fc2eb39eee06e30f630fdd4b3484e5c1f540b07bb9a62d84f2f7a6b82'
 
 def run(inputs, shapes, values=None, *, device=0):
     """CuPy arrays in/out; shapes are (W,H,N); values are scalars; each stage completes before the next."""

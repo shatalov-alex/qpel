@@ -2,7 +2,7 @@
 
 F32Fma(left, right, addend) requires three float32 expressions and returns float32. Integer operands require F32Cast. The common IR has a distinct float32_fma capability. Native MPS has the structure concept, editor and checker. qpel.sandbox contains float_fma and float_fma_launch.
 
-CUDA lowers to __fmaf_rn; Metal lowers to metal::fma. This explicitly requests a fused multiplication/addition with no intermediate product rounding. Ordinary Binary multiply/add expressions still follow compiler contraction settings: this revision does not promise they remain unfused. No blanket cross-device bitwise guarantee for subnormals, exceptional values or fast-math compilation is made.
+CUDA lowers to __fmaf_rn; Metal lowers to metal::fma. This explicitly requests a fused multiplication/addition with no intermediate product rounding. Ordinary Binary multiply/add expressions stay unfused since f32-strict-v1 (NUMERICS.md): CUDA uses separately rounded intrinsics and Metal turns contraction off. No blanket cross-device bitwise guarantee for subnormals, exceptional values or fast-math compilation is made.
 
 Primary specifications: [NVIDIA single-precision intrinsics](https://docs.nvidia.com/cuda/archive/12.0.1/cuda-math-api/group__CUDA__MATH__INTRINSIC__SINGLE.html), [Metal Shading Language specification](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf), sections 1.6.3 and 6.7/Table 6.4.
 

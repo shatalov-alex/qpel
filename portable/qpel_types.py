@@ -218,7 +218,10 @@ class TypeChecker:
             check(function['attributes'].get('isKernel', False) and self.domain(function) == 'Grid1D', 'GRID_CONTEXT', 'Grid index requires a Grid1D kernel')
             return 'u32'
         if k == 'ThreadIndex':
-            check(function['attributes'].get('isKernel', False) and self.domain(function) == 'Grid3D', 'GRID_CONTEXT', 'Thread index requires a Grid3D kernel')
+            check(function['attributes'].get('isKernel', False) and self.domain(function) in ('Grid3D', 'Groups'), 'GRID_CONTEXT', 'Thread index requires a Grid3D or Groups kernel')
+            return 'u32'
+        if k in ('GroupIndex', 'LocalIndex', 'GroupSize', 'GroupCount'):
+            check(function['attributes'].get('isKernel', False) and self.domain(function) == 'Groups', 'GRID_CONTEXT', k + ' requires a Groups kernel')
             return 'u32'
         if k == 'Call':
             target = self.target(node, 'function')

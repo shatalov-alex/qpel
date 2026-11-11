@@ -37,6 +37,14 @@ def _value(value, kind):
         return value - 2**bits  # unsigned values travel as the bit pattern of the signed type
     return value
 
+def _groups(expressions, dims, block):
+    """Group counts of a Groups stage (expressions of W, H, N, checked by qpel) and the threads they hold."""
+    w, h, n = (int(v) for v in dims)
+    counts = tuple(eval(e.replace('/', '//'), {'__builtins__': {}}, {'W': w, 'H': h, 'N': n}) for e in expressions)
+    if any(c < 1 for c in counts):
+        raise ValueError("Group counts must be positive: " + repr(counts))
+    return counts, tuple(c * b for c, b in zip(counts, block))
+
 def _input(value, dtype, count, device):
     if value.device != device or value.dtype != dtype or value.numel() != count:
         raise ValueError("Input device, dtype or element count does not match Pipeline")
@@ -44,7 +52,7 @@ def _input(value, dtype, count, device):
 
 
 SHADER_FILE = 'components.metal'
-SHADER_SHA256 = '958ed49afcf8d90245ca5f3d2848f7dbc4754cad2c17d3137c8471b5e573dcba'
+SHADER_SHA256 = '1af04a665fd7e722b7f8dadbd1a37576f8f8d1a28ccaf6cf94b0eb78f9a3c120'
 
 def run(inputs, shapes, values=None, *, device="mps"):
     """Inputs are tensors; shapes map names to (W,H,N); values are scalars; outputs are flat tensors."""

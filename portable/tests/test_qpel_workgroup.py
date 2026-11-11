@@ -55,7 +55,8 @@ class WorkgroupTests(unittest.TestCase):
             shader=(folder/'generated/float_group_sum.metal').read_text()
             # The Grid3D support block is compiled only for 3D kernels; it is not part of this 1D shader.
             self.assertNotIn('#define QPEL_GRID3D_ENABLED',shader)
-            shader=re.sub(r'#ifdef QPEL_GRID3D_ENABLED.*?#endif','',shader,flags=re.S)
+            self.assertNotIn('#define QPEL_GROUPS_ENABLED',shader)
+            shader=re.sub(r'#ifdef QPEL_(GRID3D|GROUPS)_ENABLED.*?#endif','',shader,flags=re.S)
             types=re.findall(r'\b(uint[23]?)\s+\w+\s*\[\[(?:thread_position_in_grid|threads_per_threadgroup)\]\]',shader)
             self.assertGreaterEqual(len(types),2)
             self.assertEqual(set(types),{'uint'},'1D dispatch requires scalar grid builtins')
@@ -85,6 +86,9 @@ struct Barrier {
 static Barrier* barrier;
 inline void __syncthreads(){barrier->wait();}
 inline float __fadd_rn(float a,float b){volatile float result=a+b;return result;}
+inline float __fsub_rn(float a,float b){volatile float r=a-b;return r;}
+inline float __fmul_rn(float a,float b){volatile float r=a*b;return r;}
+inline float __fdiv_rn(float a,float b){volatile float r=a/b;return r;}
 ''')
             (folder/'main.cpp').write_text('''#include <cassert>
 #include <thread>

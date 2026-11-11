@@ -7,6 +7,7 @@ short reason code, never by guessing. The finished program then goes through
 the normal qpel checks, which decide types, scopes and pipeline effects.
 """
 from pathlib import Path
+import re
 
 from qpel_schema import is_identifier
 from qpel_types import (SCALAR_TERMS, VALUE_TERMS, access, buffer as type_buffer, fits, is_buffer as type_is_buffer,
@@ -103,6 +104,8 @@ def peel(node):
             if cast and cast not in VALUE_CASTS:
                 raise Unsupported(node, 'conversion', f'{cast} has no qpel equivalent')
             node = node['inner'][0]
+        elif kind == 'SubstNonTypeTemplateParmExpr':
+            node = node['inner'][-1]  # the value the template parameter was replaced by
         elif kind == 'CXXMemberCallExpr' and node['inner'][0].get('name', '').startswith('operator '):
             node = node['inner'][0]['inner'][0]  # conversion operator, e.g. __half -> float
         else:
@@ -245,11 +248,21 @@ class Metal(Dialect):
         attrs = attributes(param)
         if 'MetalThreadPosGridAttr' in attrs:
             return 'grid'
+        for attr, role in GROUP_BUILTINS.items():
+            if attr in attrs:
+                return role
         other = [k for k in attrs if k.startswith('Metal') and k != 'MetalBufferIndexAttr']
         return other[0] if other else None
 
 
 DIALECT = {'cuda': Cuda(), 'metal': Metal()}
+# Metal threadgroup builtins and CUDA's built-in variables -> the qpel Groups builtin they are.
+GROUP_BUILTINS = {'MetalThreadGroupPosGridAttr': 'group', 'MetalThreadPosGroupAttr': 'local',
+                  'MetalThreadsPerGroupAttr': 'size', 'MetalThreadGroupsPerGridAttr': 'count'}
+CUDA_BUILTINS = {'blockIdx': 'group', 'threadIdx': 'local', 'blockDim': 'size', 'gridDim': 'count'}
+GROUP_NODES = {'group': 'GroupIndex', 'local': 'LocalIndex', 'size': 'GroupSize', 'count': 'GroupCount'}
+GROUPS_BLOCK = 64  # group size of a Groups kernel without a launch plan
+QPEL_GROUP_SUM_PARAMS = {'qpel_lane', 'qpel_group_size'}  # builtins backends/metal.h adds for a workgroup sum
 ATOMIC_ELEMENTS = {'u32': 'atomic', 'i32': 'atomic_i32'}  # element -> scalar of its atomic buffer
 ZERO = {'bool': ('Literal', 'false'), 'u32': ('Literal', '0u'), 'i32': ('I32Literal', '0'), 'f32': ('F32Literal', '0.0')}
 GRID3D_BLOCK = (16, 16, 1)  # default block for 2D/3D kernels without a launch plan
@@ -258,6 +271,7 @@ MAXIMUM = {'max', 'umax'}
 FMA = {'__fmaf_rn', 'fmaf', 'fma'}
 TO_F16 = {'__float2half_rn', '__float2half'}
 TO_BF16 = {'__float2bfloat16_rn', '__float2bfloat16'}
+ROUNDED = {'__fadd_rn': '+', '__fsub_rn': '-', '__fmul_rn': '*', '__fdiv_rn': '/'}
 SATURATE = {f'qpel_f32_to_{t}': t for t in ('u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64')}
 TO_F32 = {'__half2float'}
 COMPARISONS = {'==', '!=', '<', '>', '<=', '>='}
@@ -336,9 +350,26 @@ class Importer:
         self.domains = {}  # kernel name -> 'grid1d' | 'grid3d'
         self.grid3d = False
         self.adaptations = []
+        self.instances = {}  # clang id of a template instantiation -> its qpel function name
+        self.files = {}  # path -> text, for reading attributes clang's JSON leaves out
+        main = list(clang_ast.main_file_decls(unit, path))
+        # Device functions defined in the library's own headers (llama.cpp's common.cuh) are
+        # imported when the file's GPU code reaches them; system headers never reach here.
+        self.reachable = reachable_functions(unit, main, self.dialect)
+        self.header = False
         decls = []
-        for node in clang_ast.main_file_decls(unit, path):
-            decls.extend(self.attempt(lambda: self.top_level(node), []))
+        main_ids = {id(node) for node in main}
+        for node in unit.get('inner', ()):
+            if id(node) in main_ids:
+                self.header = False
+                decls.extend(self.attempt(lambda: self.top_level(node), []))
+            elif not node.get('isImplicit') and contains_any(node, self.reachable):
+                self.header = True
+                decls.extend(self.attempt(lambda: self.top_level(node), []))
+        self.header = False
+        headers = [d['name'] for d in decls if d.get('_header')]
+        if headers:
+            self.adaptations.append('device functions from included headers were imported: ' + ', '.join(headers))
         self.decls = decls
 
     def attempt(self, read, fallback=None):
@@ -351,7 +382,38 @@ class Importer:
             self.issues.append((self.current, error))
             return fallback
 
-    def top_level(self, node):
+    def template_arguments(self, decl):
+        """The template arguments of an instantiation, as source text."""
+        out = []
+        for c in decl.get('inner', ()):
+            if c['kind'] != 'TemplateArgument':
+                continue
+            parts = c['inner'] if c.get('isPack') else [c]
+            for part in parts:
+                if 'decl' in part:
+                    out.append(part['decl'].get('name', '?'))
+                elif 'type' in part:
+                    out.append(part['type']['qualType'])
+                elif 'value' in part:
+                    out.append(str(part['value']))
+                else:
+                    out.append('?')
+        return out
+
+    def host_name(self, decl):
+        """The name a Metal explicit instantiation gives a kernel: [[host_name("...")]]."""
+        for c in decl.get('inner', ()):
+            if c['kind'] == 'MetalHostNameAttr':
+                begin = c['range']['begin']
+                file = begin.get('_file')
+                if file not in self.files:
+                    self.files[file] = Path(file).read_text()
+                found = re.match(r'host_name\s*\(\s*"([^"]+)"', self.files[file][begin['offset']:begin['offset'] + 300])
+                if found:
+                    return found.group(1)
+        return None
+
+    def top_level(self, node, qualified=True):
         kind = node['kind']
         if kind == 'LinkageSpecDecl':
             return [d for child in node.get('inner', ()) for d in self.top_level(child)]
@@ -367,31 +429,53 @@ class Importer:
         if kind == 'FunctionTemplateDecl':
             uses = [d for d in node.get('inner', ()) if d['kind'] == 'FunctionDecl' and body_of(d) is not None
                     and any(c['kind'] == 'TemplateArgument' for c in d.get('inner', ()))]
+            if self.header:
+                uses = [d for d in uses if d['id'] in self.reachable]
             if not uses:
                 return []  # never instantiated, so never called
-            if len(uses) == 1:
-                arguments = ', '.join(c.get('type', {}).get('qualType', '?') for c in uses[0]['inner'] if c['kind'] == 'TemplateArgument')
+            if len(uses) == 1 and not self.host_name(uses[0]):
+                arguments = ', '.join(self.template_arguments(uses[0]))
                 self.adaptations.append(f'template {node["name"]} is used only with <{arguments}> and was imported for it')
-                return self.top_level(uses[0])
-            error = Unsupported(node, 'template', f'template {node.get("name", "")} is used with {len(uses)} types; qpel has no templates')
-            if self.issues is not None:  # survey the first instantiation, so the template's other blockers show too
-                self.issues.append((node.get('name'), error))
-                return self.top_level(uses[0])
-            self.rejected.add(node.get('name'))
-            self.current = node.get('name')
-            raise Unsupported(node, 'template', f'template {node.get("name", "")} is used with {len(uses)} types; qpel has no templates')
+                self.qualified[node['name']] = f'{self.namespace}{node["name"]}<{arguments}>'
+                return self.top_level(uses[0], qualified=False)
+            # Each instantiation is its own function: qpel has no templates.
+            out = []
+            taken = set()
+            for use in uses:
+                arguments = self.template_arguments(use)
+                name = self.host_name(use) or instance_name(node['name'], arguments)
+                while name in taken:
+                    name += '_'
+                taken.add(name)
+                self.instances[use['id']] = name
+                instance = dict(use, name=name)
+                imported = self.attempt(lambda: self.top_level(instance, qualified=False), [])
+                if imported:
+                    self.qualified[name] = self.host_name(use) or f'{self.namespace}{node["name"]}<{", ".join(arguments)}>'
+                out.extend(imported)
+            self.adaptations.append(f'template {node["name"]} became {len(uses)} functions, one per instantiation: '
+                                    + ', '.join(self.instances[u['id']] for u in uses))
+            return out
         if kind == 'FunctionDecl':
             if body_of(node) is None or node.get('name', '').startswith('qpel_'):
                 return []  # declarations and qpel backend helpers
-            if self.dialect.is_host(node):
-                self.host.append(node['name'])
-                self.host_spans.append(clang_ast.span(node))
+            if self.header and node['id'] not in self.reachable:
                 return []
-            self.qualified[node['name']] = self.namespace + node['name']
+            if self.dialect.is_host(node):
+                if not self.header:
+                    self.host.append(node['name'])
+                    self.host_spans.append(clang_ast.span(node))
+                return []
+            if qualified:
+                self.qualified[node['name']] = self.namespace + node['name']
+            if self.header:
+                node = dict(node, _header=True)
             return [node]
         if kind in ('StaticAssertDecl', 'UsingDirectiveDecl', 'TypedefDecl') or \
                 (kind == 'CXXRecordDecl' and node.get('name') == 'QpelShape'):
             return []
+        if self.header:
+            return []  # header types and variables matter only through the functions that use them
         raise Unsupported(node, 'top-level', f'{kind} {node.get("name", "")} outside a function is not supported')
 
     # -- parameter types, with atomic usage inferred across calls --
@@ -429,7 +513,7 @@ class Importer:
             for node in walk(body_of(decl)):
                 if node['kind'] != 'CallExpr':
                     continue
-                callee = decl_name(node['inner'][0])
+                callee = self.callee(node)
                 args = node['inner'][1:]
                 if callee in self.dialect.atomics and args:
                     base = atomic_address_base(args[0])
@@ -501,7 +585,7 @@ class Importer:
             self.attempt(lambda: self.function(decl, types))
         results = {name: {'kind': 'host', 'issues': [], 'calls': []} for name in self.host}
         for decl in self.decls:
-            calls = sorted({decl_name(n['inner'][0]) for n in walk(body_of(decl)) if n['kind'] == 'CallExpr'}
+            calls = sorted({self.callee(n) for n in walk(body_of(decl)) if n['kind'] == 'CallExpr'}
                            & (set(self.functions) | self.rejected))
             results[decl['name']] = {'kind': 'kernel' if self.functions[decl['name']][2] else 'device',
                                      'issues': [], 'calls': calls}
@@ -540,10 +624,18 @@ class Importer:
         params = []
         position = 0
         shape_param = None
-        self.grid3d = kernel and self.uses_grid3d(decl)
-        count = self.attempt(lambda: self.element_count(decl, types)) if kernel and not self.grid3d else None
+        self.groups = kernel and self.uses_groups(decl)
+        self.grid3d = kernel and not self.groups and self.uses_grid3d(decl)
+        count = self.attempt(lambda: self.element_count(decl, types)) if kernel and not self.grid3d and not self.groups else None
         for i, p in enumerate(params_of(decl)):
             builtin = self.dialect.builtin(p) if kernel else None
+            if builtin in GROUP_NODES and self.groups:
+                vector = ' '.join(words(p['type']['qualType'])) not in ('uint', 'ushort', 'unsigned int', 'unsigned short')
+                self.scope[p['id']] = ('group-builtin', builtin, vector)
+                continue
+            if builtin == 'grid' and self.groups:
+                self.scope[p['id']] = ('position',) if is_position_vector(p) else ('grid', 'x')
+                continue
             if builtin == 'grid':
                 vector = is_position_vector(p)
                 self.scope[p['id']] = ('position',) if vector else ('grid', 'x')
@@ -569,6 +661,8 @@ class Importer:
             ir = self.graph.add('Parameter', attrs, {'type': self.type_node(kind)})
             self.scope[p['id']] = ('param', ir, kind)
             params.append(ir)
+        if kernel and self.groups:
+            shape_param = True  # sizes stay ordinary arguments; the plan sizes the buffers
         if kernel and self.grid3d and shape_param is None and not any(
                 e and e[0] == 'untyped' for e in self.scope.values()):
             extents = self.attempt(lambda: self.axis_extents(decl, params))
@@ -596,8 +690,8 @@ class Importer:
         attrs = {'name': name, 'isKernel': True} if kernel else {'name': name}
         children = {'parameters': params, 'resultType': self.type_node(result[1]), 'body': body}
         if kernel:
-            children['domain'] = self.graph.add('Grid3D' if self.grid3d else 'Grid1D')
-            self.domains[name] = 'grid3d' if self.grid3d else 'grid1d'
+            children['domain'] = self.graph.add('Groups' if self.groups else 'Grid3D' if self.grid3d else 'Grid1D')
+            self.domains[name] = 'groups' if self.groups else 'grid3d' if self.grid3d else 'grid1d'
         return self.graph.put(ident, 'Function', attrs, children)
 
     def argument_map(self, decl):
@@ -703,6 +797,24 @@ class Importer:
         sizes = [extents.get(a, '1') for a in 'xyz']
         self.adaptations.append(f'{decl["name"]}: {", ".join(extents[a] for a in sorted(extents))} became a shape ({", ".join(sizes)})')
         return shape
+
+    def uses_groups(self, decl):
+        """A kernel is a Groups kernel when it reads a thread builtin other than the global
+        index: CUDA's threadIdx, blockIdx, blockDim or gridDim outside blockIdx * blockDim +
+        threadIdx, or a Metal threadgroup position, thread position in the group, group size
+        or group count."""
+        names = {p['name'] for p in params_of(decl)}
+        if any(self.dialect.builtin(p) in GROUP_NODES and p['name'] not in QPEL_GROUP_SUM_PARAMS for p in params_of(decl)) \
+                or 'qpel_group' in names:
+            return True  # (qpel_lane and qpel_group_size alone belong to qpel's own workgroup sum)
+        body = body_of(decl)
+        idiom = set()
+        for node in walk(body):
+            if node.get('kind') == 'BinaryOperator' and grid_axis(node) or \
+                    node.get('kind') == 'CallExpr' and (decl_name(node['inner'][0]) or '').startswith('qpel_'):
+                idiom.update(id(n) for n in walk(node))  # the global index, or qpel's own backend helpers
+        return any(n.get('kind') == 'MemberExpr' and id(n) not in idiom and decl_name(n['inner'][0]) in CUDA_BUILTINS
+                   for n in walk(body))
 
     def uses_grid3d(self, decl):
         """A kernel is 2D/3D when it uses a y or z thread index, or a Metal uint2/uint3 position."""
@@ -851,7 +963,7 @@ class Importer:
             self.scope[decl['id']] = ('local', ir, t[1])
             return [ir]
         axis = grid_axis(init) or (self.axis_of(init) if peel(init)['kind'] in ('MemberExpr', 'ExtVectorElementExpr') else None)
-        if self.kernel and axis and decl['id'] not in self.assigned:
+        if self.kernel and axis and decl['id'] not in self.assigned and not self.groups:
             self.scope[decl['id']] = ('grid', axis)  # a name for the thread index (CUDA expression or Metal position.y)
             return []
         value = self.expr(init)
@@ -1105,6 +1217,10 @@ class Importer:
                 member = lambda m: add('Member', {'member': m}, {'base': self.name(entry[1])})
                 xy = add('Binary', {'operator': '*'}, {'left': member('x'), 'right': member('y')})
                 return add('Binary', {'operator': '*'}, {'left': xy, 'right': member('z')})
+            if entry[0] == 'group-builtin':
+                if entry[2]:
+                    raise Unsupported(n, 'thread-builtin', 'use the .x, .y and .z components of a thread builtin')
+                return add(GROUP_NODES[entry[1]], {'axis': 'x'})
             if entry[0] == 'builtin':
                 raise Unsupported(n, 'thread-builtin', f'{entry[1]} is only supported as qpel uses it')
             return self.name(entry[1])
@@ -1116,7 +1232,7 @@ class Importer:
             if scalar_of(n) != 'f32':
                 raise Unsupported(n, 'double', 'double precision is not in qpel; write a float literal such as 0.5f')
             return add('F32Literal', {'value': n['value']})
-        if grid_axis(n):
+        if grid_axis(n) and not self.groups:  # a Groups kernel reads it literally: group * size + local
             if not self.kernel:
                 raise Unsupported(n, 'thread-builtin', 'the thread index is only available in kernels')
             return self.thread_index(grid_axis(n), n)
@@ -1166,6 +1282,10 @@ class Importer:
             entry = self.scope.get(base.get('referencedDecl', {}).get('id')) if base['kind'] == 'DeclRefExpr' else None
             if entry and entry[0] == 'position' and field in ('x', 'y', 'z'):
                 return self.thread_index(field, n)
+            if entry and entry[0] == 'group-builtin' and field in ('x', 'y', 'z'):
+                return add(GROUP_NODES[entry[1]], {'axis': field})
+            if self.groups and decl_name(base) in CUDA_BUILTINS and field in ('x', 'y', 'z'):
+                return add(GROUP_NODES[CUDA_BUILTINS[decl_name(base)]], {'axis': field})
             if entry and entry[0] == 'param' and entry[2] == 'shape3' and field in ('x', 'y', 'z'):
                 return add('Member', {'member': field}, {'base': self.name(entry[1])})
             if decl_name(base) in ('threadIdx', 'blockIdx', 'blockDim', 'gridDim'):
@@ -1176,6 +1296,11 @@ class Importer:
         raise Unsupported(n, 'expression', f'{kind} is not supported')
 
     def thread_index(self, axis, node):
+        if self.groups:  # Metal's position in the grid, as CUDA spells it: group * size + local
+            add = self.graph.add
+            product = add('Binary', {'operator': '*'}, {'left': add('GroupIndex', {'axis': axis}),
+                                                        'right': add('GroupSize', {'axis': axis})})
+            return add('Binary', {'operator': '+'}, {'left': product, 'right': add('LocalIndex', {'axis': axis})})
         if self.grid3d:
             return self.graph.add('ThreadIndex', {'axis': axis})
         if axis != 'x':
@@ -1222,9 +1347,16 @@ class Importer:
         if message not in self.adaptations:
             self.adaptations.append(message)
 
+    def callee(self, call):
+        """Name of the function a call reaches; a template instantiation has its own name."""
+        target = peel(call['inner'][0])
+        if target['kind'] == 'DeclRefExpr':
+            return self.instances.get(target['referencedDecl']['id'], target['referencedDecl'].get('name'))
+        return decl_name(call['inner'][0])
+
     def call(self, n, statement):
         add = self.graph.add
-        callee = decl_name(n['inner'][0])
+        callee = self.callee(n)
         args = n['inner'][1:]
         if callee in self.functions:
             decl, ident, kernel = self.functions[callee]
@@ -1250,6 +1382,9 @@ class Importer:
             need(2)
             return add('Binary', {'operator': '/' if callee.endswith('div') else '%'},
                        {'left': self.expr(args[0]), 'right': self.expr(args[1])})
+        if callee in ROUNDED:  # CUDA's separately rounded float operations are qpel's float operators
+            need(2)
+            return add('Binary', {'operator': ROUNDED[callee]}, {'left': self.expr(args[0]), 'right': self.expr(args[1])})
         if callee in SATURATE:  # qpel's saturating float -> integer conversion
             need(1)
             return add('Cast', {'to': SATURATE[callee]}, {'operand': self.expr(args[0])})
@@ -1347,10 +1482,13 @@ class Importer:
             bindings = [add('Binding', links={'parameter': params[b['parameter']], 'resource': ids[b['resource']]})
                         for b in s['bindings']]
             attrs = {'blockSize': s['blockSize'], 'completionBarrier': s['completionBarrier']}
-            if (s.get('domain') == 'grid3d') != (self.domains[s['kernel']] == 'grid3d'):
-                raise ValueError(f'Plan and source disagree on whether {s["kernel"]} is 2D/3D')
-            if s.get('domain') == 'grid3d':
+            if s.get('domain', 'grid1d') != self.domains[s['kernel']]:
+                raise ValueError(f'Plan and source disagree on how {s["kernel"]} is launched: '
+                                 f'{s.get("domain", "grid1d")} vs {self.domains[s["kernel"]]}')
+            if s.get('domain') in ('grid3d', 'groups'):
                 attrs.update(blockHeight=s['blockShape'][1], blockDepth=s['blockShape'][2])
+            if s.get('domain') == 'groups':
+                attrs.update(groupsX=s['groups'][0], groupsY=s['groups'][1], groupsZ=s['groups'][2])
             stages.append(add('Dispatch', attrs,
                               {'bindings': bindings},
                               {'kernel': self.functions[s['kernel']][1], 'grid': ids[s['grid']]}))
@@ -1377,8 +1515,21 @@ class Importer:
             stage = {'kernel': kernel, 'grid': grid, 'blockSize': block_size, 'completionBarrier': True, 'bindings': bindings}
             if self.domains[kernel] == 'grid3d':
                 stage.update(blockSize=GRID3D_BLOCK[0], domain='grid3d', blockShape=list(GRID3D_BLOCK))
+            if self.domains[kernel] == 'groups':
+                # Without a plan: one thread per element of the shape, in whole groups.
+                stage.update(blockSize=GROUPS_BLOCK, domain='groups', blockShape=[GROUPS_BLOCK, 1, 1],
+                             groups=[f'(W*H*N + {GROUPS_BLOCK - 1})/{GROUPS_BLOCK}', '1', '1'])
             stages.append(stage)
         shapes = [r['name'] for r in resources.values() if r['kind'] == 'shape']
+        if not shapes and all(s['grid'] is None for s in stages):
+            # Groups kernels take no shape; a shape resource still sizes the buffers.
+            name = next(n for n in ('size', 'grid_size', 'qpel_shape') if n not in resources)
+            resources[name] = {'name': name, 'kind': 'shape', 'type': 'shape3'}
+            shapes = [name]
+            self.adaptations.append(f'no launch plan: buffers are sized by a shape {name}, and Groups kernels '
+                                    'run one thread per element of it in groups of ' + str(GROUPS_BLOCK))
+        for s in stages:
+            s['grid'] = s['grid'] or (shapes[0] if len(shapes) == 1 else None)
         if len(shapes) != 1:
             raise Unsupported(None, 'extent', 'kernels use different shape parameters; pass a launch plan')
         for r in resources.values():
@@ -1412,6 +1563,58 @@ def signed_operand(node, unsigned='u32'):
                 (unsigned == 'u64' or inner in ('i32', 'i16', 'i8')):
             return cast_operand(n)
     return None
+
+
+def instance_name(base, arguments):
+    """An identifier for one instantiation: kernel<op_abs, __half> -> kernel_op_abs_half."""
+    parts = []
+    for a in arguments:
+        a = a.replace('__attribute__((ext_vector_type(', 'x').replace(')))', '')
+        a = SCALARS.get(' '.join(words(a)), a)
+        parts.append(re.sub(r'[^A-Za-z0-9]+', '_', a).strip('_'))
+    return re.sub(r'_+', '_', base + '_' + '_'.join(parts)).strip('_')
+
+
+def reachable_functions(unit, main, dialect):
+    """Clang ids of the functions GPU code in the main file calls, directly or not."""
+    functions = {}
+
+    def collect(node):
+        if node.get('kind') == 'FunctionDecl':
+            functions[node['id']] = node
+        for child in node.get('inner', ()):
+            if child.get('kind') in ('FunctionDecl', 'FunctionTemplateDecl', 'NamespaceDecl', 'LinkageSpecDecl'):
+                collect(child)
+    for node in unit.get('inner', ()):
+        collect(node)
+    start = []
+    for node in main:
+        collected = {}
+        def mine(n):
+            if n.get('kind') == 'FunctionDecl' and not dialect.is_host(n):
+                start.append(n['id'])
+            for c in n.get('inner', ()):
+                if c.get('kind') in ('FunctionDecl', 'FunctionTemplateDecl', 'NamespaceDecl', 'LinkageSpecDecl'):
+                    mine(c)
+        mine(node)
+    seen, stack = set(), start
+    while stack:
+        ident = stack.pop()
+        if ident in seen or ident not in functions:
+            continue
+        seen.add(ident)
+        for n in walk(body_of(functions[ident])):
+            if n.get('kind') == 'DeclRefExpr' and n.get('referencedDecl', {}).get('kind') == 'FunctionDecl':
+                stack.append(n['referencedDecl']['id'])
+    return seen
+
+
+def contains_any(node, ids):
+    """True when node is, or contains, a function declaration with one of these ids."""
+    if node.get('id') in ids:
+        return True
+    return any(contains_any(c, ids) for c in node.get('inner', ())
+               if c.get('kind') in ('FunctionDecl', 'FunctionTemplateDecl', 'NamespaceDecl', 'LinkageSpecDecl'))
 
 
 def conversion_step(node):

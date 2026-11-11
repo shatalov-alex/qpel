@@ -42,6 +42,14 @@ def _grid3d(shape, block):
         raise ValueError("Shape is too tall or deep for one CUDA launch")
     return grid
 
+def _groups(expressions, dims, block):
+    """Group counts of a Groups stage (expressions of W, H, N, checked by qpel) and the threads they hold."""
+    w, h, n = (int(v) for v in dims)
+    counts = tuple(eval(e.replace('/', '//'), {'__builtins__': {}}, {'W': w, 'H': h, 'N': n}) for e in expressions)
+    if any(c < 1 for c in counts):
+        raise ValueError("Group counts must be positive: " + repr(counts))
+    return counts, tuple(c * b for c, b in zip(counts, block))
+
 def _value(value, kind):
     """A scalar kernel argument, checked against its qpel type."""
     if kind == 'f32':
@@ -100,7 +108,14 @@ def generate(plan, shader):
     for s in plan['stages']:
         args = ', '.join(f"buffers[{b['resource']!r}]" for b in s['bindings'])
         block = s['blockSize']
-        if s.get('domain') == 'grid3d':
+        if s.get('domain') == 'groups':
+            bx, by, bz = s['blockShape']
+            lines += [f"        grid, _ = _groups({tuple(s['groups'])!r}, tuple(int(buffers[{s['grid']!r}][a]) for a in 'xyz'), {(bx, by, bz)!r})",
+                      "        if grid[1] > 65535 or grid[2] > 65535:",
+                      "            raise ValueError('Too many groups in y or z for one CUDA launch')",
+                      f"        lib.get_function({s['kernel']!r})(grid, {(bx, by, bz)!r}, ({args},), stream=stream)",
+                      '        stream.synchronize()']
+        elif s.get('domain') == 'grid3d':
             bx, by, bz = s['blockShape']
             lines += [f"        grid = _grid3d(buffers[{s['grid']!r}], {(bx, by, bz)!r})",
                       f"        lib.get_function({s['kernel']!r})(grid, {(bx, by, bz)!r}, ({args},), stream=stream)",

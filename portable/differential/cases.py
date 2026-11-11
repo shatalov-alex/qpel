@@ -2,7 +2,8 @@
 
 Inputs respect each original kernel's own preconditions, so the original never
 executes undefined behaviour (which the simulator's UBSan build would report):
-scale_offset keeps (int)i * offset within int, SAM 2 needs even sizes.
+scale_offset keeps (int)i * offset within int, SAM 2 needs even sizes, grid_stride's n
+is at most the buffer size.
 """
 import numpy as np
 
@@ -41,6 +42,8 @@ def generic(plan, seed, shapes=SHAPES, values=None):
                 else:
                     chosen[r['name']] = (int(rng.integers(0, 2**32)) if kind == 'u32' else
                                          int(rng.integers(-2**31, 2**31)) if kind == 'i32' else
+                                         int(rng.integers(0, 2**63)) if kind == 'u64' else
+                                         int(rng.integers(-2**63, 2**63 - 1)) if kind == 'i64' else
                                          float(np.float32(rng.uniform(-8, 8))))
         cases.append(Case(sizes, inputs, chosen, f'{shape}'))
     return cases
@@ -65,7 +68,18 @@ def sam2_cc(plan, seed):
     return cases
 
 
-SPECIAL = {'scale_offset': scale_offset, 'sam2_cc': sam2_cc}
+def grid_stride(plan, seed):
+    """n is the number of elements to write, at most the buffers' size."""
+    rng = np.random.default_rng(seed)
+    cases = generic(plan, seed)
+    for case in cases:
+        size = volume(case.shapes['size'])
+        case.values['n'] = int(rng.integers(0, size + 1))
+        case.defined = {'y': case.values['n']}  # elements past n are never written
+    return cases
+
+
+SPECIAL = {'scale_offset': scale_offset, 'sam2_cc': sam2_cc, 'grid_stride': grid_stride}
 
 
 def for_program(name, plan, seed=20261111):

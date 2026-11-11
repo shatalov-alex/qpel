@@ -384,6 +384,24 @@ def run_int_widths(name, host, plan):
     return cases
 
 
+# --- Groups kernels: a grid-stride loop, launched in whole groups ---
+
+def run_grid_stride(name, host, plan):
+    rng = np.random.default_rng(20261113)
+    cases = 0
+    for w, h, n in [(1, 1, 1), (63, 1, 1), (64, 1, 1), (65, 1, 1), (1000, 3, 2), (4097, 1, 1)]:
+        size = w*h*n
+        for count in sorted({0, 1, size // 2, size}):
+            x = (rng.standard_normal(size)*np.exp2(rng.integers(-8, 9, size))).astype(np.float32)
+            scale, bias = float(np.float32(rng.uniform(-4, 4))), float(np.float32(rng.uniform(-4, 4)))
+            out = host.run({'x': torch.from_numpy(x).to('mps')}, {'size': (w, h, n)},
+                           {'scale': scale, 'bias': bias, 'n': count})['y'].cpu().numpy()
+            expected = (np.float32(scale)*x[:count]).astype(np.float32) + np.float32(bias)
+            np.testing.assert_array_equal(out[:count].view(np.uint32), expected.astype(np.float32).view(np.uint32))
+            cases += 1
+    return cases
+
+
 # --- SAM 2 connected components, imported from the unmodified CUDA original ---
 
 def sam2_oracle(mask, w, h):
@@ -446,7 +464,7 @@ def run_sam2_cc(name, host, plan):
 TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fma32': run_fma32,
          'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components,
          'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset, 'box_sum': run_box_sum,
-         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths}
+         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride}
 
 
 def main(argv=None):

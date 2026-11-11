@@ -1,6 +1,8 @@
 // qpel backend: device-scope relaxed unsigned 32-bit atomics.
 #include <metal_stdlib>
 using namespace metal;
+// f32-strict-v1: every float32 operation rounds on its own; only QPEL_FMA_F32 fuses.
+#pragma clang fp contract(off)
 #define QPEL_KERNEL kernel
 #define QPEL_DEVICE
 #define QPEL_U8 uchar
@@ -22,6 +24,10 @@ using namespace metal;
 #define QPEL_WRITE_F32 device float*
 
 #define QPEL_FMA_F32(a, b, c) metal::fma((a), (b), (c))
+#define QPEL_FADD(a, b) ((a) + (b))
+#define QPEL_FSUB(a, b) ((a) - (b))
+#define QPEL_FMUL(a, b) ((a) * (b))
+#define QPEL_FDIV(a, b) ((a) / (b))
 
 #define QPEL_F16 half
 #define QPEL_READ_F16 device const half*
@@ -123,4 +129,15 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long, -9223372036854775808.0f, 9223372
 #define QPEL_F32_TO_I32(x) qpel_f32_to_i32((x))
 #define QPEL_F32_TO_U64(x) qpel_f32_to_u64((x))
 #define QPEL_F32_TO_I64(x) qpel_f32_to_i64((x))
+#endif
+
+#ifdef QPEL_GROUPS_ENABLED
+// Groups kernels: explicit geometry. The host dispatches whole threadgroups, so
+// threads_per_threadgroup is the same for every group, as blockDim is in CUDA.
+#define QPEL_GROUPS_PARAM , uint3 qpel_group [[threadgroup_position_in_grid]], uint3 qpel_local [[thread_position_in_threadgroup]], uint3 qpel_group_size [[threads_per_threadgroup]], uint3 qpel_group_count [[threadgroups_per_grid]]
+#define QPEL_GROUP_INDEX(axis) qpel_group.axis
+#define QPEL_LOCAL_INDEX(axis) qpel_local.axis
+#define QPEL_GROUP_SIZE(axis) qpel_group_size.axis
+#define QPEL_GROUP_COUNT(axis) qpel_group_count.axis
+#define QPEL_GROUPS_THREAD_INDEX(axis) (qpel_group.axis * qpel_group_size.axis + qpel_local.axis)
 #endif

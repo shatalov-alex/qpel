@@ -56,6 +56,8 @@ __device__ float atomicAdd(float*, float);
 __device__ float __fmaf_rn(float, float, float);
 __device__ float fmaf(float, float, float);
 __device__ float __fadd_rn(float, float);
+__device__ float __fsub_rn(float, float);
+__device__ float __fdiv_rn(float, float);
 __device__ void __syncthreads();
 typedef struct CUstream_st* cudaStream_t;
 typedef int cudaError_t;

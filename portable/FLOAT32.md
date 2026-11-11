@@ -6,7 +6,7 @@ The Metal host generator validates/allocates torch.float32 tensors. This is not 
 
 ## Precision
 
-Float literals must be finite nonnegative decimal values that round to finite float32; use Unary minus for negatives. Tiny values may round to zero. Arithmetic can still produce infinities or NaNs. Device compiler contraction, fast-math and subnormal handling are not pinned by this milestone: cross-device bitwise equality is not promised. Observed on 2026-11-11: the Apple GPU (via torch.mps) flushes a subnormal float32 product to zero (`-0.375 * 1e-45` gave `-0`, not `-8e-45`). Integer-to-float can round large integers. Accumulation stays float32; there is no float16 or mixed-precision accumulation yet. A strict precision policy and real-device tolerance tests are still needed.
+Float literals must be finite nonnegative decimal values that round to finite float32; use Unary minus for negatives. Tiny values may round to zero. Arithmetic can still produce infinities or NaNs. Since 2026-11-11 contraction is pinned (NUMERICS.md, f32-strict-v1): every float32 operation rounds on its own and only F32Fma fuses. Subnormal handling is still not pinned. Observed on 2026-11-11: the Apple GPU (via torch.mps) flushes a subnormal float32 product to zero (`-0.375 * 1e-45` gave `-0`, not `-8e-45`). Integer-to-float can round large integers. Accumulation stays float32; there is no float16 or mixed-precision accumulation yet. A strict precision policy and real-device tolerance tests are still needed.
 
 ## Evidence and limits
 

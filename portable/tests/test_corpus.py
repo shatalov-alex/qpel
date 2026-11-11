@@ -42,13 +42,14 @@ __global__ void k(float* s, float* out, unsigned int n) {
 void launch(float* s, unsigned int n) { lib::k<<<1, 1>>>(s, s, n); }
 ''')
         self.assertEqual(results['launch']['kind'], 'host')
-        self.assertEqual(codes['twice'], ['template'])
+        # a template used with two types becomes one function per instantiation
+        self.assertEqual((codes['twice_u32'], codes['twice_i32']), ([], []))
         # the switch is reported, and so is what is inside it
         self.assertEqual(sorted(set(codes['lowest'])), ['atomic-type', 'local-type', 'switch'])
         # k's own blocker (float atomics, through lowest's parameter) and those of the functions it calls
         self.assertEqual(codes['k'], ['atomic-type'])
-        self.assertTrue(any(b.startswith('template at twice') for b in corpus.kernels(results)['k']))
-        self.assertEqual(results['k']['calls'], ['lowest', 'twice'])
+        self.assertTrue(any(b.startswith('switch at lowest') for b in corpus.kernels(results)['k']))
+        self.assertEqual(results['k']['calls'], ['lowest', 'twice_i32', 'twice_u32'])
 
     def test_one_parameter_blocker_is_reported_once(self):
         codes, _ = self.survey('''

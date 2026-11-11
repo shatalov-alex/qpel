@@ -55,8 +55,11 @@ WIDE = {'u64', 'i64'}  # passed as two 32-bit words, low word first
 class Case:
     """One set of test data: shapes {name: (W, H, N)}, inputs {name: array}, values {name: number}."""
 
-    def __init__(self, shapes, inputs=None, values=None, label=''):
+    def __init__(self, shapes, inputs=None, values=None, label='', defined=None):
+        """defined: {output: number of leading elements the kernel writes}, when it leaves the rest
+        undefined (a grid-stride loop up to n); outputs not listed are compared in full."""
         self.shapes, self.inputs, self.values, self.label = shapes, inputs or {}, values or {}, label
+        self.defined = defined or {}
 
 
 def volume(shape):
@@ -83,6 +86,9 @@ def evaluate(expression, names):
 
 def geometry(stage, shape):
     """(grid, block) the way qpel's CUDA host launches a stage over its shape."""
+    if stage.get('domain') == 'groups':
+        from qpel_schema import group_count
+        return tuple(group_count(g, shape) for g in stage['groups']), tuple(stage['blockShape'])
     if stage.get('domain') == 'grid3d':
         block = tuple(stage['blockShape'])
         return tuple(-(-shape[a] // block[a]) for a in range(3)), block

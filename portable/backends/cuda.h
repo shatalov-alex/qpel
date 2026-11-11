@@ -26,6 +26,12 @@ static_assert(sizeof(QpelShape) == 16, "qpel shape ABI must be 16 bytes");
 #define QPEL_WRITE_F32 float*
 
 #define QPEL_FMA_F32(a, b, c) __fmaf_rn((a), (b), (c))
+// f32-strict-v1: every float32 operation rounds on its own. These intrinsics are never
+// contracted into an FMA, whatever nvcc's --fmad setting; only QPEL_FMA_F32 fuses.
+#define QPEL_FADD(a, b) __fadd_rn((a), (b))
+#define QPEL_FSUB(a, b) __fsub_rn((a), (b))
+#define QPEL_FMUL(a, b) __fmul_rn((a), (b))
+#define QPEL_FDIV(a, b) __fdiv_rn((a), (b))
 
 #ifdef QPEL_F16_ENABLED
 #include <cuda_fp16.h>
@@ -131,4 +137,14 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long long, -9223372036854775808.0f, 92
 #define QPEL_F32_TO_I32(x) qpel_f32_to_i32((x))
 #define QPEL_F32_TO_U64(x) qpel_f32_to_u64((x))
 #define QPEL_F32_TO_I64(x) qpel_f32_to_i64((x))
+#endif
+
+#ifdef QPEL_GROUPS_ENABLED
+// Groups kernels: explicit geometry, the host launches whole groups (no partial blocks).
+#define QPEL_GROUPS_PARAM
+#define QPEL_GROUP_INDEX(axis) blockIdx.axis
+#define QPEL_LOCAL_INDEX(axis) threadIdx.axis
+#define QPEL_GROUP_SIZE(axis) blockDim.axis
+#define QPEL_GROUP_COUNT(axis) gridDim.axis
+#define QPEL_GROUPS_THREAD_INDEX(axis) (blockIdx.axis * blockDim.axis + threadIdx.axis)
 #endif

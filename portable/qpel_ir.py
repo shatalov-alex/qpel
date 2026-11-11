@@ -16,8 +16,8 @@ LEGACY_MACROS={'void':'void','bool':'bool','u8':'QPEL_U8','u32':'QPEL_U32','i32'
        'buffer<i32, write>':'QPEL_WRITE_I32','buffer<f32, read>':'QPEL_READ_F32','buffer<f32, write>':'QPEL_WRITE_F32',
        'buffer<f16, read>':'QPEL_READ_F16','buffer<f16, write>':'QPEL_WRITE_F16'}
 TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType'}
-KINDS=TYPE_KINDS|set('Grid3D ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin Pipeline Resource Dispatch Binding'.split())
-COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage'}
+KINDS=TYPE_KINDS|set('Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin Pipeline Resource Dispatch Binding'.split())
+COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage','groups'}
 PROFILES={'metal':COMMON_FEATURES,'cuda':COMMON_FEATURES}
 SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3'}
 # Version 2 adds else, for/do/break/continue, signed 32-bit integers and their atomics,
@@ -25,7 +25,7 @@ SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-
 V2_KINDS={'Grid3D','ThreadIndex','For','DoWhile','Break','Continue','I32Type','ReadOnlyI32BufferType','I32BufferType','AtomicI32BufferType','I32Literal','I32Cast','U32Cast','U8Cast'}
 # Version 3 writes types as terms (ScalarType, BufferType) and adds 8-, 16- and 64-bit
 # integers, bf16 storage, writable u8 buffers, Cast and Constant.
-V3_KINDS={'ScalarType','BufferType','Cast','Constant'}
+V3_KINDS={'ScalarType','BufferType','Cast','Constant','Groups','GroupIndex','LocalIndex','GroupSize','GroupCount'}
 def type_macro(t):
     """Backend macro spelling a type term."""
     if t in LEGACY_MACROS:return LEGACY_MACROS[t]
@@ -93,6 +93,7 @@ def validate(program, backend=None):
         if n['kind'] in ('If','While','DoWhile','For'):required.add('control_flow')
         if n['kind'] in INT32_KINDS:required.add('int32')
         if n['kind']=='Grid3D':required.add('grid_3d')
+        if n['kind']=='Groups':required.add('groups')
         if n['kind'] in TYPE_KINDS|{'Cast','Constant'}:
             used=term(n) if n['kind'] in TYPE_KINDS else n['attributes'].get('to') or n['attributes'].get('scalar')
             item=element(used) if is_buffer(used) else used
@@ -147,11 +148,14 @@ class Lowering:
         if k=='GpuModule':
             signed='// qpel numeric contract: i32-wrap-v1\n' if any(x['kind'] in INT32_KINDS for x in self.nodes.values()) else ''
             widths='// qpel numeric contract: integers-v3\n' if version_3_features(self.nodes.values()) else ''
-            return '// Generated from qpel IR. Do not edit.\n// qpel numeric contract: u32-modulo-v1\n'+signed+widths+joined('functions','\n')
+            floats='// qpel numeric contract: f32-strict-v1\n' if any(t=='f32' for t in self.expression_types.values()) else ''
+            return '// Generated from qpel IR. Do not edit.\n// qpel numeric contract: u32-modulo-v1\n'+signed+widths+floats+joined('functions','\n')
         if k=='Function':
             kernel=a.get('isKernel',False);args=joined('parameters',', ')
             if kernel and self.child(n,'domain')['kind']=='Grid3D':
                 return 'QPEL_KERNEL '+e('resultType')+' '+a['name']+'('+args+' QPEL_GRID3D_PARAM) {\n'+e('body')+'\n}\n'
+            if kernel and self.child(n,'domain')['kind']=='Groups':
+                return 'QPEL_KERNEL '+e('resultType')+' '+a['name']+'('+args+' QPEL_GROUPS_PARAM) {\n'+e('body')+'\n}\n'
             return ('QPEL_KERNEL ' if kernel else 'QPEL_DEVICE ')+e('resultType')+' '+a['name']+'('+args+(' QPEL_GRID_PARAM(qpel_index)' if kernel else '')+') {\n'+('QPEL_GRID_LOCAL(qpel_index)\n' if kernel else '')+e('body')+'\n}\n'
         if k=='Parameter':
             if not a.get('isBuffer',False):return e('type')+' '+a['name']
@@ -160,7 +164,10 @@ class Lowering:
             return macro+e('type')+', '+a['name']+', '+str(a.get('binding',0))+')'
         if k=='Name':return self.link(n,'declaration')['attributes']['name']
         if k=='GridIndex':return 'qpel_index'
-        if k=='ThreadIndex':return 'QPEL_THREAD_INDEX('+a['axis']+')'
+        if k=='ThreadIndex':
+            return ('QPEL_GROUPS_THREAD_INDEX(' if self.domain_of(n)=='Groups' else 'QPEL_THREAD_INDEX(')+a['axis']+')'
+        if k in ('GroupIndex','LocalIndex','GroupSize','GroupCount'):
+            return {'GroupIndex':'QPEL_GROUP_INDEX(','LocalIndex':'QPEL_LOCAL_INDEX(','GroupSize':'QPEL_GROUP_SIZE(','GroupCount':'QPEL_GROUP_COUNT('}[k]+a['axis']+')'
         if k=='Literal':
             value = a['value']
             return value if value in ('true','false') else str(int(value.rstrip('uU'))) + 'u'
@@ -203,6 +210,9 @@ class Lowering:
                 if t == 'u32':  # the version 1 spelling: every unsigned operand is converted
                     return '((QPEL_U32)('+left+') '+op+' (QPEL_U32)('+right+'))'
                 return '(('+type_macro(t)+')('+left+') '+op+' ('+type_macro(t)+')('+right+'))'
+            if lt == rt == 'f32' and op in ('+','-','*','/'):
+                # Each float operation rounds on its own; only F32Fma fuses (f32-strict-v1).
+                return {'+':'QPEL_FADD(','-':'QPEL_FSUB(','*':'QPEL_FMUL(','/':'QPEL_FDIV('}[op]+left+', '+right+')'
             if op not in ('&&','||') and rt in ('u8','u32'):
                 right = '(QPEL_U32)('+right+')'  # a pointer offset
             return '('+left+' '+op+' '+right+')'
@@ -245,6 +255,13 @@ class Lowering:
             macro={'AtomicLoad':'QPEL_LOAD','AtomicStore':'QPEL_STORE','AtomicAdd':'QPEL_ADD','AtomicMin':'QPEL_MIN'}[k]
             return macro+'('+e('address')+('' if k=='AtomicLoad' else ', '+e('value'))+')'
         raise ValueError('Not a source expression/statement: '+k)
+    def domain_of(self,n):
+        """Domain kind of the kernel containing node n."""
+        if not hasattr(self,'parents'):
+            self.parents={c:p for p in self.nodes.values() for values in p['children'].values() for c in values}
+        while n['kind']!='Function':n=self.parents[n['id']]
+        domains=self.children(n,'domain')
+        return domains[0]['kind'] if domains else None
     def common(self,n):
         """The arithmetic type both integer operands of n are converted to."""
         from qpel_types import join
@@ -269,9 +286,13 @@ class Lowering:
         stages=[]
         for s in self.children(p,'stages'):
             stage=dict(kernel=self.link(s,'kernel')['attributes']['name'],grid=self.link(s,'grid')['attributes']['name'],blockSize=s['attributes']['blockSize'],completionBarrier=s['attributes']['completionBarrier'],bindings=[dict(parameter=self.link(b,'parameter')['attributes']['name'],resource=self.link(b,'resource')['attributes']['name']) for b in self.children(s,'bindings')])
-            if self.child(self.link(s,'kernel'),'domain')['kind']=='Grid3D':
+            domain=self.child(self.link(s,'kernel'),'domain')['kind']
+            if domain in ('Grid3D','Groups'):
                 # A 3D stage runs one thread per shape element, in (x, y, z) blocks.
                 stage.update(domain='grid3d',blockShape=[s['attributes']['blockSize'],s['attributes'].get('blockHeight',1),s['attributes'].get('blockDepth',1)])
+            if domain=='Groups':
+                # Explicit geometry: groups of blockShape threads, counted per axis from the grid shape.
+                stage.update(domain='groups',groups=[s['attributes'].get('groups'+a,'1') for a in 'XYZ'])
             stages.append(stage)
         return dict(schema=2,module=module['attributes']['name'],resources=resources,stages=stages)
     def write(self,directory):

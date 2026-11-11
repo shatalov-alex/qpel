@@ -91,8 +91,13 @@ class PipelineChecker(TypeChecker):
             self.require(stage, kernel['id'] in self.order and kernel['attributes'].get('isKernel', False), 'DISPATCH_TARGET', 'Dispatch requires a local kernel')
             self.require(stage, grid['id'] in local and grid['attributes']['kind'] == 'shape', 'DISPATCH_GRID', 'Grid must be a local shape')
             self.require(stage, stage['attributes']['completionBarrier'], 'BARRIER', 'Each stage must complete before the next')
-            if self.domain(kernel) != 'Grid3D':
+            if self.domain(kernel) == 'Grid1D':
                 self.require(stage, stage['attributes'].get('blockHeight', 1) == stage['attributes'].get('blockDepth', 1) == 1, 'BLOCK_SHAPE', 'A Grid1D kernel needs a one-dimensional block')
+            groups = {a for a in ('groupsX', 'groupsY', 'groupsZ') if a in stage['attributes']}
+            if self.domain(kernel) == 'Groups':
+                self.require(stage, groups == {'groupsX', 'groupsY', 'groupsZ'}, 'GROUPS', 'A Groups kernel needs groupsX, groupsY and groupsZ')
+            else:
+                self.require(stage, not groups, 'GROUPS', 'Only Groups kernels take group counts; others run one thread per element')
             params, bindings = self.children(kernel, 'parameters'), self.children(stage, 'bindings')
             self.require(stage, len(params) == len(bindings), 'DISPATCH_ARITY', 'Bind every parameter exactly once')
             effects, seen, written = self.effects(kernel), set(), set()

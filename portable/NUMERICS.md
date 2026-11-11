@@ -51,9 +51,17 @@ IR version 3 (`"version": 3`, semantics `qpel-portable-core-v3`) writes types as
 
 Evidence: the `int_widths` fixture (`tests/fixtures/qpel_ir/int_widths/`, built by `build.py`) reads i8, u16, i16, i64, u64, f32 and bf16 buffers and an i64 argument and writes seven outputs: mixed-width arithmetic, 64-bit shifts and division including `LLONG_MIN / -1`, saturating conversions of NaN, ±inf and out-of-range floats, wrapping narrowing, negative constants and bf16 rounding. Its oracle (`oracle.py`) is plain Python integers. The generated CUDA matches it bit for bit on the CPU simulator (`tests/test_qpel_v3.py`), the generated Metal matches it on the Apple GPU (`gpu_tests`), nvcc (sm_75 to sm_90) and Metal compile it with warnings as errors, and it survives qpel → CUDA → qpel and qpel → Metal → qpel.
 
+## Launch geometry: Groups kernels
+
+A kernel with domain `Groups` (IR version 3) states its geometry instead of running one thread per element. It reads `GroupIndex`, `LocalIndex`, `GroupSize` and `GroupCount` (axis x, y or z; each u32): CUDA's `blockIdx`, `threadIdx`, `blockDim` and `gridDim`, Metal's `threadgroup_position_in_grid`, `thread_position_in_threadgroup`, `threads_per_threadgroup` and `threadgroups_per_grid`. Its Dispatch gives the group size (`blockSize` × `blockHeight` × `blockDepth`) and the number of groups per axis (`groupsX`, `groupsY`, `groupsZ`): integer expressions of the dispatch shape's W, H and N with `+ - * /` (C's division) and parentheses, such as `(W*H*N + 255)/256`. Both hosts launch exactly that many whole groups: CUDA `<<<groups, block>>>`, and Metal a grid of groups × block threads, so every group is full and `threads_per_threadgroup` equals `blockDim`. The kernel therefore guards its own range, as CUDA kernels do. A Groups kernel needs no shape parameter: its sizes stay ordinary arguments (`long long n`), and the stage's shape resource sizes the buffers and feeds the group counts. Launch plans mark such stages `"domain": "groups"` with `"groups": [x, y, z]`.
+
+## Floating point: f32-strict-v1
+
+Every float32 `+ - * /` rounds to nearest even on its own, as written; only `F32Fma` fuses a multiply and an add. Compilers otherwise contract `a*b + c` into an FMA when they choose (nvcc does by default; so does Metal), which changes the last bit. qpel's CUDA uses `__fadd_rn`, `__fsub_rn`, `__fmul_rn` and `__fdiv_rn`, which nvcc never contracts whatever its flags; its Metal turns contraction off with `#pragma clang fp contract(off)`. Generated sources that compute in float32 carry `// qpel numeric contract: f32-strict-v1`. The behaviour rows run originals the same way (the CPU simulator with `-ffp-contract=off`, Metal originals with the same pragma), i.e. as written. Found by the `grid_stride` example (`scale * x[i] + bias`), whose Metal output differed by one ulp before. Division on the Apple GPU was correctly rounded on 65536 random normal operands. Subnormals still flush to zero on Apple GPUs.
+
 ## Single emitter
 
-Since 2026-10-19 MPS no longer generates code; it exports IR only, and this numeric emitter is the only one. `build_backends.build` rejects source without the `u32-modulo-v1` contract line, and every manifest records `numeric_contract: u32-modulo-v1` (plus `i32-wrap-v1` when the program uses i32, and `integers-v3` when it uses a version 3 construct).
+Since 2026-10-19 MPS no longer generates code; it exports IR only, and this numeric emitter is the only one. `build_backends.build` rejects source without the `u32-modulo-v1` contract line, and every manifest records `numeric_contract: u32-modulo-v1` (plus `i32-wrap-v1` when the program uses i32, `integers-v3` when it uses a version 3 construct, and `f32-strict-v1` when it computes in float32).
 
 ## Evidence
 
