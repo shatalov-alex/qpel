@@ -69,15 +69,24 @@ def source_messages(entry):
     return found
 
 
-def source_coverage(entry):
-    return kernels(survey(entry))
+def source_coverage(entry, details=False):
+    """{kernel: blockers}: their codes (what coverage.json records), or with locations."""
+    found = kernels(survey(entry))
+    if details:
+        return found
+    return {k: sorted({b.split(' ')[0] for b in blockers}) for k, blockers in found.items()}
 
 
-def coverage():
-    """{source: {kernel: blockers}} for the whole corpus; sources are surveyed in parallel."""
+def source_details(entry):
+    return source_coverage(entry, details=True)
+
+
+def coverage(details=False):
+    """{source: {kernel: blocker codes}} for the whole corpus (with details, 'code at function:line');
+    sources are surveyed in parallel."""
     listed = entries()
     with ProcessPoolExecutor() as pool:
-        found = list(pool.map(source_coverage, listed))
+        found = list(pool.map(source_details if details else source_coverage, listed))
     return {entry['source']: result for entry, result in zip(listed, found)}
 
 
@@ -90,7 +99,7 @@ def report(result):
         for kernel, blockers in found.items():
             total += 1
             importable += not blockers
-            codes = sorted({b.split(' ')[0] for b in blockers})
+            codes = sorted({b.split(' ')[0] for b in blockers})  # works for codes and for details
             blocked_by.update(codes)
             lines.append(f'  {"ok     " if not blockers else "blocked"} {kernel}' + (f': {", ".join(codes)}' if codes else ''))
     lines.append(f'{importable} of {total} kernels importable')
@@ -113,8 +122,10 @@ def main(argv=None):
         for (code, message), count in total.most_common():
             print(f'{count:5} {code:22} {message}')
         return 0
-    result = coverage()
+    result = coverage(details=args.details)
     print(report(result))
+    if args.details and (args.check or args.update):
+        result = {source: {k: sorted({b.split(' ')[0] for b in v}) for k, v in found.items()} for source, found in result.items()}
     if args.check and result != json.loads(COVERAGE.read_text()):
         print('corpus coverage changed; check it, then run python3 -m frontends.corpus --update')
         return 1
@@ -124,7 +135,7 @@ def main(argv=None):
                 for blocker in blockers:
                     print(f'{source} {kernel}: {blocker}')
     if args.update:
-        COVERAGE.write_text(json.dumps(result, indent=2) + '\n')
+        COVERAGE.write_text(json.dumps(result, indent=1, separators=(',', ':')) + '\n')
         print('wrote', COVERAGE.relative_to(HERE))
     return 0
 
