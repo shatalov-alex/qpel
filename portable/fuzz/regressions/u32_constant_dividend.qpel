@@ -1,0 +1,20 @@
+module fuzz {
+  kernel fuzz(a: buffer<i64, read> @0, f: buffer<f32, read> @1, o_u16: buffer<u16, write> @2, o_f32: buffer<f32, write> @3, count: shape3 @4) grid1d {
+    if (qpel.index >= ((count.x * count.y) * count.z)) {
+      return;
+    }
+    let v0: u16 = cast<u16>(math.copysign(math.sqrt(math.fabs(1.0f)), cast<f32>(cast<i32>(f[qpel.index]))));
+    let v1: u8 = 129_u8;
+    let v2: u16 = cast<u16>(min(((1_u64 < cast<u64>(a[qpel.index])) ? cast<u32>(f[qpel.index]) : 0_u32) << cast<u8>(cast<f32>(a[qpel.index])), (cast<u32>(f[qpel.index]) >= cast<u32>(cast<i16>(a[qpel.index]))) ? cast<u32>(f[qpel.index]) : -cast<u32>(a[qpel.index])));
+    o_u16[qpel.index] = cast<u16>(a[qpel.index]);
+    o_f32[qpel.index] = cast<f32>(cast<u8>(max(cast<u32>(a[qpel.index]), ~3_u32 / ((cast<u32>(a[qpel.index]) / (cast<u32>(f[qpel.index]) | 1u)) | 1u))));
+  }
+}
+pipeline fuzz_launch {
+  input a: buffer<i64, read> in count;
+  input f: buffer<f32, read> in count;
+  output o_u16: buffer<u16, write> in count;
+  output o_f32: buffer<f32, write> in count;
+  shape count;
+  dispatch fuzz over count block (64) (a = a, f = f, o_u16 = o_u16, o_f32 = o_f32, count = count);
+}

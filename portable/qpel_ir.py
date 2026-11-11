@@ -213,6 +213,8 @@ class Lowering:
                         helper = ('QPEL_I32_DIV(' if op=='/' else 'QPEL_I32_REM(') if t=='i32' else ('QPEL_I64_DIV(' if op=='/' else 'QPEL_I64_REM(')
                         return helper+self.widen(left,lt,t)+', '+self.widen(right,rt,t)+')'
                     return '('+self.widen(left,lt,t)+' '+op+' '+self.widen(right,rt,t)+')'
+                if t == 'u32' and op in ('/','%'):  # see QPEL_U32_DIV in backends/metal.h
+                    return ('QPEL_U32_DIV(' if op=='/' else 'QPEL_U32_REM(')+'(QPEL_U32)('+left+'), (QPEL_U32)('+right+'))'
                 if t == 'u32':  # the version 1 spelling: every unsigned operand is converted
                     return '((QPEL_U32)('+left+') '+op+' (QPEL_U32)('+right+'))'
                 return '(('+type_macro(t)+')('+left+') '+op+' ('+type_macro(t)+')('+right+'))'
@@ -295,6 +297,12 @@ class Lowering:
         nodes=self.nodes.values()
         terms=set(self.expression_types.values())|{term(n) for n in nodes if n['kind'] in TYPE_KINDS}
         scalars={element(t) if is_buffer(t) else t for t in terms}
+        from qpel_types import join
+        for n in nodes:  # the type two integer operands are joined to may be neither's (i8 < i16 is in i32)
+            if n['kind'] in ('Binary','Minimum','Maximum') and n['children'].get('right'):
+                types=[self.expression_types.get(self.child(n,r)['id']) for r in ('left','right')]
+                if all(t in INTEGER_TERMS for t in types) and join(*types):
+                    scalars.add(join(*types))
         kinds={n['kind'] for n in nodes}
         found=set()
         if 'f16' in scalars or 'F16Cast' in kinds:found.add('float16_storage')

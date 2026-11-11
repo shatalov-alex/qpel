@@ -26,6 +26,13 @@ using namespace metal;
 // A local the program never reads (both compilers would warn).
 #define QPEL_UNUSED __attribute__((unused))
 #define QPEL_FMA_F32(a, b, c) metal::fma((a), (b), (c))
+// Apple's Metal compiler miscompiles unsigned 32-bit division and remainder when it knows the
+// dividend and it lies within 127 of 2^32 (4294967292u / 3 gave 3579139454; found by fuzz/).
+// A volatile local hides the dividend from it; divisions by a variable are then exact.
+inline uint qpel_u32_div(uint a, uint b) { volatile uint dividend = a; return dividend / b; }
+inline uint qpel_u32_rem(uint a, uint b) { volatile uint dividend = a; return dividend % b; }
+#define QPEL_U32_DIV(a, b) qpel_u32_div((a), (b))
+#define QPEL_U32_REM(a, b) qpel_u32_rem((a), (b))
 #define QPEL_FADD(a, b) ((a) + (b))
 #define QPEL_FSUB(a, b) ((a) - (b))
 #define QPEL_FMUL(a, b) ((a) * (b))

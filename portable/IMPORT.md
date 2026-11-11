@@ -80,6 +80,10 @@ First entry: SAM 2 `sam2/csrc/connected_components.cu` (commit 2b90b9f). On 2026
 
 The original launches one thread per 2 × 2 pixel block and loops over the batch on the host. qpel runs one thread per pixel of a `(W, H, 1)` shape. Threads past the original's grid fail the kernels' own guards, so the result is the same, but 4 times as many threads are launched. Launch geometry belongs to the host layer (Phase 4).
 
+## Fuzzing
+
+`python3 -m fuzz --count N --seed S` generates random well-typed programs (`fuzz/programs.py`: integer arithmetic at every width, shifts, division by values made odd, comparisons and selects, conversions in every direction, exact math) as qpel text and requires, for each: text that prints back identically; qpel → CUDA → qpel and qpel → Metal → qpel giving the same program; and identical outputs from the CUDA on the CPU simulator and the Metal on the Apple GPU. `fuzz/regressions/` keeps every program it once failed on; they run first. `check_all.py` runs 25 programs with seed 1.
+
 ## Behaviour rows
 
 `python3 -m differential.matrix` runs every original (the example pairs, SAM 2 and its Metal port) and qpel's CUDA and Metal for it on the same cases, and requires identical outputs: CUDA on a CPU simulator, Metal on the Apple GPU. See `differential/README.md`.

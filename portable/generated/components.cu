@@ -29,6 +29,8 @@ static_assert(sizeof(QpelShape) == 16, "qpel shape ABI must be 16 bytes");
 // A local the program never reads (both compilers would warn).
 #define QPEL_UNUSED __attribute__((unused))
 #define QPEL_FMA_F32(a, b, c) __fmaf_rn((a), (b), (c))
+#define QPEL_U32_DIV(a, b) ((a) / (b))
+#define QPEL_U32_REM(a, b) ((a) % (b))
 // f32-strict-v1: every float32 operation rounds on its own. These intrinsics are never
 // contracted into an FMA, whatever nvcc's --fmad setting; only QPEL_FMA_F32 fuses.
 #define QPEL_FADD(a, b) __fadd_rn((a), (b))
@@ -225,8 +227,8 @@ QPEL_U32 h = shape.y;
 if ((((QPEL_U32)(qpel_index) >= (QPEL_U32)(((QPEL_U32)(((QPEL_U32)(w) * (QPEL_U32)(h))) * (QPEL_U32)(shape.z)))) || (!mask[qpel_index]))) {
 return ;
  }
-QPEL_U32 x = ((QPEL_U32)(qpel_index) % (QPEL_U32)(w));
-QPEL_U32 y = ((QPEL_U32)(((QPEL_U32)(qpel_index) / (QPEL_U32)(w))) % (QPEL_U32)(h));
+QPEL_U32 x = QPEL_U32_REM((QPEL_U32)(qpel_index), (QPEL_U32)(w));
+QPEL_U32 y = QPEL_U32_REM((QPEL_U32)(QPEL_U32_DIV((QPEL_U32)(qpel_index), (QPEL_U32)(w))), (QPEL_U32)(h));
 if ((((QPEL_U32)(x) > (QPEL_U32)(0u)) && mask[((QPEL_U32)(qpel_index) - (QPEL_U32)(1u))])) {
 unite(parent, qpel_index, ((QPEL_U32)(qpel_index) - (QPEL_U32)(1u)));
  }
@@ -255,7 +257,7 @@ labels[qpel_index] = 0u;
 return ;
  }
 QPEL_U32 r = root(parent, qpel_index);
-labels[qpel_index] = ((QPEL_U32)(((QPEL_U32)(r) % (QPEL_U32)(((QPEL_U32)(shape.x) * (QPEL_U32)(shape.y))))) + (QPEL_U32)(1u));
+labels[qpel_index] = ((QPEL_U32)(QPEL_U32_REM((QPEL_U32)(r), (QPEL_U32)(((QPEL_U32)(shape.x) * (QPEL_U32)(shape.y))))) + (QPEL_U32)(1u));
 QPEL_ADD((counts + (QPEL_U32)(r)), 1u);
  }
 }
@@ -268,6 +270,6 @@ if (((QPEL_U32)(qpel_index) >= (QPEL_U32)(((QPEL_U32)(plane) * (QPEL_U32)(shape.
 return ;
  }
 QPEL_U32 label = labels[qpel_index];
-output[qpel_index] = (label ? QPEL_LOAD((((counts + (QPEL_U32)(((QPEL_U32)(((QPEL_U32)(qpel_index) / (QPEL_U32)(plane))) * (QPEL_U32)(plane)))) + (QPEL_U32)(label)) - (QPEL_U32)(1u))) : 0u);
+output[qpel_index] = (label ? QPEL_LOAD((((counts + (QPEL_U32)(((QPEL_U32)(QPEL_U32_DIV((QPEL_U32)(qpel_index), (QPEL_U32)(plane))) * (QPEL_U32)(plane)))) + (QPEL_U32)(label)) - (QPEL_U32)(1u))) : 0u);
  }
 }

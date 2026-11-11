@@ -34,8 +34,12 @@ def tensor(array, dtype):
 
 
 def numpy(value, dtype):
+    """A tensor as the qpel element type: u16, u32 and u64 travel as signed tensors, bf16 as bfloat16."""
+    if value.dtype == torch.bfloat16:
+        value = value.view(torch.int16)
     out = value.cpu().numpy()
-    return out.view(np.uint32) if dtype == np.uint32 else out
+    dtype = np.dtype(dtype)
+    return out.view(dtype) if out.dtype != dtype and out.dtype.itemsize == dtype.itemsize else out
 
 
 _LIBRARIES = {}

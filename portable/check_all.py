@@ -30,6 +30,7 @@ def main(argv=None):
     if not args.no_nvcc:
         steps.append(('nvcc compile', [sys.executable, str(HERE/'nvcc_check.py')]))
     # Originals against what qpel makes of them; the Metal rows need the Apple GPU.
+    steps.append(('fuzzing', [args.python, '-m', 'fuzz', '--count', '25', '--seed', '1'] + ([] if args.gpu else ['--cpu'])))
     steps.append(('behaviour rows', [args.python, '-m', 'differential.matrix'] + ([] if args.gpu else ['--cpu'])))
     if args.gpu:
         # Corpus programs are checked on the GPU by the behaviour rows above (their Metal rows).

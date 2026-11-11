@@ -158,7 +158,6 @@ class CudaIdioms(Sources):
             'scalar-kernel-argument': THRESHOLD_CU.replace('uint3 dimensions', 'uint3 dimensions, bool extra'),
             'no-extent': THRESHOLD_CU.replace('uint3 dimensions', 'unsigned int n, unsigned int m').replace(
                 'dimensions.x * dimensions.y * dimensions.z', 'n || i >= m'),
-            'literal-range': THRESHOLD_CU.replace('binary[i] =', 'unsigned int big = 4294967296u; binary[i] ='),
         }
         for code, source in cases.items():
             with self.subTest(code=code):

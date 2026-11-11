@@ -84,6 +84,10 @@ Metal has no `erf`, `expm1` or `log1p`; qpel will define them itself rather than
 
 Each program's features (`float16_storage`, `int64`, `groups`, `math`, `scalar_arguments`, ...) come from its IR: `qpel_ir.Lowering.features()` reads its types and nodes. The launch plan and the build manifest record them, and the build enables exactly the matching support blocks of `backends/cuda.h` and `backends/metal.h` (`build_backends.FEATURE_DEFINES`); a backend profile adds what a feature needs on that target (`METAL_STANDARD`: bf16 needs Metal 3.1). Before 2026-11-11 the build searched the generated text for macro names; the switch left every generated source byte-identical.
 
+## A Metal compiler bug: constant unsigned dividends
+
+On the Apple GPU (via `torch.mps.compile_shader`, 2026-11-11), unsigned 32-bit `/` and `%` give wrong results when the compiler knows the dividend and it lies within 127 of 2^32: `4294967292u / 3` gave 3579139454, `(~3u) / 1` gave 4294967294. Divisions of a runtime dividend, signed division, 64-bit division and smaller constants were exact in every test. qpel's neutral code spells unsigned 32-bit division `QPEL_U32_DIV` / `QPEL_U32_REM`; CUDA uses the plain operators, and Metal passes the dividend through a `volatile` local so the compiler cannot use its constant-dividend expansion. Found by the fuzzer (`fuzz/regressions/u32_constant_dividend.qpel`).
+
 ## Single emitter
 
 Since 2026-10-19 MPS no longer generates code; it exports IR only, and this numeric emitter is the only one. `build_backends.build` rejects source without the `u32-modulo-v1` contract line, and every manifest records `numeric_contract: u32-modulo-v1` (plus `i32-wrap-v1` when the program uses i32, `integers-v3` when it uses a version 3 construct, and `f32-strict-v1` when it computes in float32).

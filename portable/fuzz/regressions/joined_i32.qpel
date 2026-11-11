@@ -1,0 +1,14 @@
+module fuzz {
+  kernel fuzz(a: buffer<i64, read> @0, o: buffer<u8, write> @1, count: shape3 @2) grid1d {
+    if (qpel.index >= ((count.x * count.y) * count.z)) {
+      return;
+    }
+    o[qpel.index] = (cast<i8>(a[qpel.index]) < cast<i16>(a[qpel.index])) ? 1_u8 : 0_u8;
+  }
+}
+pipeline fuzz_launch {
+  input a: buffer<i64, read> in count;
+  output o: buffer<u8, write> in count;
+  shape count;
+  dispatch fuzz over count block (64) (a = a, o = o, count = count);
+}

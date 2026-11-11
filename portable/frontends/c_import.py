@@ -8,11 +8,13 @@ the normal qpel checks, which decide types, scopes and pipeline effects.
 """
 from pathlib import Path
 import re
+import struct
 
 from qpel_schema import is_identifier
 from qpel_types import (SCALAR_TERMS, VALUE_TERMS, access, buffer as type_buffer, fits, is_buffer as type_is_buffer,
                         is_signed, node_spec, normalize_plan, term as type_term)
 from qpel_types import access as type_access, bits as type_bits, INTEGER_TERMS, MATH, is_struct
+from qpel_types import arithmetic as type_arithmetic
 from . import clang_ast
 from .clang_ast import position
 
@@ -1274,6 +1276,12 @@ class Importer:
         n = strip_parens(node)
         if n['kind'] not in EXPLICIT_CASTS or scalar_of(n) not in ('i32', 'i64'):
             return None
+        while True:  # (long long)((long long)(...)): qpel's min/max convert their operands again
+            inner = strip_parens(cast_operand(n))
+            if inner['kind'] in EXPLICIT_CASTS and scalar_of(inner) == scalar_of(n):
+                n = inner
+            else:
+                break
         unsigned = 'u' + scalar_of(n)[1:]
         inner = strip_parens(cast_operand(n))
         if inner['kind'] != 'BinaryOperator' or scalar_of(inner) != unsigned or inner['opcode'] not in ('+', '-', '*', '<<'):
@@ -1325,6 +1333,10 @@ class Importer:
         value = int(n['value'])
         if target in NEW_INTEGERS:
             return self.constant(n, target, value)
+        if value > U32_MAX and target == 'f32':  # a 64-bit literal converted to float: rounded to nearest
+            return self.graph.add('F32Literal', {'value': repr(float(struct.unpack('<f', struct.pack('<f', float(value)))[0]))})
+        if value > U32_MAX and scalar_of(n) in ('u64', 'i64') and target in ('u8', 'u32', 'i32'):
+            return self.constant(n, target, value)  # a 64-bit literal converted: C keeps the low bits
         if value > U32_MAX:
             raise Unsupported(n, 'literal-range', 'integer literal does not fit in 32 bits')
         if target == 'f32':
@@ -1378,9 +1390,11 @@ class Importer:
         if target == 'u8' and source in ('u32', 'i32'):
             return add('U8Cast', children={'operand': value})  # keeps the low 8 bits, as C does
         if source in INTEGER_TERMS and target in INTEGER_TERMS:
-            # A widening that keeps signedness changes nothing qpel computes (its integer
-            # arithmetic joins lossless types as C does); any other conversion is explicit.
-            if fits(target, source) and is_signed(source) == is_signed(target):
+            # A widening that keeps signedness and the arithmetic type (u8 -> u32, i8 -> i16) changes
+            # nothing qpel computes. Any other conversion is explicit: i32 -> i64 must stay, or
+            # (long long)i * (long long)n would multiply in 32 bits (found by fuzz/).
+            if fits(target, source) and is_signed(source) == is_signed(target) and \
+                    type_arithmetic(source) == type_arithmetic(target):
                 return value
             return add('Cast', {'to': target}, {'operand': value})
         if target in INTEGER_TERMS and source == 'f32':
@@ -1632,7 +1646,7 @@ class Importer:
         if callee in TO_F16 or callee in TO_F32:
             need(1)
             return add('F16Cast' if callee in TO_F16 else 'F32Cast', children={'operand': self.expr(args[0])})
-        if callee in ('qpel_i32_div', 'qpel_i32_rem', 'qpel_i64_div', 'qpel_i64_rem'):  # qpel's defined signed / and %
+        if callee in ('qpel_i32_div', 'qpel_i32_rem', 'qpel_i64_div', 'qpel_i64_rem', 'qpel_u32_div', 'qpel_u32_rem'):  # qpel's / and %
             need(2)
             return add('Binary', {'operator': '/' if callee.endswith('div') else '%'},
                        {'left': self.expr(args[0]), 'right': self.expr(args[1])})

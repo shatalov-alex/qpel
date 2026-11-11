@@ -72,6 +72,8 @@ using std::min; using std::max;
 #define QPEL_DEVICE
 #define QPEL_U8 uint8_t
 #define QPEL_U32 uint32_t
+#define QPEL_U32_DIV(a, b) ((a) / (b))
+#define QPEL_U32_REM(a, b) ((a) % (b))
 '''+''.join(lower.emit(lower.nodes[f]) for f in functions)+'''
 int main() {
   for (uint32_t a=0; a<256; ++a) for(uint32_t b=0; b<256; ++b) {
