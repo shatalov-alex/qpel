@@ -179,7 +179,7 @@ def validate_structure(nodes):
                 fail('Float32 literal is out of range')
         if kind == 'Member' and a['member'] not in ('x', 'y', 'z'):
             fail('Unsupported shape member')
-        if kind == 'Resource' and a['kind'] not in ('input', 'output', 'scratch', 'shape'):
+        if kind == 'Resource' and a['kind'] not in ('input', 'output', 'scratch', 'shape', 'value'):
             fail('Unsupported resource kind')
         if kind == 'Dispatch' and not is_block_size(a['blockSize']):
             fail(f'Block size must be between 1 and {MAX_BLOCK_SIZE}')

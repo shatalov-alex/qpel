@@ -33,7 +33,7 @@ def launch_header(plan):
             identifier(binding['parameter']);name=identifier(binding['resource'])
             if name not in resources or name in args: raise ValueError('Unknown/aliased resource')
             resource=resources[name]
-            if resource['kind']!='shape' and resource['extent']!=grid: raise ValueError('Grid/extent mismatch')
+            if resource['kind'] not in ('shape','value') and resource['extent']!=grid: raise ValueError('Grid/extent mismatch')
             args.append(name)
         lines.append('QPEL_STAGE('+', '.join([kernel,grid,str(block)]+args)+')')
     return '\n'.join(lines)+'\n'
@@ -55,7 +55,8 @@ def build(source, output, plan_path=None):
         reduction = b'#define QPEL_SUM_F32_ENABLED 1\n' if b'QPEL_SUM_F32(' in body else b''
         group = b'#define QPEL_GROUP_SUM_F32_ENABLED 1\n' if b'QPEL_GROUP_SUM_F32(' in body else b''
         signed = b'#define QPEL_I32_ENABLED 1\n' if b'QPEL_I32' in body else b''
-        result = half + reduction + group + signed + b'// Generated backend package. Edit the MPS model or backend support.\n' + support + b'\n' + body
+        values = b'#define QPEL_VALUE_ENABLED 1\n' if b'QPEL_VALUE(' in body else b''
+        result = half + reduction + group + signed + values + b'// Generated backend package. Edit the MPS model or backend support.\n' + support + b'\n' + body
         path = output / (module+'.'+suffix)
         path.write_bytes(result)
         if backend == 'metal':

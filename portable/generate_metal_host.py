@@ -3,6 +3,7 @@ import hashlib
 import keyword
 
 BUFFER_TYPES = {'ReadOnlyF16BufferType': 'float16', 'F16BufferType': 'float16', 'ReadOnlyF32BufferType': 'float32', 'F32BufferType': 'float32', 'ReadOnlyU8BufferType': 'uint8', 'U32BufferType': 'int32', 'AtomicU32BufferType': 'int32', 'ReadOnlyI32BufferType': 'int32', 'I32BufferType': 'int32'}
+VALUE_TYPES = {'U32Type': 'int32', 'I32Type': 'int32', 'F32Type': 'float32'}
 READ_ONLY = {'ReadOnlyU8BufferType', 'ReadOnlyI32BufferType', 'ReadOnlyF32BufferType', 'ReadOnlyF16BufferType'}
 
 
@@ -13,6 +14,9 @@ def validate_resources(plan):
         if kind == 'shape':
             if typ != 'Shape3DType' or r.get('extent') is not None:
                 raise ValueError('Shape requires Shape3DType and no extent')
+        elif kind == 'value':
+            if typ not in VALUE_TYPES or r.get('extent') is not None:
+                raise ValueError('A value requires U32Type, I32Type or F32Type and no extent')
         elif kind in ('input', 'output', 'scratch'):
             if typ not in BUFFER_TYPES:
                 raise ValueError('Unsupported buffer type: ' + typ)
@@ -51,6 +55,19 @@ def _shape(value):
         raise ValueError("Shape exceeds INT32_MAX elements")
     return (w, h, n), w * h * n
 
+def _value(value, kind):
+    """A scalar kernel argument, checked against its qpel type."""
+    if kind == 'F32Type':
+        if type(value) not in (int, float):
+            raise ValueError("Float argument must be a Python number")
+        return float(value)
+    if type(value) is not int:
+        raise ValueError("Integer argument must be a Python int")
+    low, high = (0, 2**32 - 1) if kind == 'U32Type' else (-2**31, 2**31 - 1)
+    if not low <= value <= high:
+        raise ValueError("Integer argument is out of range for " + kind)
+    return value - 2**32 if value >= 2**31 else value  # u32 travels as its int32 bit pattern
+
 def _input(value, dtype, count, device):
     if value.device != device or value.dtype != dtype or value.numel() != count:
         raise ValueError("Input device, dtype or element count does not match Pipeline")
@@ -65,12 +82,14 @@ def generate(plan, shader):
     inputs = [r['name'] for r in resources if r['kind'] == 'input']
     shapes = [r['name'] for r in resources if r['kind'] == 'shape']
     outputs = [r['name'] for r in resources if r['kind'] == 'output']
+    values = [r['name'] for r in resources if r['kind'] == 'value']
     lines = [PRELUDE, 'SHADER_FILE = ' + repr(plan['module'] + '.metal'),
              'SHADER_SHA256 = ' + repr(hashlib.sha256(shader).hexdigest()), '',
-             'def run(inputs, shapes, *, device="mps"):',
-             '    """Inputs are tensors; shapes map names to (W,H,N); outputs are flat tensors."""',
-             '    if set(inputs) != set(' + repr(inputs) + ') or set(shapes) != set(' + repr(shapes) + '):',
-             '        raise ValueError("Input/shape names do not match Pipeline")',
+             'def run(inputs, shapes, values=None, *, device="mps"):',
+             '    """Inputs are tensors; shapes map names to (W,H,N); values are scalars; outputs are flat tensors."""',
+             '    values = {} if values is None else values',
+             '    if set(inputs) != set(' + repr(inputs) + ') or set(shapes) != set(' + repr(shapes) + ') or set(values) != set(' + repr(values) + '):',
+             '        raise ValueError("Input/shape/value names do not match Pipeline")',
              '    device = torch.device(device)',
              '    if device.type != "mps":',
              '        raise ValueError("This generated backend requires MPS")',
@@ -79,6 +98,9 @@ def generate(plan, shader):
              '    dims, sizes, buffers = {}, {}, {}']
     for name in shapes:
         lines.append(f'    dims[{name!r}], sizes[{name!r}] = _shape(shapes[{name!r}])')
+    for r in resources:
+        if r['kind'] == 'value':
+            lines.append(f"    scalar_{r['name']} = _value(values[{r['name']!r}], {r['type']!r})")
     # Validate all inputs before compiling or allocating GPU resources.
     for r in resources:
         if r['kind'] == 'input':
@@ -88,6 +110,8 @@ def generate(plan, shader):
         name = r['name']
         if r['kind'] == 'shape':
             lines.append(f'    buffers[{name!r}] = torch.tensor([*dims[{name!r}], 0], device=device, dtype=torch.int32)')
+        elif r['kind'] == 'value':
+            lines.append(f"    buffers[{name!r}] = torch.tensor([scalar_{name}], device=device, dtype=torch.{VALUE_TYPES[r['type']]})")
         elif r['kind'] != 'input':
             lines.append(f"    buffers[{name!r}] = torch.empty(sizes[{r['extent']!r}], device=device, dtype=torch.{BUFFER_TYPES[r['type']]})")
     for s in plan['stages']:

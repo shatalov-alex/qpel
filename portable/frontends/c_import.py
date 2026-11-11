@@ -219,6 +219,7 @@ class Metal(Dialect):
 
 
 DIALECT = {'cuda': Cuda(), 'metal': Metal()}
+VALUE_KINDS = {'U32Type', 'I32Type', 'F32Type'}
 MINIMUM = {'min', 'umin'}
 MAXIMUM = {'max', 'umax'}
 FMA = {'__fmaf_rn', 'fmaf', 'fma'}
@@ -401,7 +402,7 @@ class Importer:
         params = []
         position = 0
         shape_param = None
-        counts = []
+        count = self.element_count(decl, types) if kernel else None
         for i, p in enumerate(params_of(decl)):
             builtin = self.dialect.builtin(p) if kernel else None
             if builtin == 'grid':
@@ -416,24 +417,21 @@ class Importer:
                 attrs.update(binding=self.dialect.binding(p, position), isBuffer=True)
                 if kind == 'Shape3DType':
                     shape_param = p
-                elif kind not in BUFFER_KIND.values():
-                    counts.append(p)
+                elif count is not None and p['id'] == count['id']:
                     kind = 'Shape3DType'
+                elif kind not in BUFFER_KIND.values() and kind not in VALUE_KINDS:
+                    raise Unsupported(p, 'scalar-kernel-argument', 'kernel arguments can be unsigned int, int or float')
             position += 1
             ir = self.graph.add('Parameter', attrs, {'type': self.graph.add(kind)})
             self.scope[p['id']] = ('param', ir, kind)
             params.append(ir)
         if kernel:
-            # A plain element count stands for a 1D shape of that volume (count, 1, 1).
-            if counts and (shape_param is not None or len(counts) > 1):
-                raise Unsupported(counts[0], 'scalar-kernel-argument',
-                                  'scalar kernel arguments other than one element count need IR v2')
-            if counts:
-                entry = self.scope[counts[0]['id']]
-                self.scope[counts[0]['id']] = ('count', entry[1], entry[2])
-                self.adaptations.append(f'{name}: count {counts[0]["name"]} became a shape (count, 1, 1)')
+            if count is not None:
+                entry = self.scope[count['id']]
+                self.scope[count['id']] = ('count', entry[1], entry[2])
+                self.adaptations.append(f'{name}: count {count["name"]} became a shape (count, 1, 1)')
             elif shape_param is None:
-                raise Unsupported(decl, 'no-extent', 'a kernel needs a uint3 shape or an element count parameter')
+                raise Unsupported(decl, 'no-extent', 'a kernel needs a uint3 shape, or an unsigned element count that the thread index is compared with')
             self.kernel_params[name] = {self.graph.nodes[p]['attributes']['name']: p for p in params}
         result = describe(decl['type']['qualType'].split('(')[0])
         if result[0] != 'scalar' or result[1] not in SCALAR_KIND:
@@ -447,6 +445,39 @@ class Importer:
         if kernel:
             children['domain'] = self.graph.add('Grid1D')
         return self.graph.put(ident, 'Function', attrs, children)
+
+    def element_count(self, decl, types):
+        """The unsigned scalar that sizes the grid of a kernel without a uint3 shape.
+
+        It is the one unsigned int argument that the thread index is compared with
+        (`if (i >= n) return;`, `if (i < n) {...}`). qpel turns it into a shape
+        (n, 1, 1); every other scalar stays an ordinary kernel argument."""
+        params = params_of(decl)
+        if any(types[(decl['name'], i)] == 'Shape3DType' for i in range(len(params))):
+            return None
+        unsigned = {p['id']: p for i, p in enumerate(params)
+                    if types[(decl['name'], i)] == 'U32Type' and not self.dialect.builtin(p)}
+        grid = {p['id'] for p in params if self.dialect.builtin(p) == 'grid'}
+        body = body_of(decl)
+        for node in walk(body):
+            if node.get('kind') == 'VarDecl' and 'init' in node and is_grid_index(node['inner'][0]):
+                grid.add(node['id'])
+
+        def refers(node, ids):
+            core = peel(node)
+            return core['kind'] == 'DeclRefExpr' and core['referencedDecl']['id'] in ids
+        compared = {}
+        for node in walk(body):
+            if node.get('kind') == 'BinaryOperator' and node['opcode'] in COMPARISONS:
+                a, b = node['inner']
+                for index, other in ((a, b), (b, a)):
+                    if (refers(index, grid) or is_grid_index(index)) and refers(other, unsigned):
+                        compared[peel(other)['referencedDecl']['id']] = True
+        if len(compared) > 1:
+            raise Unsupported(decl, 'no-extent', 'the thread index is compared with several counts; pass a uint3 shape')
+        if compared:
+            return unsigned[next(iter(compared))]
+        return None
 
     # -- statements --
 
@@ -852,7 +883,7 @@ class Importer:
             bindings = []
             for name, ident in self.kernel_params[kernel].items():
                 kind = self.graph.nodes[self.graph.nodes[ident]['children']['type'][0]]['kind']
-                role = ('shape' if kind == 'Shape3DType' else 'input' if kind.startswith('ReadOnly')
+                role = ('shape' if kind == 'Shape3DType' else 'value' if kind in VALUE_KINDS else 'input' if kind.startswith('ReadOnly')
                         else 'scratch' if kind.startswith('Atomic') else 'output')
                 previous = resources.setdefault(name, {'name': name, 'kind': role, 'type': kind})
                 if previous['type'] != kind:
@@ -866,7 +897,7 @@ class Importer:
         if len(shapes) != 1:
             raise Unsupported(None, 'extent', 'kernels use different shape parameters; pass a launch plan')
         for r in resources.values():
-            r['extent'] = None if r['kind'] == 'shape' else shapes[0]
+            r['extent'] = None if r['kind'] in ('shape', 'value') else shapes[0]
         return {'resources': list(resources.values()), 'stages': stages}
 
 

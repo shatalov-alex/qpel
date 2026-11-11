@@ -76,6 +76,11 @@ __device__ __forceinline__ int qpel_i32_rem(int a, int b) { return b == -1 ? 0 :
 #define QPEL_I32_REM(a, b) qpel_i32_rem((a), (b))
 #endif
 
+#ifdef QPEL_VALUE_ENABLED
+// Scalar kernel arguments are passed by value.
+#define QPEL_VALUE(type, name, binding) type name
+#endif
+
 // Generated from qpel IR. Do not edit.
 // qpel numeric contract: u32-modulo-v1
 QPEL_KERNEL void initialize(QPEL_PARAM(QPEL_READ_U8, mask, 0), QPEL_PARAM(QPEL_ATOMIC_U32, parent, 1), QPEL_PARAM(QPEL_ATOMIC_U32, counts, 2), QPEL_PARAM(QPEL_SHAPE, shape, 3) QPEL_GRID_PARAM(qpel_index)) {

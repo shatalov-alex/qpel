@@ -12,6 +12,7 @@ ELEMENTS = {'ReadOnlyU8BufferType': 'U8Type', 'U32BufferType': 'U32Type', 'ReadO
 READ_ONLY = {'ReadOnlyU8BufferType', 'ReadOnlyI32BufferType', 'ReadOnlyF32BufferType', 'ReadOnlyF16BufferType'}
 BUFFERS = set(ELEMENTS) | {'AtomicU32BufferType'}
 COMPARISONS = {'==', '!=', '<', '>', '<=', '>='}
+VALUES = {'U32Type', 'I32Type', 'F32Type'}  # scalar kernel arguments (IR version 2)
 
 
 def fits(expected, actual):
@@ -241,7 +242,7 @@ class TypeChecker:
                 t, a = self.declared(param), param['attributes']
                 self.require(param, t in SCALARS | BUFFERS | {'Shape3DType'}, 'PARAM_TYPE', 'Unsupported parameter type')
                 if kernel:
-                    self.require(param, t in BUFFERS | {'Shape3DType'} and a.get('isBuffer', False), 'KERNEL_ABI', 'Kernel parameter must be a bound buffer or shape')
+                    self.require(param, t in BUFFERS | VALUES | {'Shape3DType'} and a.get('isBuffer', False), 'KERNEL_ABI', 'Kernel parameter must be a bound buffer, shape, or u32/i32/f32 value')
                     binding = a.get('binding', 0)
                     self.require(param, 0 <= binding <= 30, 'BINDING_INDEX', 'Binding must be between 0 and 30')
                     self.require(param, binding not in bindings, 'BINDING_DUPLICATE', 'Duplicate binding')

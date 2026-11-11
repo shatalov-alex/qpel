@@ -28,16 +28,30 @@ def _shape(value):
         raise ValueError("Shape exceeds INT32_MAX elements")
     return np.array((w, h, n, 0), dtype=SHAPE_DTYPE)[()], w * h * n
 
+def _value(value, kind):
+    """A scalar kernel argument, checked against its qpel type."""
+    if kind == 'F32Type':
+        if type(value) not in (int, float):
+            raise ValueError("Float argument must be a Python number")
+        return float(value)
+    if type(value) is not int:
+        raise ValueError("Integer argument must be a Python int")
+    low, high = (0, 2**32 - 1) if kind == 'U32Type' else (-2**31, 2**31 - 1)
+    if not low <= value <= high:
+        raise ValueError("Integer argument is out of range for " + kind)
+    return value
+
 
 SHADER_FILE = 'components.cu'
-SHADER_SHA256 = '969e32ee221eebf85dec75e40a7dd51473a0fa5854ca1872299ad6eebdde3e98'
+SHADER_SHA256 = 'b91875f539091dbbca5cfbe720a99e88ec9e974f3802a7e3637db5093ea9cd6d'
 
-def run(inputs, shapes, *, device=0):
-    """CuPy arrays in/out; shapes are (W,H,N); each stage completes before the next."""
+def run(inputs, shapes, values=None, *, device=0):
+    """CuPy arrays in/out; shapes are (W,H,N); values are scalars; each stage completes before the next."""
+    values = {} if values is None else values
     if type(device) is not int or device < 0:
         raise ValueError("CUDA device must be a nonnegative integer")
-    if set(inputs) != set(['mask']) or set(shapes) != set(['shape']):
-        raise ValueError("Input/shape names do not match Pipeline")
+    if set(inputs) != set(['mask']) or set(shapes) != set(['shape']) or set(values) != set([]):
+        raise ValueError("Input/shape/value names do not match Pipeline")
     buffers, sizes = {}, {}
     buffers['shape'], sizes['shape'] = _shape(shapes['shape'])
     value = inputs['mask']

@@ -1,6 +1,6 @@
 # Generated CUDA host (initial implementation)
 
-The package builder emits cuda_host.py alongside metal_host.py from the same checked Pipeline. No MPS model changes are needed. Both interfaces accept inputs and named (W,H,N) shapes and return flat output arrays. CUDA uses CuPy arrays and a nonnegative integer device ID (default 0); Metal uses PyTorch tensors. Automatic interchange between the frameworks is not implemented.
+The package builder emits cuda_host.py alongside metal_host.py from the same checked Pipeline. No MPS model changes are needed. Both interfaces accept inputs, named (W,H,N) shapes and, for programs with scalar kernel arguments, a `values` mapping, and return flat output arrays. CUDA uses CuPy arrays and a nonnegative integer device ID (default 0); Metal uses PyTorch tensors. Automatic interchange between the frameworks is not implemented.
 
 CUDA requires CuPy, NumPy, an NVIDIA device and a compatible CUDA/NVRTC installation. Nothing is installed automatically. CuPy RawModule compiles the generated .cu with C++17 on first use. Modules are cached per device, and source hashes are checked before creating each cached module. Cached modules retain their source until the process restarts or the cache is cleared.
 

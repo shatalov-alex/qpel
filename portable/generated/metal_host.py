@@ -21,6 +21,19 @@ def _shape(value):
         raise ValueError("Shape exceeds INT32_MAX elements")
     return (w, h, n), w * h * n
 
+def _value(value, kind):
+    """A scalar kernel argument, checked against its qpel type."""
+    if kind == 'F32Type':
+        if type(value) not in (int, float):
+            raise ValueError("Float argument must be a Python number")
+        return float(value)
+    if type(value) is not int:
+        raise ValueError("Integer argument must be a Python int")
+    low, high = (0, 2**32 - 1) if kind == 'U32Type' else (-2**31, 2**31 - 1)
+    if not low <= value <= high:
+        raise ValueError("Integer argument is out of range for " + kind)
+    return value - 2**32 if value >= 2**31 else value  # u32 travels as its int32 bit pattern
+
 def _input(value, dtype, count, device):
     if value.device != device or value.dtype != dtype or value.numel() != count:
         raise ValueError("Input device, dtype or element count does not match Pipeline")
@@ -28,12 +41,13 @@ def _input(value, dtype, count, device):
 
 
 SHADER_FILE = 'components.metal'
-SHADER_SHA256 = 'b2ceb9ed82720108f22f10bf58792b5c2888be4c64c9c64a677ce01966ffb056'
+SHADER_SHA256 = '2719df5797a5529434e353bbea8cdbeaaffbed89d6057e83d0d4227c6b7eae77'
 
-def run(inputs, shapes, *, device="mps"):
-    """Inputs are tensors; shapes map names to (W,H,N); outputs are flat tensors."""
-    if set(inputs) != set(['mask']) or set(shapes) != set(['shape']):
-        raise ValueError("Input/shape names do not match Pipeline")
+def run(inputs, shapes, values=None, *, device="mps"):
+    """Inputs are tensors; shapes map names to (W,H,N); values are scalars; outputs are flat tensors."""
+    values = {} if values is None else values
+    if set(inputs) != set(['mask']) or set(shapes) != set(['shape']) or set(values) != set([]):
+        raise ValueError("Input/shape/value names do not match Pipeline")
     device = torch.device(device)
     if device.type != "mps":
         raise ValueError("This generated backend requires MPS")

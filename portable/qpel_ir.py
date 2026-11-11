@@ -33,6 +33,7 @@ def version_2_features(nodes):
         if k=='If' and n['children'].get('elseBody'):used.add('else')
         if k=='Binary' and a.get('operator') in ('<<','>>'):used.add('shift')
         if k=='Unary' and a.get('operator')=='~':used.add('~')
+        if k=='Resource' and a.get('kind')=='value':used.add('value')
     return used
 
 
@@ -110,7 +111,10 @@ class Lowering:
         if k=='Function':
             kernel=a.get('isKernel',False);args=joined('parameters',', ')
             return ('QPEL_KERNEL ' if kernel else 'QPEL_DEVICE ')+e('resultType')+' '+a['name']+'('+args+(' QPEL_GRID_PARAM(qpel_index)' if kernel else '')+') {\n'+('QPEL_GRID_LOCAL(qpel_index)\n' if kernel else '')+e('body')+'\n}\n'
-        if k=='Parameter':return 'QPEL_PARAM('+e('type')+', '+a['name']+', '+str(a.get('binding',0))+')' if a.get('isBuffer',False) else e('type')+' '+a['name']
+        if k=='Parameter':
+            if not a.get('isBuffer',False):return e('type')+' '+a['name']
+            macro='QPEL_VALUE(' if self.child(n,'type')['kind'] in ('U32Type','I32Type','F32Type') else 'QPEL_PARAM('
+            return macro+e('type')+', '+a['name']+', '+str(a.get('binding',0))+')'
         if k=='Name':return self.link(n,'declaration')['attributes']['name']
         if k=='GridIndex':return 'qpel_index'
         if k=='Literal':

@@ -32,13 +32,15 @@ kernels.cu:21:30: [do-loop] do statements are not in qpel yet
 - C promotes `unsigned char` to `int`. When such a value provably can't go negative (a comparison of two bytes, `&`/`|`/`^` of bytes), it stays unsigned, so byte kernels don't turn into signed code.
 - Programs that need `else`, `for`, `int`, shifts or `~` are written as IR version 2; all others stay version 1.
 
-Rejected for now, each with its own code: `do`/`switch`/`goto`, `double`, float-to-integer conversion, narrowing to `unsigned char`, 2D/3D thread indices, shared memory and barriers in user code, scalar kernel arguments other than one element count, and buffers of other types.
+- Scalar kernel arguments of type `unsigned int`, `int` and `float` (in Metal, `constant T&` parameters) stay ordinary arguments; the hosts take them as `values=`.
+
+Rejected for now, each with its own code: `do`/`switch`/`goto`, `double`, float-to-integer conversion, narrowing to `unsigned char`, 2D/3D thread indices, shared memory and barriers in user code, other scalar argument types, and buffers of other types.
 
 ## Adaptations and warnings
 
 `import-report.json` (in a translated package) and the `import` command's output list:
 
-- **adaptations**: a kernel's single `unsigned int` element count becomes a qpel shape. The generated hosts then take the shape `(count, 1, 1)` instead of the original scalar argument. This is a host ABI change.
+- **adaptations**: a kernel without a `uint3` shape is sized by the `unsigned int` that its thread index is compared with (`if (i >= n) return;`, `if (i < n) {...}`). That one argument becomes a qpel shape, and the generated hosts take `(n, 1, 1)` for it instead of the plain number. This is a host ABI change; all other scalar arguments keep their meaning.
 - **warnings**: kernels that never compare the thread index against anything. CUDA rounds the grid up to whole blocks, so such a kernel also runs for indices past the end of its buffers.
 
 ## Launch plan
@@ -56,7 +58,7 @@ Source files do not say how kernels are launched. Without `--plan`, each kernel 
 | CUDA → qpel | `cuda_examples/*.cu` must import to their fixture |
 | Metal → qpel | `metal_examples/*.metal` must import to the same fixture |
 
-The fifth example, `signed_delta`, is the version 2 case: signed arithmetic, an `if`/`else if`/`else` chain and a `for` loop with `continue` and `break`. Its fixture was made by importing the CUDA file, so its CUDA row only guards against regressions. The independent checks are the Metal file importing to the same program, both re-imports, nvcc and Metal compiling it, and the Apple GPU test against a NumPy model of C's semantics. Re-importing generated code also reads back qpel's own spellings: wrapping `(int)((unsigned)a + (unsigned)b)`, `qpel_i32_div`/`qpel_i32_rem` and masked shift counts.
+`scale_offset` covers scalar arguments: a `float` and an `int` argument next to the element count, GPU-tested with wrapping offsets and the hosts' argument checks. The fifth example, `signed_delta`, is the other version 2 case: signed arithmetic, an `if`/`else if`/`else` chain and a `for` loop with `continue` and `break`. Its fixture was made by importing the CUDA file, so its CUDA row only guards against regressions. The independent checks are the Metal file importing to the same program, both re-imports, nvcc and Metal compiling it, and the Apple GPU test against a NumPy model of C's semantics. Re-importing generated code also reads back qpel's own spellings: wrapping `(int)((unsigned)a + (unsigned)b)`, `qpel_i32_div`/`qpel_i32_rem` and masked shift counts.
 
 Programs are compared as trees, so node ids, literal suffixes and float spelling don't count. CUDA → Metal and Metal → CUDA follow from these rows. A source that imports to a fixture's IR produces exactly that fixture's CUDA and Metal, and those are covered by the nvcc, Metal and Apple GPU checks.
 

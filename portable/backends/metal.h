@@ -69,3 +69,8 @@ inline int qpel_i32_rem(int a, int b) { return b == -1 ? 0 : a % b; }
 #define QPEL_I32_DIV(a, b) qpel_i32_div((a), (b))
 #define QPEL_I32_REM(a, b) qpel_i32_rem((a), (b))
 #endif
+
+#ifdef QPEL_VALUE_ENABLED
+// Scalar kernel arguments arrive in small constant buffers.
+#define QPEL_VALUE(type, name, binding) constant type& name [[buffer(binding)]]
+#endif

@@ -122,6 +122,29 @@ def run_signed_delta(name, host, plan):
     return len(cases)
 
 
+# --- IR version 2: scalar kernel arguments ---
+
+def run_scale_offset(name, host, plan):
+    cases = 0
+    for n in (1, 63, 64, 65, 1000):
+        x = (np.arange(n, dtype=np.float32) - 17)*np.float32(0.375)
+        # Results stay normal: subnormal float32 handling is not pinned (FLOAT32.md).
+        for scale, offset in [(0.5, 3), (-1.25, -7), (3.0e38, 2**30), (1e-30, 2**31 - 1), (0, -2**31)]:
+            result = host.run({'x': torch.from_numpy(x).to('mps')}, {'n': (n, 1, 1)}, {'scale': scale, 'offset': offset})
+            np.testing.assert_array_equal(result['y'].cpu().numpy(), x*np.float32(scale))
+            z = (np.arange(n, dtype=np.int64)*offset - 7) & 0xffffffff
+            np.testing.assert_array_equal(result['z'].cpu().numpy().view(np.uint32), z.astype(np.uint32))
+            cases += 1
+    for bad in ({'scale': 1.0, 'offset': 2**31}, {'scale': 'x', 'offset': 0}, {'scale': 1.0}):
+        try:
+            host.run({'x': torch.zeros(4, device='mps')}, {'n': (4, 1, 1)}, bad)
+        except ValueError:
+            cases += 1
+        else:
+            raise AssertionError(f'{bad} was accepted')
+    return cases
+
+
 # --- floating point kernels ---
 
 def run_float32(name, host, plan):
@@ -290,7 +313,7 @@ def run_components(name, host, plan):
 
 TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fma32': run_fma32,
          'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components,
-         'signed_delta': run_signed_delta}
+         'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset}
 
 
 def main(argv=None):

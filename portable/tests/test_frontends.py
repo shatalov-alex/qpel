@@ -152,7 +152,9 @@ class CudaIdioms(Sources):
             'call': THRESHOLD_CU.replace('binary[i] =', '__syncthreads(); binary[i] ='),
             'buffer-type': THRESHOLD_CU.replace('unsigned int* binary', 'short* binary'),
             'local-type': THRESHOLD_CU.replace('binary[i] =', '__shared__ unsigned int cache[64]; binary[i] ='),
-            'scalar-kernel-argument': THRESHOLD_CU.replace('uint3 dimensions', 'uint3 dimensions, unsigned int extra'),
+            'scalar-kernel-argument': THRESHOLD_CU.replace('uint3 dimensions', 'uint3 dimensions, bool extra'),
+            'no-extent': THRESHOLD_CU.replace('uint3 dimensions', 'unsigned int n, unsigned int m').replace(
+                'dimensions.x * dimensions.y * dimensions.z', 'n || i >= m'),
             'literal-range': THRESHOLD_CU.replace('1u :', '4294967296u :'),
         }
         for code, source in cases.items():
@@ -188,6 +190,14 @@ class CudaIdioms(Sources):
         self.assertTrue(any(n['kind'] == 'If' and 'elseBody' in n['children'] for n in program['nodes']))
         if HAS_METAL:
             self.assertEqual(roundtrip.reimport(program), {'cuda': None, 'metal': None})
+
+    def test_scalar_arguments_stay_arguments(self):
+        program, report = self.program(THRESHOLD_CU.replace('uint3 dimensions', 'uint3 dimensions, unsigned int bias, float gain')
+                                       .replace('1u :', 'bias + (unsigned int)(gain > 0.5f) :'))
+        self.assertEqual(report['adaptations'], [])
+        values = {n['attributes']['name']: n for n in program['nodes'] if n['kind'] == 'Resource' and n['attributes']['kind'] == 'value'}
+        self.assertEqual(set(values), {'bias', 'gain'})
+        self.assertEqual(program['version'], 2)
 
     def test_unsigned_chars_compared_as_int_stay_unsigned(self):
         program, _ = self.program(THRESHOLD_CU)
