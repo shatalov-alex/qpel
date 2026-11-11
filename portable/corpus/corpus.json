@@ -368,6 +368,1664 @@
     ],
     "origin": "https://github.com/ggml-org/llama.cpp, commit 91d2fc387529940230555abd297a8b5e99737d3f, ggml/src/ggml-metal/ggml-metal.metal (unmodified)",
     "license": "MIT (llama.cpp/LICENSE)",
-    "sha256": "cc0da6a9a3a3351e0d39c92881a173213b5e173b5813f7b9d5dbbbbf2a848c6b"
+    "sha256": "cc0da6a9a3a3351e0d39c92881a173213b5e173b5813f7b9d5dbbbbf2a848c6b",
+    "programs": [
+      {
+        "kernels": [
+          "kernel_arange_f32"
+        ],
+        "fixture": "llama_metal_arange_f32",
+        "geometry": {
+          "groups": [
+            "1",
+            "1",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne0": "W*H*N/4"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            64,
+            1,
+            1
+          ],
+          [
+            256,
+            3,
+            2
+          ],
+          [
+            1028,
+            1,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_scale_f32",
+        "constants": {
+          "FC_unary_op": 10,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_fill_f32",
+        "constants": {
+          "FC_unary_op": 11,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_clamp_f32",
+        "constants": {
+          "FC_unary_op": 12,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_sqr_f32",
+        "constants": {
+          "FC_unary_op": 13,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_sqrt_f32",
+        "constants": {
+          "FC_unary_op": 14,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_sin_f32",
+        "constants": {
+          "FC_unary_op": 15,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_log_f32",
+        "constants": {
+          "FC_unary_op": 17,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_leaky_relu_f32",
+        "constants": {
+          "FC_unary_op": 18,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_tanh_f32",
+        "constants": {
+          "FC_unary_op": 100,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_relu_f32",
+        "constants": {
+          "FC_unary_op": 101,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_sigmoid_f32",
+        "constants": {
+          "FC_unary_op": 102,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_gelu_f32",
+        "constants": {
+          "FC_unary_op": 103,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_silu_f32",
+        "constants": {
+          "FC_unary_op": 106,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_neg_f32",
+        "constants": {
+          "FC_unary_op": 108,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_abs_f32",
+        "constants": {
+          "FC_unary_op": 109,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_step_f32",
+        "constants": {
+          "FC_unary_op": 111,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_exp_f32",
+        "constants": {
+          "FC_unary_op": 114,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_softplus_f32",
+        "constants": {
+          "FC_unary_op": 115,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_floor_f32",
+        "constants": {
+          "FC_unary_op": 117,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f32_f32"
+        ],
+        "fixture": "llama_metal_unary_round_f32",
+        "constants": {
+          "FC_unary_op": 119,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/4 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/4",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 4,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/4",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 4,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f32"
+        },
+        "shapes": [
+          [
+            4,
+            1,
+            1
+          ],
+          [
+            256,
+            1,
+            1
+          ],
+          [
+            64,
+            3,
+            2
+          ],
+          [
+            520,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f32"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f16_f16"
+        ],
+        "fixture": "llama_metal_unary_scale_f16",
+        "constants": {
+          "FC_unary_op": 10,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/2 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/2",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 2,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/2",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 2,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f16"
+        },
+        "shapes": [
+          [
+            2,
+            1,
+            1
+          ],
+          [
+            128,
+            1,
+            1
+          ],
+          [
+            32,
+            3,
+            2
+          ],
+          [
+            260,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f16"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f16_f16"
+        ],
+        "fixture": "llama_metal_unary_gelu_f16",
+        "constants": {
+          "FC_unary_op": 103,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/2 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/2",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 2,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/2",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 2,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f16"
+        },
+        "shapes": [
+          [
+            2,
+            1,
+            1
+          ],
+          [
+            128,
+            1,
+            1
+          ],
+          [
+            32,
+            3,
+            2
+          ],
+          [
+            260,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f16"
+        }
+      },
+      {
+        "kernels": [
+          "kernel_unary_f16_f16"
+        ],
+        "fixture": "llama_metal_unary_silu_f16",
+        "constants": {
+          "FC_unary_op": 106,
+          "FC_unary_cnt": false
+        },
+        "geometry": {
+          "groups": [
+            "H*((W/2 + 63)/64)",
+            "N",
+            "1"
+          ],
+          "block": [
+            64,
+            1,
+            1
+          ]
+        },
+        "values": {
+          "args.ne00": "W/2",
+          "args.ne01": "H",
+          "args.ne02": "N",
+          "args.ne03": 1,
+          "args.nb00": 2,
+          "args.nb01": "W",
+          "args.nb02": "W*H",
+          "args.nb03": "W*H*N",
+          "args.ne0": "W/2",
+          "args.ne1": "H",
+          "args.ne2": "N",
+          "args.ne3": 1,
+          "args.nb0": 2,
+          "args.nb1": "W",
+          "args.nb2": "W*H",
+          "args.nb3": "W*H*N",
+          "args.min_": -1,
+          "args.max_": 1
+        },
+        "inputs": {
+          "src0": "f16"
+        },
+        "shapes": [
+          [
+            2,
+            1,
+            1
+          ],
+          [
+            128,
+            1,
+            1
+          ],
+          [
+            32,
+            3,
+            2
+          ],
+          [
+            260,
+            5,
+            1
+          ]
+        ],
+        "outputs": {
+          "dst": "f16"
+        }
+      }
+    ]
   }
 ]

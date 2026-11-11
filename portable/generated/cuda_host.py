@@ -43,6 +43,21 @@ def _groups(expressions, dims, block):
         raise ValueError("Group counts must be positive: " + repr(counts))
     return counts, tuple(c * b for c, b in zip(counts, block))
 
+def _struct(value, layout, size):
+    """A struct argument: {field: value}, packed in C's layout (checked like scalar arguments)."""
+    import struct as _pack
+    if not isinstance(value, dict) or set(value) != {f for f, _, _ in layout}:
+        raise ValueError("Struct argument needs exactly the fields " + ", ".join(f for f, _, _ in layout))
+    data = bytearray(size)
+    for field, kind, offset in layout:
+        number = value[field] if kind == 'bf16' else _value(value[field], kind) if kind in ('f32', 'f16') else value[field]
+        if kind not in ('f32', 'f16', 'bf16'):
+            _value(number, kind)  # range check; packed with its own type below
+        _pack.pack_into('<' + _PACK[kind], data, offset, number)
+    return bytes(data)
+
+_PACK = {'u8': 'B', 'i8': 'b', 'u16': 'H', 'i16': 'h', 'f16': 'e', 'bf16': 'H', 'u32': 'I', 'i32': 'i', 'f32': 'f', 'u64': 'Q', 'i64': 'q'}
+
 def _value(value, kind):
     """A scalar kernel argument, checked against its qpel type."""
     if kind in ('f32', 'f16'):
@@ -59,7 +74,7 @@ def _value(value, kind):
 
 
 SHADER_FILE = 'components.cu'
-SHADER_SHA256 = '815f7cf565fb3d9366f1cb30a0194720dd283506c6e46b78f25a1a2f321c1ffb'
+SHADER_SHA256 = '2cc6a3fd522017dad55aaa8c145e02e74a3449ac213d373eee86ab3db87ef548'
 
 def run(inputs, shapes, values=None, *, device=0):
     """CuPy arrays in/out; shapes are (W,H,N); values are scalars; each stage completes before the next."""

@@ -138,7 +138,8 @@ def rows(fixtures=None):
         include = [CORPUS/folder for folder in entry.get('include', ())]
         dialect = 'cuda' if source.suffix == '.cu' else 'metal'
         yield (f'{dialect} -> qpel', f'corpus/{entry["source"]} {",".join(program["kernels"])}',
-               check(fixture(program['fixture']), source, None, validate, include, program['kernels'], program['fixture']))
+               check(fixture(program['fixture']), source, None, validate, include, program['kernels'], program['fixture'],
+                     program.get('constants'), program.get('geometry')))
 
 
 def reimport(program):
@@ -157,9 +158,10 @@ def reimport(program):
     return results
 
 
-def check(original, source, plan, validate, include=(), kernels=None, module=None):
+def check(original, source, plan, validate, include=(), kernels=None, module=None, constants=None, geometry=None):
     try:
-        program, _ = import_source(source, plan=plan, include=include, kernels=kernels, module=module)
+        program, _ = import_source(source, plan=plan, include=include, kernels=kernels, module=module,
+                                   constants=constants, geometry=geometry)
         validate(program)
     except ValueError as error:
         return str(error)

@@ -3,7 +3,7 @@
 A write marks a resource produced, not every element initialized. This is not a
 bounds, path-coverage or race proof. Every stage must complete before the next.
 """
-from qpel_types import VALUE_TERMS, TypeChecker, access, is_buffer
+from qpel_types import VALUE_TERMS, TypeChecker, access, is_buffer, is_struct
 
 READ, WRITE = 1, 2
 
@@ -14,19 +14,42 @@ class PipelineChecker(TypeChecker):
         self.pipeline = self.nodes[program['roots']['pipeline']]
         self.effect_cache = {}
 
-    def bases(self, node):
-        """Possible parameter bases, including both sides of a pointer select."""
+    def bases(self, node, seen=None):
+        """Possible parameter bases, including both sides of a pointer select, through views and
+        buffer locals (their initializer and every assignment)."""
+        seen = set() if seen is None else seen
         k = node['kind']
         if k == 'Name':
             target = self.target(node, 'declaration')
-            return {target['id']} if target['kind'] == 'Parameter' else set()
+            if target['kind'] == 'Parameter':
+                return {target['id']}
+            if target['kind'] == 'Variable' and target['id'] not in seen:
+                seen.add(target['id'])
+                found = set()
+                for value in self.local_values(target):
+                    found |= self.bases(value, seen)
+                return found
+            return set()
+        if k == 'View':
+            return self.bases(self.child(node, 'base'), seen)
         if k == 'Binary':
-            return self.bases(self.child(node, 'left'))
+            return self.bases(self.child(node, 'left'), seen)
         if k in {'Index', 'Member'}:
-            return self.bases(self.child(node, 'base'))
+            return self.bases(self.child(node, 'base'), seen)
         if k == 'Select':
-            return self.bases(self.child(node, 'yes')) | self.bases(self.child(node, 'no'))
+            return self.bases(self.child(node, 'yes'), seen) | self.bases(self.child(node, 'no'), seen)
         return set()
+
+    def local_values(self, variable):
+        """The initializer of a local and every value assigned to it."""
+        if not hasattr(self, '_assigned'):
+            self._assigned = {}
+            for n in self.nodes.values():
+                if n['kind'] == 'Assign':
+                    target = self.child(n, 'target')
+                    if target['kind'] == 'Name':
+                        self._assigned.setdefault(target['links']['declaration'], []).append(self.child(n, 'value'))
+        return self.children(variable, 'value') + self._assigned.get(variable['id'], [])
 
     def effects(self, function):
         if function['id'] in self.effect_cache:
@@ -78,7 +101,7 @@ class PipelineChecker(TypeChecker):
                 self.require(resource, typ == 'shape3' and extent is None, 'RESOURCE_TYPE', 'Shape requires Shape3D without extent')
                 ready.add(resource['id'])
             elif kind == 'value':
-                self.require(resource, typ in VALUE_TERMS and extent is None, 'RESOURCE_TYPE', 'A value is an integer or f32 scalar without extent')
+                self.require(resource, (typ in VALUE_TERMS or is_struct(typ)) and extent is None, 'RESOURCE_TYPE', 'A value is an integer, float or struct without extent')
                 ready.add(resource['id'])
             else:
                 self.require(resource, is_buffer(typ), 'RESOURCE_TYPE', 'Data resource requires buffer type')
@@ -111,7 +134,7 @@ class PipelineChecker(TypeChecker):
                 self.require(binding, typ == self.declared(param), 'BIND_TYPE', 'Resource and parameter types must match')
                 if is_buffer(typ):
                     self.require(binding, resource['links'].get('extent') == grid['id'], 'GRID_EXTENT', 'Buffer extent must match grid')
-                if typ in VALUE_TERMS:
+                if typ in VALUE_TERMS or is_struct(typ):
                     self.require(binding, resource['attributes']['kind'] == 'value', 'VALUE_BINDING', 'Scalar parameters bind value resources')
                 if typ == 'shape3':
                     self.require(binding, rid == grid['id'], 'GRID_SHAPE', 'Shape parameter must match grid')

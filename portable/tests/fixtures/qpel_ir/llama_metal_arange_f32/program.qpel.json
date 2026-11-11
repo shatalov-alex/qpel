@@ -1,0 +1,723 @@
+{
+  "format": "qpel.ir",
+  "version": 3,
+  "semantics": "qpel-portable-core-v3",
+  "roots": {
+    "module": "n0",
+    "pipeline": "n49"
+  },
+  "nodes": [
+    {
+      "id": "n0",
+      "kind": "GpuModule",
+      "attributes": {
+        "name": "llama_metal_arange_f32"
+      },
+      "children": {
+        "functions": [
+          "n1"
+        ],
+        "structs": [
+          "n42"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n1",
+      "kind": "Function",
+      "attributes": {
+        "name": "kernel_arange_f32",
+        "isKernel": true
+      },
+      "children": {
+        "parameters": [
+          "n2",
+          "n4"
+        ],
+        "resultType": [
+          "n6"
+        ],
+        "body": [
+          "n7"
+        ],
+        "domain": [
+          "n41"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n2",
+      "kind": "Parameter",
+      "attributes": {
+        "name": "args",
+        "binding": 0,
+        "isBuffer": true
+      },
+      "children": {
+        "type": [
+          "n3"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n3",
+      "kind": "StructType",
+      "attributes": {
+        "name": "ggml_metal_kargs_arange"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n4",
+      "kind": "Parameter",
+      "attributes": {
+        "name": "dst",
+        "binding": 1,
+        "isBuffer": true
+      },
+      "children": {
+        "type": [
+          "n5"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n5",
+      "kind": "BufferType",
+      "attributes": {
+        "element": "i8",
+        "access": "write"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n6",
+      "kind": "VoidType",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n7",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n8",
+          "n12"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n8",
+      "kind": "Variable",
+      "attributes": {
+        "name": "dst_ptr"
+      },
+      "children": {
+        "type": [
+          "n9"
+        ],
+        "value": [
+          "n10"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n9",
+      "kind": "F32BufferType",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n10",
+      "kind": "View",
+      "attributes": {
+        "element": "f32"
+      },
+      "children": {
+        "base": [
+          "n11"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n11",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n4"
+      }
+    },
+    {
+      "id": "n12",
+      "kind": "For",
+      "attributes": {},
+      "children": {
+        "body": [
+          "n13"
+        ],
+        "init": [
+          "n26"
+        ],
+        "condition": [
+          "n30"
+        ],
+        "step": [
+          "n34"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n13",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n14"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n14",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n15"
+        ],
+        "value": [
+          "n18"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n15",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n16"
+        ],
+        "index": [
+          "n17"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n16",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n8"
+      }
+    },
+    {
+      "id": "n17",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n26"
+      }
+    },
+    {
+      "id": "n18",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n19"
+        ],
+        "right": [
+          "n21"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n19",
+      "kind": "Member",
+      "attributes": {
+        "member": "start"
+      },
+      "children": {
+        "base": [
+          "n20"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n20",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n2"
+      }
+    },
+    {
+      "id": "n21",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n22"
+        ],
+        "right": [
+          "n24"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n22",
+      "kind": "Member",
+      "attributes": {
+        "member": "step"
+      },
+      "children": {
+        "base": [
+          "n23"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n23",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n2"
+      }
+    },
+    {
+      "id": "n24",
+      "kind": "F32Cast",
+      "attributes": {},
+      "children": {
+        "operand": [
+          "n25"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n25",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n26"
+      }
+    },
+    {
+      "id": "n26",
+      "kind": "Variable",
+      "attributes": {
+        "name": "i0"
+      },
+      "children": {
+        "type": [
+          "n27"
+        ],
+        "value": [
+          "n28"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n27",
+      "kind": "I32Type",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n28",
+      "kind": "I32Cast",
+      "attributes": {},
+      "children": {
+        "operand": [
+          "n29"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n29",
+      "kind": "LocalIndex",
+      "attributes": {
+        "axis": "x"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n30",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n31"
+        ],
+        "right": [
+          "n32"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n31",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n26"
+      }
+    },
+    {
+      "id": "n32",
+      "kind": "Member",
+      "attributes": {
+        "member": "ne0"
+      },
+      "children": {
+        "base": [
+          "n33"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n33",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n2"
+      }
+    },
+    {
+      "id": "n34",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n35"
+        ],
+        "value": [
+          "n36"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n35",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n26"
+      }
+    },
+    {
+      "id": "n36",
+      "kind": "I32Cast",
+      "attributes": {},
+      "children": {
+        "operand": [
+          "n37"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n37",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n38"
+        ],
+        "right": [
+          "n40"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n38",
+      "kind": "U32Cast",
+      "attributes": {},
+      "children": {
+        "operand": [
+          "n39"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n39",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n26"
+      }
+    },
+    {
+      "id": "n40",
+      "kind": "GroupSize",
+      "attributes": {
+        "axis": "x"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n41",
+      "kind": "Groups",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n42",
+      "kind": "StructDecl",
+      "attributes": {
+        "name": "ggml_metal_kargs_arange"
+      },
+      "children": {
+        "fields": [
+          "n43",
+          "n45",
+          "n47"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n43",
+      "kind": "Field",
+      "attributes": {
+        "name": "ne0"
+      },
+      "children": {
+        "type": [
+          "n44"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n44",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i64"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n45",
+      "kind": "Field",
+      "attributes": {
+        "name": "start"
+      },
+      "children": {
+        "type": [
+          "n46"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n46",
+      "kind": "F32Type",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n47",
+      "kind": "Field",
+      "attributes": {
+        "name": "step"
+      },
+      "children": {
+        "type": [
+          "n48"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n48",
+      "kind": "F32Type",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n49",
+      "kind": "Pipeline",
+      "attributes": {
+        "name": "llama_metal_arange_f32_launch"
+      },
+      "children": {
+        "resources": [
+          "n50",
+          "n52",
+          "n54"
+        ],
+        "stages": [
+          "n56"
+        ]
+      },
+      "links": {
+        "module": "n0"
+      }
+    },
+    {
+      "id": "n50",
+      "kind": "Resource",
+      "attributes": {
+        "name": "args",
+        "kind": "value"
+      },
+      "children": {
+        "type": [
+          "n51"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n51",
+      "kind": "StructType",
+      "attributes": {
+        "name": "ggml_metal_kargs_arange"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n52",
+      "kind": "Resource",
+      "attributes": {
+        "name": "dst",
+        "kind": "output"
+      },
+      "children": {
+        "type": [
+          "n53"
+        ]
+      },
+      "links": {
+        "extent": "n54"
+      }
+    },
+    {
+      "id": "n53",
+      "kind": "BufferType",
+      "attributes": {
+        "element": "i8",
+        "access": "write"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n54",
+      "kind": "Resource",
+      "attributes": {
+        "name": "size",
+        "kind": "shape"
+      },
+      "children": {
+        "type": [
+          "n55"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n55",
+      "kind": "Shape3DType",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n56",
+      "kind": "Dispatch",
+      "attributes": {
+        "blockSize": 64,
+        "completionBarrier": true,
+        "blockHeight": 1,
+        "blockDepth": 1,
+        "groupsX": "1",
+        "groupsY": "1",
+        "groupsZ": "1"
+      },
+      "children": {
+        "bindings": [
+          "n57",
+          "n58"
+        ]
+      },
+      "links": {
+        "kernel": "n1",
+        "grid": "n54"
+      }
+    },
+    {
+      "id": "n57",
+      "kind": "Binding",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "parameter": "n2",
+        "resource": "n50"
+      }
+    },
+    {
+      "id": "n58",
+      "kind": "Binding",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "parameter": "n4",
+        "resource": "n52"
+      }
+    }
+  ]
+}

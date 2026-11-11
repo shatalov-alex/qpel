@@ -1,7 +1,7 @@
 """Generate a synchronous CuPy/CUDA host from the same checked Pipeline as Metal."""
 import hashlib
 from generate_metal_host import BUFFER_TYPES, validate_resources
-from qpel_types import NUMPY_DTYPES, VALUE_TERMS, element, normalize_plan
+from qpel_types import NUMPY_DTYPES, VALUE_TERMS, element, is_struct, normalize_plan, struct_layout
 NUMPY_VALUES = {t: NUMPY_DTYPES[t] for t in VALUE_TERMS}
 CUPY_BUFFERS = dict(BUFFER_TYPES, bf16='uint16')  # CuPy has no bfloat16: bf16 buffers hold its bits
 
@@ -50,6 +50,21 @@ def _groups(expressions, dims, block):
         raise ValueError("Group counts must be positive: " + repr(counts))
     return counts, tuple(c * b for c, b in zip(counts, block))
 
+def _struct(value, layout, size):
+    """A struct argument: {field: value}, packed in C's layout (checked like scalar arguments)."""
+    import struct as _pack
+    if not isinstance(value, dict) or set(value) != {f for f, _, _ in layout}:
+        raise ValueError("Struct argument needs exactly the fields " + ", ".join(f for f, _, _ in layout))
+    data = bytearray(size)
+    for field, kind, offset in layout:
+        number = value[field] if kind == 'bf16' else _value(value[field], kind) if kind in ('f32', 'f16') else value[field]
+        if kind not in ('f32', 'f16', 'bf16'):
+            _value(number, kind)  # range check; packed with its own type below
+        _pack.pack_into('<' + _PACK[kind], data, offset, number)
+    return bytes(data)
+
+_PACK = {'u8': 'B', 'i8': 'b', 'u16': 'H', 'i16': 'h', 'f16': 'e', 'bf16': 'H', 'u32': 'I', 'i32': 'i', 'f32': 'f', 'u64': 'Q', 'i64': 'q'}
+
 def _value(value, kind):
     """A scalar kernel argument, checked against its qpel type."""
     if kind in ('f32', 'f16'):
@@ -89,7 +104,11 @@ def generate(plan, shader):
         lines.append(f'    buffers[{name!r}], sizes[{name!r}] = _shape(shapes[{name!r}])')
     for r in resources:
         if r['kind'] == 'value':
-            lines.append(f"    buffers[{r['name']!r}] = np.{NUMPY_VALUES[r['type']]}(_value(values[{r['name']!r}], {r['type']!r}))")
+            if is_struct(r['type']):  # passed by value: a NumPy void scalar holding the struct's bytes
+                layout, size = struct_layout(plan['structs'][r['type'][7:]])
+                lines.append(f"    buffers[{r['name']!r}] = np.frombuffer(_struct(values[{r['name']!r}], {layout!r}, {size}), dtype=np.dtype((np.void, {size})))[0]")
+            else:
+                lines.append(f"    buffers[{r['name']!r}] = np.{NUMPY_VALUES[r['type']]}(_value(values[{r['name']!r}], {r['type']!r}))")
     for r in resources:
         if r['kind'] == 'input':
             name = r['name']

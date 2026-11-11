@@ -27,7 +27,7 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-from qpel_types import NUMPY_DTYPES, element, is_buffer, normalize_plan, term  # noqa: E402
+from qpel_types import NUMPY_DTYPES, element, is_buffer, is_struct, normalize_plan, pack_struct, term  # noqa: E402
 
 INCLUDE = HERE/'include'
 
@@ -43,7 +43,7 @@ class _Values(dict):
     """value type (term or concept name) -> its term; the simulator passes 32-bit words."""
     def __missing__(self, key):
         t = term(key)
-        if t not in C_VALUE:
+        if t not in C_VALUE and not is_struct(t):
             raise ValueError(f'the simulator has no scalar arguments of type {t}')
         return t
 
@@ -166,6 +166,10 @@ class Program:
                   '  std::vector<char> scalars = load(dir + "/scalars.bin");',
                   '  const unsigned int* S = (const unsigned int*)scalars.data();']
         data = [r for r in self.plan['resources'] if r['kind'] not in ('shape', 'value')]
+        for r in self.plan['resources']:
+            if r['kind'] == 'value' and is_struct(r['type']):
+                lines.append(f'  {r["type"][7:]} qpel_struct_{r["name"]}; {{ std::vector<char> b = load(dir + "/value_{r["name"]}.bin"); '
+                             f'std::memcpy(&qpel_struct_{r["name"]}, b.data(), sizeof qpel_struct_{r["name"]}); }}')
         for r in data:
             lines.append(f'  std::vector<char> b_{r["name"]} = load(dir + "/{r["name"]}.bin");')
         for s in self.plan['stages']:
@@ -187,6 +191,8 @@ class Program:
                 if wanted == 'volume':
                     return f'({dims[0]} * {dims[1]} * {dims[2]})'
                 return 'QpelShape{' + ', '.join(dims) + ', 0u}' if not self.original else 'uint3{' + ', '.join(dims) + '}'
+            if r['kind'] == 'value' and is_struct(r['type']):
+                return f'qpel_struct_{name}'  # loaded from value_<name>.bin before the stages
             if r['kind'] == 'value':
                 kind = VALUE_TYPES[r['type']]
                 words = [self.word('value.' + name)] + ([self.word('value.' + name + '.hi')] if kind in WIDE else [])
@@ -226,6 +232,10 @@ class Program:
                 for a, v in zip('xyz', shape):
                     words[f'{name}.{a}'] = v
             for name, value in case.values.items():
+                if is_struct(self.resources[name]['type']):
+                    fields = self.plan['structs'][self.resources[name]['type'][7:]]
+                    (folder/f'value_{name}.bin').write_bytes(pack_struct(fields, value))
+                    continue
                 kind = VALUE_TYPES[self.resources[name]['type']]
                 if kind in WIDE:
                     bits = value % 2**64

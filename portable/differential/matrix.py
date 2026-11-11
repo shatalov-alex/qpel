@@ -57,7 +57,9 @@ def sources():
         path = roundtrip.CORPUS/entry['source']
         include = [roundtrip.CORPUS/f for f in entry.get('include', ())]
         plan = Lowering(roundtrip.fixture(program['fixture'])).plan()
-        options = {'kernels': program['kernels'], 'module': program['fixture'], 'values': program.get('values', {})}
+        options = {'kernels': program['kernels'], 'module': program['fixture'], 'values': program.get('values', {}),
+                   'constants': program.get('constants'), 'geometry': program.get('geometry'),
+                   'shapes': program.get('shapes'), 'inputs': program.get('inputs'), 'outputs': program.get('outputs')}
         out.append((program['fixture'], path, 'cuda' if path.suffix == '.cu' else 'metal', plan, include, {}, options))
     return out
 
@@ -82,13 +84,16 @@ def flushed(x):
     return np.where(np.abs(x) < tiny, np.copysign(np.zeros_like(x), x), x).astype(x.dtype)
 
 
-def compare(expected, actual, names, defined=None, ulps=0):
+def compare(expected, actual, names, defined=None, ulps=0, views=None, zero_sign=True):
     """None, or where the first difference is. `defined` limits outputs to their written prefix.
     Float outputs compare with subnormals flushed. With `ulps` > 0 (programs that use bounded
     math functions) a float element also matches when it is within that many ulp, or within
     ulps * epsilon * max(1, |value|), which allows for cancellation after a bounded function."""
     for name in names:
         a, b = np.asarray(expected[name]), np.asarray(actual[name])
+        if views and name in views:  # a byte buffer holding values of another type
+            dtype = test_cases.DTYPES[views[name]]
+            a, b = a.view(dtype), b.astype(a.dtype, copy=False).view(dtype)
         if defined and name in defined:
             a, b = a[:defined[name]], b[:defined[name]]
         if a.shape != b.shape:
@@ -96,6 +101,8 @@ def compare(expected, actual, names, defined=None, ulps=0):
         if a.dtype.kind == 'f':
             fa, fb = flushed(a), flushed(b.astype(a.dtype))
             same = (fa.view(f'u{a.itemsize}') == fb.view(f'u{a.itemsize}')) | (np.isnan(fa) & np.isnan(fb))
+            if not zero_sign:  # Apple's round gives +0 for -0.3; qpel keeps C's -0 (NUMERICS.md)
+                same |= (fa == 0) & (fb == 0)
             if ulps:
                 epsilon = float(np.finfo(a.dtype).eps)
                 with np.errstate(all='ignore'):
@@ -124,7 +131,7 @@ def check_source(name, path, dialect, plan, include, grids, options, work, gpu):
     from qpel import compile_program
     from . import metal
     program, report = import_source(path, plan=plan, include=include, kernels=options.get('kernels'),
-                                    module=options.get('module'))
+                                    module=options.get('module'), constants=options.get('constants'))
     saved = work/'program.qpel.json'
     saved.write_text(json.dumps(program))
     compile_program(saved, work/'package')
@@ -141,18 +148,22 @@ def check_source(name, path, dialect, plan, include, grids, options, work, gpu):
     # that pass through two of them (original and translation) get twice the bound.
     bounded = any(n['kind'] == 'Math' and n['attributes']['function'] not in EXACT_MATH for n in program['nodes'])
     ulps = 2*MATH_ULPS if bounded else 0
-    for case in test_cases.for_program(name, plan, values=options.get('values')):
+    for case in test_cases.for_program(name, plan, values=options.get('values'), shapes=options.get('shapes'),
+                                       inputs=options.get('inputs')):
         label = f'{path.name} {case.label}'
         if dialect == 'cuda':
             expected = original.run(case)
         elif gpu:
-            expected = metal.run_original(path, plan, report, case)
+            expected = metal.run_original(path, plan, report, case, include, options.get('constants'))
         else:
             yield f'{dialect} original', label, 'skipped: no Apple GPU'
             continue
-        yield rows['cuda'][0], label, compare(expected, simulated.run(case), outputs, case.defined, ulps)
+        views = options.get('outputs')
+        sign = dialect == 'cuda'  # a Metal original carries Apple's zero signs (see compare)
+        yield rows['cuda'][0], label, compare(expected, simulated.run(case), outputs, case.defined, ulps, views, sign)
         if rows['metal'][1]:
-            yield rows['metal'][0], label, compare(expected, metal.run_generated(host, plan, case), outputs, case.defined, ulps)
+            yield rows['metal'][0], label, compare(expected, metal.run_generated(host, plan, case), outputs, case.defined,
+                                                   ulps, views, sign)
         else:
             yield rows['metal'][0], label, 'skipped: no Apple GPU'
 

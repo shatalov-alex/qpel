@@ -15,8 +15,8 @@ LEGACY_MACROS={'void':'void','bool':'bool','u8':'QPEL_U8','u32':'QPEL_U32','i32'
        'buffer<u32, atomic>':'QPEL_ATOMIC_U32','buffer<i32, atomic>':'QPEL_ATOMIC_I32','buffer<i32, read>':'QPEL_READ_I32',
        'buffer<i32, write>':'QPEL_WRITE_I32','buffer<f32, read>':'QPEL_READ_F32','buffer<f32, write>':'QPEL_WRITE_F32',
        'buffer<f16, read>':'QPEL_READ_F16','buffer<f16, write>':'QPEL_WRITE_F16'}
-TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType'}
-KINDS=TYPE_KINDS|set('Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin Pipeline Resource Dispatch Binding'.split())
+TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType','StructType'}
+KINDS=TYPE_KINDS|set('View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin Pipeline Resource Dispatch Binding'.split())
 COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage','groups','math_exact','math_bounded'}
 PROFILES={'metal':COMMON_FEATURES,'cuda':COMMON_FEATURES}
 SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3'}
@@ -25,10 +25,11 @@ SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-
 V2_KINDS={'Grid3D','ThreadIndex','For','DoWhile','Break','Continue','I32Type','ReadOnlyI32BufferType','I32BufferType','AtomicI32BufferType','I32Literal','I32Cast','U32Cast','U8Cast'}
 # Version 3 writes types as terms (ScalarType, BufferType) and adds 8-, 16- and 64-bit
 # integers, bf16 storage, writable u8 buffers, Cast and Constant.
-V3_KINDS={'ScalarType','BufferType','Cast','Constant','Math','Groups','GroupIndex','LocalIndex','GroupSize','GroupCount'}
+V3_KINDS={'ScalarType','BufferType','Cast','Constant','Math','View','StructDecl','Field','StructType','Groups','GroupIndex','LocalIndex','GroupSize','GroupCount'}
 def type_macro(t):
     """Backend macro spelling a type term."""
     if t in LEGACY_MACROS:return LEGACY_MACROS[t]
+    if t.startswith('struct '):return t[len('struct '):]
     if is_buffer(t):return ('QPEL_READ(' if access(t)=='read' else 'QPEL_WRITE(')+type_macro(element(t))+')'
     return 'QPEL_'+t.upper()
 
@@ -150,7 +151,10 @@ class Lowering:
             signed='// qpel numeric contract: i32-wrap-v1\n' if any(x['kind'] in INT32_KINDS for x in self.nodes.values()) else ''
             widths='// qpel numeric contract: integers-v3\n' if version_3_features(self.nodes.values()) else ''
             floats='// qpel numeric contract: f32-strict-v1\n' if any(t=='f32' for t in self.expression_types.values()) else ''
-            return '// Generated from qpel IR. Do not edit.\n// qpel numeric contract: u32-modulo-v1\n'+signed+widths+floats+joined('functions','\n')
+            return '// Generated from qpel IR. Do not edit.\n// qpel numeric contract: u32-modulo-v1\n'+signed+widths+floats+joined('structs','')+joined('functions','\n')
+        if k=='StructDecl':
+            # Scalar fields in declaration order: CUDA and Metal lay them out the same (C alignment).
+            return 'struct '+a['name']+' {\n'+''.join('  '+self.emit(self.child(f,'type'))+' '+f['attributes']['name']+';\n' for f in self.children(n,'fields'))+'};\n'
         if k=='Function':
             kernel=a.get('isKernel',False);args=joined('parameters',', ')
             if kernel and self.child(n,'domain')['kind']=='Grid3D':
@@ -161,7 +165,7 @@ class Lowering:
         if k=='Parameter':
             if not a.get('isBuffer',False):return e('type')+' '+a['name']
             declared=term(self.child(n,'type'))
-            macro='QPEL_PARAM(' if is_buffer(declared) or declared=='shape3' else 'QPEL_VALUE('
+            macro='QPEL_PARAM(' if is_buffer(declared) or declared=='shape3' else 'QPEL_VALUE('  # structs travel as values
             return macro+e('type')+', '+a['name']+', '+str(a.get('binding',0))+')'
         if k=='Name':return self.link(n,'declaration')['attributes']['name']
         if k=='GridIndex':return 'qpel_index'
@@ -241,7 +245,12 @@ class Lowering:
             return ('min' if k=='Minimum' else 'max')+'('+left+', '+right+')'
         if k=='Select':return '('+e('condition')+' ? '+e('yes')+' : '+e('no')+')'
         if k=='Block':return '{\n'+joined('statements','')+' }'
-        if k=='Variable':return e('type')+' '+a['name']+' = '+e('value')+';\n'
+        if k=='Variable':
+            if not hasattr(self,'read_names'):
+                self.read_names={x['links']['declaration'] for x in self.nodes.values() if x['kind']=='Name'}
+            unused='QPEL_UNUSED ' if n['id'] not in self.read_names else ''  # never read, e.g. after folded branches
+            return unused+e('type')+' '+a['name']+(' = '+e('value') if self.children(n,'value') else '')+';\n'
+        if k=='View':return '(('+type_macro(self.expression_types[n['id']])+')('+e('base')+'))'
         if k=='Assign':return e('target')+' = '+e('value')+';\n'
         if k=='Evaluate':return e('value')+';\n'
         if k=='Return':return 'return '+(e('value') if self.children(n,'value') else '')+';\n'
@@ -296,7 +305,10 @@ class Lowering:
                 # Explicit geometry: groups of blockShape threads, counted per axis from the grid shape.
                 stage.update(domain='groups',groups=[s['attributes'].get('groups'+a,'1') for a in 'XYZ'])
             stages.append(stage)
-        return dict(schema=2,module=module['attributes']['name'],resources=resources,stages=stages)
+        plan=dict(schema=2,module=module['attributes']['name'],resources=resources,stages=stages)
+        structs={d['attributes']['name']:[[f['attributes']['name'],term(self.child(f,'type'))] for f in self.children(d,'fields')] for d in self.children(module,'structs')}
+        if structs:plan['structs']=structs  # layouts, so hosts can pack struct arguments
+        return plan
     def write(self,directory):
         directory.mkdir(parents=True,exist_ok=True);plan=self.plan();name=plan['module']
         source=directory/(name+'.qpel.h');source.write_text(self.emit(self.nodes[self.program['roots']['module']]))

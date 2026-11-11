@@ -2,7 +2,7 @@
 import hashlib
 import keyword
 
-from qpel_types import TORCH_DTYPES, VALUE_TERMS, access, element, is_buffer, normalize_plan
+from qpel_types import TORCH_DTYPES, VALUE_TERMS, access, element, is_buffer, is_struct, normalize_plan, struct_layout
 
 # Buffer element type -> torch dtype of the tensors the CuPy host historically shared (u32 as int32).
 BUFFER_TYPES = {'u8': 'uint8', 'i8': 'int8', 'u16': 'int16', 'i16': 'int16', 'u32': 'int32', 'i32': 'int32',
@@ -19,8 +19,8 @@ def validate_resources(plan):
             if typ != 'shape3' or r.get('extent') is not None:
                 raise ValueError('Shape requires shape3 and no extent')
         elif kind == 'value':
-            if typ not in VALUE_TYPES or r.get('extent') is not None:
-                raise ValueError('A value requires an integer or f32 type and no extent')
+            if typ not in VALUE_TYPES and not (is_struct(typ) and typ[7:] in plan.get('structs', {})) or r.get('extent') is not None:
+                raise ValueError('A value requires an integer, float or known struct type and no extent')
         elif kind in ('input', 'output', 'scratch', 'zeroed'):
             if not is_buffer(typ) or element(typ) not in BUFFER_TYPES:
                 raise ValueError('Unsupported buffer type: ' + typ)
@@ -58,6 +58,21 @@ def _shape(value):
     if w * h * n > 2**31 - 1:
         raise ValueError("Shape exceeds INT32_MAX elements")
     return (w, h, n), w * h * n
+
+def _struct(value, layout, size):
+    """A struct argument: {field: value}, packed in C's layout (checked like scalar arguments)."""
+    import struct as _pack
+    if not isinstance(value, dict) or set(value) != {f for f, _, _ in layout}:
+        raise ValueError("Struct argument needs exactly the fields " + ", ".join(f for f, _, _ in layout))
+    data = bytearray(size)
+    for field, kind, offset in layout:
+        number = value[field] if kind == 'bf16' else _value(value[field], kind) if kind in ('f32', 'f16') else value[field]
+        if kind not in ('f32', 'f16', 'bf16'):
+            _value(number, kind)  # range check; packed with its own type below
+        _pack.pack_into('<' + _PACK[kind], data, offset, number)
+    return bytes(data)
+
+_PACK = {'u8': 'B', 'i8': 'b', 'u16': 'H', 'i16': 'h', 'f16': 'e', 'bf16': 'H', 'u32': 'I', 'i32': 'i', 'f32': 'f', 'u64': 'Q', 'i64': 'q'}
 
 def _value(value, kind):
     """A scalar kernel argument, checked against its qpel type."""
@@ -116,7 +131,11 @@ def generate(plan, shader):
         lines.append(f'    dims[{name!r}], sizes[{name!r}] = _shape(shapes[{name!r}])')
     for r in resources:
         if r['kind'] == 'value':
-            lines.append(f"    scalar_{r['name']} = _value(values[{r['name']!r}], {r['type']!r})")
+            if is_struct(r['type']):
+                layout, size = struct_layout(plan['structs'][r['type'][7:]])
+                lines.append(f"    scalar_{r['name']} = _struct(values[{r['name']!r}], {layout!r}, {size})")
+            else:
+                lines.append(f"    scalar_{r['name']} = _value(values[{r['name']!r}], {r['type']!r})")
     # Validate all inputs before compiling or allocating GPU resources.
     for r in resources:
         if r['kind'] == 'input':
@@ -127,7 +146,10 @@ def generate(plan, shader):
         if r['kind'] == 'shape':
             lines.append(f'    buffers[{name!r}] = torch.tensor([*dims[{name!r}], 0], device=device, dtype=torch.int32)')
         elif r['kind'] == 'value':
-            lines.append(f"    buffers[{name!r}] = torch.tensor([scalar_{name}], device=device, dtype=torch.{VALUE_TYPES[r['type']]})")
+            if is_struct(r['type']):  # Metal reads it as constant S& from a small buffer of its bytes
+                lines.append(f"    buffers[{name!r}] = torch.frombuffer(bytearray(scalar_{name}), dtype=torch.uint8).to(device)")
+            else:
+                lines.append(f"    buffers[{name!r}] = torch.tensor([scalar_{name}], device=device, dtype=torch.{VALUE_TYPES[r['type']]})")
         elif r['kind'] != 'input':
             allocate = 'zeros' if r['kind'] == 'zeroed' else 'empty'  # zeroed scratch starts at zero
             lines.append(f"    buffers[{name!r}] = torch.{allocate}(sizes[{r['extent']!r}], device=device, dtype=torch.{BUFFER_TYPES[element(r['type'])]})")

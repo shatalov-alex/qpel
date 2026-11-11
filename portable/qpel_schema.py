@@ -8,8 +8,8 @@ import struct
 
 from qpel_types import INTEGER_TERMS, INTEGERS_BITS, MATH, SCALAR_TERMS, buffer, is_valid
 
-TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType'.split())
-EXPRESSIONS = set('Name Literal I32Literal Constant Cast Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin'.split())
+TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType StructType'.split())
+EXPRESSIONS = set('Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin'.split())
 STATEMENTS = set('Block Variable Assign Evaluate If While DoWhile For Break Continue Return'.split())
 
 # Child role -> (allowed concepts, minimum count, maximum count or None).
@@ -23,7 +23,9 @@ def optional(kinds):
     return (set(kinds.split()) if isinstance(kinds, str) else kinds, 0, 1)
 
 CHILDREN = {
-    'GpuModule': {'functions': many('Function')},
+    'GpuModule': {'functions': many('Function'), 'structs': many('StructDecl')},
+    'StructDecl': {'fields': many('Field')},
+    'Field': {'type': one(TYPE_KINDS)},
     'Function': {'parameters': many('Parameter'), 'resultType': one(TYPE_KINDS), 'body': one('Block'), 'domain': optional('Grid1D Grid3D Groups')},
     'Parameter': {'type': one(TYPE_KINDS)},
     'F32Cast': {'operand': one(EXPRESSIONS)},
@@ -37,7 +39,8 @@ CHILDREN = {
     'F16Cast': {'operand': one(EXPRESSIONS)},
     'F32Fma': {role: one(EXPRESSIONS) for role in ('left', 'right', 'addend')},
     'Block': {'statements': many(STATEMENTS)},
-    'Variable': {'type': one(TYPE_KINDS), 'value': one(EXPRESSIONS)},
+    'Variable': {'type': one(TYPE_KINDS), 'value': optional(EXPRESSIONS)},  # only buffer locals may omit it
+    'View': {'base': one(EXPRESSIONS)},
     'Binary': {'left': one(EXPRESSIONS), 'right': one(EXPRESSIONS)},
     'Unary': {'operand': one(EXPRESSIONS)},
     'Index': {'base': one(EXPRESSIONS), 'index': one(EXPRESSIONS)},
@@ -87,6 +90,7 @@ ATTRIBUTES = {
     # IR version 3
     'ScalarType': {'scalar': str}, 'BufferType': {'element': str, 'access': str},
     'Cast': {'to': str}, 'Constant': {'value': str, 'scalar': str}, 'Math': {'function': str},
+    'StructDecl': {'name': str}, 'Field': {'name': str}, 'StructType': {'name': str}, 'View': {'element': str},
     'GroupIndex': {'axis': str}, 'LocalIndex': {'axis': str}, 'GroupSize': {'axis': str}, 'GroupCount': {'axis': str},
 }
 DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer'},
@@ -252,8 +256,10 @@ def validate_structure(nodes):
             low, high = (-2**(size - 1), 2**(size - 1) - 1) if signed else (0, 2**size - 1)
             if not low <= int(a['value']) <= high:
                 fail(f"Constant {a['value']} is out of range for {a['scalar']}")
-        if kind == 'Member' and a['member'] not in ('x', 'y', 'z'):
-            fail('Unsupported shape member')
+        if kind == 'Member' and not (a['member'] in ('x', 'y', 'z') or is_identifier(a['member'])):
+            fail('Unsupported shape member or field name')
+        if kind == 'StructType' and not is_identifier(a['name']):
+            fail('Invalid struct name')
         if kind == 'Resource' and a['kind'] not in ('input', 'output', 'scratch', 'zeroed', 'shape', 'value'):
             fail('Unsupported resource kind')
         if kind == 'Dispatch':

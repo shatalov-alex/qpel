@@ -74,6 +74,12 @@ Metal has no `erf`, `expm1` or `log1p`; qpel will define them itself rather than
 - `bool` converts to integers and float32 as C does (1 or 0), written as a `Select`.
 - An element count of any integer type (`int k`, `long long n`) may size a 1D kernel; its uses read the shape's volume converted to that type.
 
+## Argument structs and buffer views
+
+- **Structs** (IR version 3): the module declares `StructDecl {name}` with scalar `Field`s; `StructType {name}` (term `struct Name`) types kernel parameters, which bind `value` resources. `Member` reads a field. Fields are laid out as C does (each aligned to its size, in order), which CUDA and Metal share; CUDA passes the struct by value, Metal as `constant Name&`. Launch plans carry the layouts (`"structs"`), and both hosts pack `{field: value}` dictionaries with the same range checks as scalar arguments.
+- **Views**: a local of buffer type is a pointer into a buffer; it may start without a value and be assigned later. `View {element}` reads a buffer's bytes as another element type (`(device float*)(src0 + offset)`); `buffer + integer` offsets in elements of the buffer's type, so on an `i8` buffer it offsets in bytes. As in C, a view must be aligned for its element type and stay inside the buffer. A writable buffer may be read through a read view. Pipeline effects follow views and buffer locals (initializer and every assignment) back to their parameters.
+- **Function constants** (Metal) are not part of the IR: the importer specialises a kernel to given values (`constants=`), folding the branches they decide, as Metal does when it builds the pipeline. Each specialisation is its own qpel program.
+
 ## Single emitter
 
 Since 2026-10-19 MPS no longer generates code; it exports IR only, and this numeric emitter is the only one. `build_backends.build` rejects source without the `u32-modulo-v1` contract line, and every manifest records `numeric_contract: u32-modulo-v1` (plus `i32-wrap-v1` when the program uses i32, `integers-v3` when it uses a version 3 construct, and `f32-strict-v1` when it computes in float32).

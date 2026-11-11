@@ -24,6 +24,8 @@ using namespace metal;
 #define QPEL_READ_F32 device const float*
 #define QPEL_WRITE_F32 device float*
 
+// A local the program never reads (both compilers would warn).
+#define QPEL_UNUSED __attribute__((unused))
 #define QPEL_FMA_F32(a, b, c) metal::fma((a), (b), (c))
 #define QPEL_FADD(a, b) ((a) + (b))
 #define QPEL_FSUB(a, b) ((a) - (b))

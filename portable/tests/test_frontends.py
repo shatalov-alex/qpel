@@ -148,7 +148,7 @@ class CudaIdioms(Sources):
         cases = {
             'switch': THRESHOLD_CU.replace('binary[i] =', 'switch (i) { default: break; } binary[i] ='),
             'atomic-update': THRESHOLD_CU.replace('binary[i] =', 'atomicAdd(binary, 1u); binary[i] +='),
-            'conversion': THRESHOLD_CU.replace('1u :', '(unsigned int)(float)(i > 0u) :'),
+            'conversion': THRESHOLD_CU.replace('1u :', '(unsigned int)(unsigned long long)binary :'),
             'for-init': THRESHOLD_CU.replace('binary[i] =', 'for (unsigned j = 0, k = 1; j < 2u; ++j) {} binary[i] ='),
             'double': THRESHOLD_CU.replace('intensity[i] >= cutoff[i]', '0.5 > 0.25'),
             'thread-builtin': '__device__ unsigned int lane() { return threadIdx.x; }\n' + THRESHOLD_CU,

@@ -13,6 +13,7 @@ import numpy as np
 import torch
 
 from .simulate import DTYPES, VALUE_TYPES, volume
+from qpel_types import is_struct, pack_struct
 
 TORCH = {np.uint8: torch.uint8, np.uint32: torch.int32, np.int32: torch.int32, np.float32: torch.float32,
          np.float16: torch.float16}
@@ -37,10 +38,59 @@ def numpy(value, dtype):
     return out.view(np.uint32) if dtype == np.uint32 else out
 
 
-def run_original(source, plan, report, case):
+_LIBRARIES = {}
+
+
+def _compiled(text):
+    """compile_shader, once per source text (ggml-metal.metal is 11,000 lines)."""
+    if text not in _LIBRARIES:
+        _LIBRARIES.clear()
+        _LIBRARIES[text] = torch.mps.compile_shader(text)
+    return _LIBRARIES[text]
+
+
+def inline_includes(path, include=(), done=None):
+    """Source text with its quoted #includes from the library's folders pasted in, once each
+    (compile_shader takes one string; ggml embeds its headers the same way)."""
+    import re
+    from pathlib import Path
+    done = set() if done is None else done
+    path = Path(path)
+    out = []
+    for line in path.read_text().splitlines():
+        found = re.match(r'\s*#\s*include\s+"([^"]+)"', line)
+        if found:
+            for folder in [path.parent] + [Path(f) for f in include]:
+                candidate = (folder/found.group(1)).resolve()
+                if candidate.exists():
+                    if candidate not in done:
+                        done.add(candidate)
+                        out.append(inline_includes(candidate, include, done))
+                    break
+            else:
+                out.append(line)
+            continue
+        out.append(line)
+    return '\n'.join(out)
+
+
+def specialise(text, constants):
+    """Give function constants their values, as pipeline creation would: compile_shader cannot
+    pass constant values, and Metal will not build a pipeline for an unspecialised kernel."""
+    import re
+    for name, value in (constants or {}).items():
+        literal = ('true' if value else 'false') if isinstance(value, bool) else repr(value)
+        text, count = re.subn(r'constant\s+(\w+)\s+' + re.escape(name) + r'\s*\[\[\s*function_constant\([^]]*\)\s*\]\]\s*;',
+                              lambda m: f'constant {m.group(1)} {name} = {literal};', text)
+        if count != 1:
+            raise ValueError(f'function constant {name}: found {count} declarations')
+    return text
+
+
+def run_original(source, plan, report, case, include=(), constants=None):
     """{data resource: output array} after running every stage of `plan` with the original kernels."""
     # Run the original as written: no FMA contraction, as the CPU simulator (-ffp-contract=off).
-    lib = torch.mps.compile_shader('#pragma clang fp contract(off)\n' + open(source).read())
+    lib = _compiled('#pragma clang fp contract(off)\n' + specialise(inline_includes(source, include), constants))
     resources = {r['name']: r for r in plan['resources']}
     buffers = {}
     for r in plan['resources']:
@@ -65,6 +115,9 @@ def run_original(source, plan, report, case):
                 args.append(torch.tensor([volume(case.shapes[name])], device='mps', dtype=torch.int32))
             elif a['source'] == 'parameter' and resources[name]['kind'] == 'shape':
                 args.append(torch.tensor([*case.shapes[name], 0], device='mps', dtype=torch.int32))
+            elif a['source'] == 'parameter' and resources[name]['kind'] == 'value' and is_struct(resources[name]['type']):
+                packed = pack_struct(plan['structs'][resources[name]['type'][7:]], case.values[name])
+                args.append(torch.frombuffer(bytearray(packed), dtype=torch.uint8).to('mps'))
             elif a['source'] == 'parameter' and resources[name]['kind'] == 'value':
                 kind = VALUE_TYPES[resources[name]['type']]
                 value = case.values[name]

@@ -124,7 +124,8 @@ def main(argv=None):
         for entry in entries():
             for program in entry.get('programs', ()):
                 imported, _ = import_source(CORPUS/entry['source'], include=[CORPUS/f for f in entry.get('include', ())],
-                                            kernels=program['kernels'], module=program['fixture'])
+                                            kernels=program['kernels'], module=program['fixture'],
+                                            constants=program.get('constants'), geometry=program.get('geometry'))
                 folder = fixtures/program['fixture']
                 folder.mkdir(exist_ok=True)
                 (folder/'program.qpel.json').write_text(json.dumps(imported, indent=2) + '\n')

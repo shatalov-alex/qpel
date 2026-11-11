@@ -8,6 +8,7 @@ is at most the buffer size.
 import numpy as np
 
 from .simulate import Case, DTYPES, VALUE_TYPES, volume
+from qpel_schema import group_count, is_group_count
 
 SHAPES = [(1, 1, 1), (5, 1, 1), (17, 3, 2), (64, 4, 1), (129, 7, 3), (33, 33, 1)]
 
@@ -25,6 +26,15 @@ def random_array(rng, dtype, count):
     return (np.where(rng.random(count) < 0.5, -1, 1)*magnitude).astype(dtype)
 
 
+def random_scalar(rng, t):
+    """A value of scalar type t for a struct field: integers small enough to be sizes or strides."""
+    if t in ('f32', 'f16'):
+        return float(np.float16(rng.uniform(-8, 8)))
+    if t == 'bf16':
+        return int(rng.integers(0, 2**16))
+    return int(rng.integers(0, 64))
+
+
 def generic(plan, seed, shapes=SHAPES, values=None):
     rng = np.random.default_rng(seed)
     grids = sorted({s['grid'] for s in plan['stages']})
@@ -35,6 +45,9 @@ def generic(plan, seed, shapes=SHAPES, values=None):
                   for r in plan['resources'] if r['kind'] == 'input'}
         chosen = {}
         for r in plan['resources']:
+            if r['kind'] == 'value' and r['type'].startswith('struct '):
+                chosen[r['name']] = {f: random_scalar(rng, t) for f, t in plan['structs'][r['type'][7:]]}
+                continue
             if r['kind'] == 'value':
                 kind = VALUE_TYPES[r['type']]
                 if values and r['name'] in values:
@@ -83,20 +96,37 @@ def grid_stride(plan, seed):
 SPECIAL = {'scale_offset': scale_offset, 'sam2_cc': sam2_cc, 'grid_stride': grid_stride}
 
 
-def for_program(name, plan, seed=20261111, values=None):
+def for_program(name, plan, seed=20261111, values=None, shapes=None, inputs=None):
     """Cases for a program. `values` constrains scalar arguments: 'volume' is the number of
-    elements of the dispatch shape (a count the buffers must hold), 'W', 'H' or 'N' one of its
-    sizes, and an integer is used as is."""
-    cases = SPECIAL.get(name, generic)(plan, seed)
+    elements of the dispatch shape (a count the buffers must hold), an integer is used as is,
+    and any other string is an expression of the shape's W, H and N ('W/4', 'W*H').
+    'args.ne0' names a field of a struct argument."""
+    if shapes:  # a corpus program's own sizes (for example whole rows of a byte buffer)
+        cases = generic(plan, seed, shapes=[tuple(s) for s in shapes])
+    else:
+        cases = SPECIAL.get(name, generic)(plan, seed)
+    rng = np.random.default_rng(seed + 1)
+    for buffer_name, element in (inputs or {}).items():  # byte buffers holding values of another type
+        dtype = DTYPES[element]
+        for case in cases:
+            raw = case.inputs[buffer_name]
+            count = raw.size*raw.itemsize // np.dtype(dtype).itemsize
+            case.inputs[buffer_name] = random_array(rng, dtype, count).view(raw.dtype)
     for rule_name, rule in (values or {}).items():
         for case in cases:
             shape = case.shapes[next(iter(s['grid'] for s in plan['stages']))]
+            target, field = rule_name.split('.') if '.' in rule_name else (rule_name, None)
+            def put(v):
+                if field:
+                    case.values[target][field] = v
+                else:
+                    case.values[target] = v
             if rule == 'volume':
-                case.values[rule_name] = volume(shape)
-            elif rule in ('W', 'H', 'N'):
-                case.values[rule_name] = shape['WHN'.index(rule)]
+                put(volume(shape))
             elif type(rule) is int:
-                case.values[rule_name] = rule
+                put(rule)
+            elif isinstance(rule, str) and is_group_count(rule):  # an expression of W, H and N
+                put(group_count(rule, shape))
             else:
                 raise ValueError(f'unknown value rule {rule!r} for {rule_name}')
     return cases

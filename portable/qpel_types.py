@@ -41,6 +41,8 @@ def term(t):
     if isinstance(t, dict):
         if t['kind'] == 'ScalarType':
             return t['attributes']['scalar']
+        if t['kind'] == 'StructType':
+            return 'struct ' + t['attributes']['name']
         if t['kind'] == 'BufferType':
             return buffer(t['attributes']['element'], t['attributes']['access'])
         return LEGACY.get(t['kind'], t['kind'])
@@ -63,9 +65,13 @@ def access(t):
     return BUFFER.fullmatch(term(t)).group(2)
 
 
+def is_struct(t):
+    return term(t).startswith('struct ')
+
+
 def is_valid(t):
     t = term(t)
-    if t in SCALAR_TERMS | {'void', 'shape3'}:
+    if t in SCALAR_TERMS | {'void', 'shape3'} or is_struct(t):
         return True
     m = BUFFER.fullmatch(t)
     return bool(m) and m.group(1) in SCALAR_TERMS - {'bool'} and (m.group(2) != 'atomic' or m.group(1) in ATOMIC_ELEMENTS)
@@ -100,6 +106,8 @@ def fits(expected, actual):
     expected, actual = term(expected), term(actual)
     if expected == actual:
         return True
+    if is_buffer(expected) and is_buffer(actual):  # a writable buffer can be read through a read view
+        return element(expected) == element(actual) and access(expected) == 'read' and access(actual) == 'write'
     if expected in INTEGER_TERMS and actual in INTEGER_TERMS:
         (eb, es), (ab, a_signed) = INTEGERS_BITS[expected], INTEGERS_BITS[actual]
         if a_signed:
@@ -132,6 +140,11 @@ class TypeChecker:
         self.expression_types = {}
         self.parents = {ref: n for n in program['nodes'] for values in n['children'].values() for ref in values}
         self.order = {f['id']: i for i, f in enumerate(self.functions)}
+        # IR version 3: struct name -> {field: type term}, for kernel arguments such as ggml's kargs
+        self.structs = {}
+        for decl in self.children(self.nodes[program['roots']['module']], 'structs'):
+            self.structs[decl['attributes']['name']] = {f['attributes']['name']: term(self.child(f, 'type'))
+                                                        for f in self.children(decl, 'fields')}
 
     def children(self, node, role):
         return [self.nodes[v] for v in node['children'].get(role, [])]
@@ -198,6 +211,11 @@ class TypeChecker:
             return LEGACY_CASTS[k]
         if k == 'Cast':
             return self.cast(node, e('operand'), a['to'])
+        if k == 'View':
+            base = e('base')
+            check(is_buffer(base) and access(base) != 'atomic', 'VIEW', 'A view needs an ordinary buffer')
+            check(a['element'] in SCALAR_TERMS - {'bool'}, 'VIEW', 'A view has a scalar element type')
+            return buffer(a['element'], access(base))
         if k == 'F32Literal':
             return 'f32'
         if k == 'WorkgroupSumF32':
@@ -246,7 +264,12 @@ class TypeChecker:
                 self.require(arg, fits(expected, actual), 'ARG_TYPE', f'Expected {expected}, got {actual}')
             return term(self.child(target, 'resultType'))
         if k == 'Member':
-            check(e('base') == 'shape3', 'MEMBER', 'Members require Shape3D')
+            base = e('base')
+            if is_struct(base):
+                fields = self.structs.get(base[len('struct '):], {})
+                check(a['member'] in fields, 'MEMBER', f"{base} has no field {a['member']}")
+                return fields[a['member']]
+            check(base == 'shape3' and a['member'] in ('x', 'y', 'z'), 'MEMBER', 'Members require Shape3D or a struct')
             return 'u32'
         if k == 'Index':
             base, index = e('base'), e('index')
@@ -294,8 +317,8 @@ class TypeChecker:
                     return 'f32'
                 if op in COMPARISONS:
                     return 'bool'
-            if op in {'+', '-'} and is_buffer(left) and right in NUMBERS:
-                return left
+            if op in {'+', '-'} and is_buffer(left) and right in INTEGER_TERMS:
+                return left  # an element offset
             if op in {'&&', '||'} and left in CONDITIONS and right in CONDITIONS:
                 return 'bool'
             if op in {'==', '!='} and left == right == 'bool':
@@ -327,13 +350,19 @@ class TypeChecker:
             self.require(node, ok, code, message)
         if k == 'Variable':
             self.unique(node, names)
-            expected, actual = self.declared(node), e('value')
-            check(expected in SCALAR_TERMS and fits(expected, actual), 'VARIABLE_TYPE', f'Invalid initializer {expected} <- {actual}')
+            expected = self.declared(node)
+            pointer = is_buffer(expected) and access(expected) != 'atomic'  # a view into a buffer (IR version 3)
+            if self.children(node, 'value'):
+                actual = e('value')
+                check((expected in SCALAR_TERMS or pointer) and fits(expected, actual), 'VARIABLE_TYPE', f'Invalid initializer {expected} <- {actual}')
+            else:
+                check(pointer, 'VARIABLE_TYPE', 'Only buffer locals may start without a value')
             env.add(node['id'])
         elif k == 'Assign':
             target = self.child(node, 'target')
             expected, actual = e('target'), e('value')
-            writable = target['kind'] == 'Name' and expected in SCALAR_TERMS
+            writable = target['kind'] == 'Name' and (expected in SCALAR_TERMS or
+                                                      is_buffer(expected) and self.target(target, 'declaration')['kind'] == 'Variable')
             if target['kind'] == 'Index':
                 base = self.expr(self.child(target, 'base'), env, function)
                 writable = is_buffer(base) and access(base) == 'write'
@@ -373,6 +402,10 @@ class TypeChecker:
         return False
 
     def validate(self):
+        for name, fields in self.structs.items():
+            for field, t in fields.items():
+                if t not in SCALAR_TERMS:
+                    raise ValueError(f'struct {name}: field {field} must be a scalar, not {t}')
         function_names = set()
         for function in self.functions:
             self.unique(function, function_names)
@@ -387,8 +420,9 @@ class TypeChecker:
                 self.unique(param, names)
                 t, a = self.declared(param), param['attributes']
                 self.require(param, is_valid(t) and t != 'void', 'PARAM_TYPE', 'Unsupported parameter type')
+                self.require(param, not is_struct(t) or t[len('struct '):] in self.structs, 'PARAM_TYPE', 'Unknown struct ' + t)
                 if kernel:
-                    self.require(param, (is_buffer(t) or t in VALUE_TERMS or t == 'shape3') and a.get('isBuffer', False), 'KERNEL_ABI', 'Kernel parameter must be a bound buffer, shape, or integer/f32 value')
+                    self.require(param, (is_buffer(t) or t in VALUE_TERMS or t == 'shape3' or is_struct(t)) and a.get('isBuffer', False), 'KERNEL_ABI', 'Kernel parameter must be a bound buffer, shape, struct, or integer/f32 value')
                     binding = a.get('binding', 0)
                     self.require(param, 0 <= binding <= 30, 'BINDING_INDEX', 'Binding must be between 0 and 30')
                     self.require(param, binding not in bindings, 'BINDING_DUPLICATE', 'Duplicate binding')
@@ -421,6 +455,8 @@ def node_spec(t):
             return kind, {}
     if is_buffer(t):
         return 'BufferType', {'element': element(t), 'access': access(t)}
+    if is_struct(t):
+        return 'StructType', {'name': t[len('struct '):]}
     return 'ScalarType', {'scalar': t}
 
 
@@ -440,3 +476,32 @@ TORCH_DTYPES = {'u8': 'uint8', 'i8': 'int8', 'u16': 'int16', 'i16': 'int16', 'u3
                 'u64': 'int64', 'i64': 'int64', 'f16': 'float16', 'bf16': 'bfloat16', 'f32': 'float32'}
 NUMPY_DTYPES = {'u8': 'uint8', 'i8': 'int8', 'u16': 'uint16', 'i16': 'int16', 'u32': 'uint32', 'i32': 'int32',
                 'u64': 'uint64', 'i64': 'int64', 'f16': 'float16', 'bf16': 'uint16', 'f32': 'float32'}
+
+
+SIZES = {'u8': 1, 'i8': 1, 'bool': 1, 'u16': 2, 'i16': 2, 'f16': 2, 'bf16': 2, 'u32': 4, 'i32': 4, 'f32': 4,
+         'u64': 8, 'i64': 8}
+PACK = {'u8': 'B', 'i8': 'b', 'bool': '?', 'u16': 'H', 'i16': 'h', 'f16': 'e', 'bf16': 'H', 'u32': 'I', 'i32': 'i',
+        'f32': 'f', 'u64': 'Q', 'i64': 'q'}
+
+
+def struct_layout(fields):
+    """[(field, type, offset)], size: C's layout of scalar fields (each aligned to its size), which
+    CUDA and Metal share. bf16 fields are given as their 16 bits."""
+    out, offset, largest = [], 0, 1
+    for name, t in fields:
+        size = SIZES[t]
+        offset = -(-offset // size) * size
+        out.append((name, t, offset))
+        offset += size
+        largest = max(largest, size)
+    return out, -(-offset // largest) * largest
+
+
+def pack_struct(fields, value):
+    """bytes of a struct value {field: number} in struct_layout's C layout (bf16 as its bits)."""
+    import struct
+    layout, size = struct_layout(fields)
+    data = bytearray(size)
+    for name, t, offset in layout:
+        struct.pack_into('<' + PACK[t], data, offset, value[name])
+    return bytes(data)

@@ -39,6 +39,12 @@ kernel leaves unwritten (`Case.defined`) are not compared.
   declarations stay for other host code. `include/` mirrors the SDK surface such headers use (vector types,
   half2, bfloat16, runtime and driver API declarations); warp and block collectives abort if a simulated kernel
   reaches them.
+- **Metal library originals.** `compile_shader` takes one string and cannot pass function-constant values, so the
+  harness pastes the library's quoted includes in (as ggml embeds its own headers) and turns each function
+  constant the program specialises into a constant with that value, as Metal does when building the pipeline.
+  Apple's `round` gives +0 where C gives -0 (NUMERICS.md), so zero results compare without their sign when the
+  original is Metal source. Byte buffers are filled and compared as the element type they hold (`inputs`,
+  `outputs` in corpus.json).
 - **Metal originals** (`metal.py`) run through `torch.mps.compile_shader`, one thread per shape element in the
   plan's threadgroups (whole groups for Groups kernels), which is how qpel's generated Metal host dispatches,
   with `#pragma clang fp contract(off)`: as written, like the simulator's `-ffp-contract=off`.

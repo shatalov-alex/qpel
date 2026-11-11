@@ -12,7 +12,7 @@ import re
 from qpel_schema import is_identifier
 from qpel_types import (SCALAR_TERMS, VALUE_TERMS, access, buffer as type_buffer, fits, is_buffer as type_is_buffer,
                         is_signed, node_spec, normalize_plan, term as type_term)
-from qpel_types import access as type_access, bits as type_bits, INTEGER_TERMS, MATH
+from qpel_types import access as type_access, bits as type_bits, INTEGER_TERMS, MATH, is_struct
 from . import clang_ast
 from .clang_ast import position
 
@@ -101,6 +101,8 @@ def peel(node):
             return node
         if kind in PASSTHROUGH:
             cast = node.get('castKind')
+            if cast == 'BitCast' and scalar_of(node) == 'pointer':
+                return node  # a pointer reinterpretation: a qpel View, read by Importer.core
             if cast and cast not in VALUE_CASTS:
                 raise Unsupported(node, 'conversion', f'{cast} has no qpel equivalent')
             node = node['inner'][0]
@@ -129,7 +131,13 @@ def member_name(node, source):
         return node['name']
     end = node['range']['end']
     end = end.get('spellingLoc', end)  # inside a macro argument, the token is where it was spelled
-    return source[end['offset']:end['offset'] + end['tokLen']]
+    file = end.get('_file')
+    if file not in _FILE_BYTES:  # clang's offsets count bytes, in the file the token is in
+        _FILE_BYTES[file] = Path(file).read_bytes() if file and Path(file).exists() else source.encode()
+    return _FILE_BYTES[file][end['offset']:end['offset'] + end['tokLen']].decode()
+
+
+_FILE_BYTES = {}
 
 
 def is_member(node, base, field):
@@ -356,6 +364,13 @@ class Importer:
         self.grid3d = False
         self.adaptations = []
         self.instances = {}  # clang id of a template instantiation -> its qpel function name
+        self.records = records(unit)  # struct name -> its clang record, for argument structs
+        self.structs = {}  # struct name -> [(field, type term)] used by imported functions
+        self.function_constants = {}  # clang id -> name of a Metal [[function_constant]] variable
+        self.globals = {}  # clang id -> name of another program-scope variable
+        self.global_values = {}  # clang id -> (name, initializer) of a program-scope scalar constant
+        self.taken = {}  # function name -> clang id of the declaration that has it
+        self.constants = {}  # name -> value, set by import_source(constants=...)
         self.files = {}  # path -> text, for reading attributes clang's JSON leaves out
         main = list(clang_ast.main_file_decls(unit, path))
         # Device functions defined in the library's own headers (llama.cpp's common.cuh) are
@@ -387,6 +402,40 @@ class Importer:
         except Unsupported as error:
             self.issues.append((self.current, error))
             return fallback
+
+    def constant_value(self, name, scalar, node):
+        """A Metal function constant, whose value the caller of the import gives."""
+        if name not in self.constants:
+            raise Unsupported(node, 'function-constant', f'{name} is a Metal function constant; '
+                                                         'import with constants={...} to specialise it')
+        value = self.constants[name]
+        message = f'function constant {name} = {value!r}'
+        if message not in self.adaptations:
+            self.adaptations.append(message)
+        if scalar == 'bool':
+            return self.graph.add('Literal', {'value': 'true' if value else 'false'})
+        if scalar in INTEGER_TERMS:
+            if scalar == 'i32' and value >= 0:
+                return self.graph.add('I32Literal', {'value': str(value)})
+            if scalar == 'u32':
+                return self.graph.add('Literal', {'value': f'{value % 2**32}u'})
+            return self.constant(node, scalar, value)
+        raise Unsupported(node, 'function-constant', f'{name}: function constants of type {scalar} are not in qpel yet')
+
+    def struct_type(self, name, where):
+        """The qpel struct for a C struct argument of scalar fields (ggml's kargs)."""
+        if name not in self.structs:
+            fields = []
+            for f in self.records[name].get('inner', ()):
+                if f.get('kind') != 'FieldDecl':
+                    continue
+                t = describe(f['type']['qualType'])
+                if t[0] != 'scalar' or t[1] not in SCALAR_TERMS:
+                    raise Unsupported(where, 'struct-field', f'struct {name}: field {f.get("name")} of type '
+                                                             f'{f["type"]["qualType"]} is not in qpel yet')
+                fields.append((self.safe_name(f['name']), t[1]))
+            self.structs[self.safe_name(name)] = fields
+        return 'struct ' + self.safe_name(name)
 
     def template_arguments(self, decl):
         """The template arguments of an instantiation, as source text."""
@@ -478,6 +527,15 @@ class Importer:
                     self.host.append(node['name'])
                     self.host_spans.append(clang_ast.span(node))
                 return []
+            if node['name'] in self.taken and self.taken[node['name']] != node['id'] and node['id'] not in self.instances:
+                # an overload: its own function, named by its parameter types; calls resolve by declaration
+                name = instance_name(node['name'], [p['type']['qualType'] for p in params_of(node)])
+                while name in self.taken:
+                    name += '_'
+                self.instances[node['id']] = name
+                self.adaptations.append(f'overload {node["name"]}({", ".join(p["type"]["qualType"] for p in params_of(node))}) became {name}')
+                node = dict(node, name=name)
+            self.taken.setdefault(node['name'], node['id'])
             if qualified:
                 self.qualified[node['name']] = self.namespace + node['name']
             if self.header:
@@ -488,6 +546,19 @@ class Importer:
             return []
         if self.header:
             return []  # header types and variables matter only through the functions that use them
+        if kind == 'VarDecl' and 'MetalFunctionConstantAttr' in attributes(node):
+            self.function_constants[node['id']] = node['name']  # resolved at import, see constant_value()
+            return []
+        if kind in ('CXXRecordDecl', 'RecordDecl', 'TypedefDecl', 'EnumDecl', 'TypeAliasDecl'):
+            return []  # types are read where parameters use them
+        if kind == 'VarDecl':
+            t = describe(node['type']['qualType'])
+            init = node['inner'][0] if 'init' in node and node.get('inner') else None
+            if t[0] == 'scalar' and t[1] in SCALAR_TERMS and init is not None and 'const' in node['type']['qualType'].split():
+                self.global_values[node['id']] = (node['name'], init)  # a named constant: read as its value
+            else:
+                self.globals[node['id']] = node['name']  # lookup tables and the like: an error only where used
+            return []
         raise Unsupported(node, 'top-level', f'{kind} {node.get("name", "")} outside a function is not supported')
 
     # -- parameter types, with atomic usage inferred across calls --
@@ -565,6 +636,8 @@ class Importer:
             return 'shape3'
         if t[0] == 'scalar' and t[1] in SCALAR_TERMS:
             return t[1]
+        if t[0] == 'scalar' and t[1] in self.records:
+            return self.struct_type(t[1], p)
         raise Unsupported(p, 'parameter-type', f'parameter type {p["type"]["qualType"]} is not in qpel yet')
 
     # -- functions --
@@ -621,8 +694,64 @@ class Importer:
             if name in needed or name not in by_name:
                 continue
             needed.add(name)
-            stack.extend(self.callee(n) for n in walk(body_of(by_name[name])) if n.get('kind') == 'CallExpr')
+            stack.extend(self.callee(n) for n in self.live(body_of(by_name[name])) if n.get('kind') == 'CallExpr')
         self.decls = [d for d in self.decls if d['name'] in needed]
+        # report only the templates and headers that the selected kernels use
+        self.adaptations = [a for a in self.adaptations
+                            if not a.startswith(('template ', 'overload ', 'device functions from included headers'))
+                            or any(re.search(r'\b' + re.escape(n) + r'\b', a) for n in needed)]
+
+    def static_value(self, node):
+        """The value of a condition that function constants decide (`FC_OP == 10`), else None.
+        Only conditions that mention a function constant are folded."""
+        if not self.constants or not any(n.get('kind') == 'DeclRefExpr' and n['referencedDecl']['id'] in self.function_constants
+                                         for n in walk(node)):
+            return None
+
+        def value(n):
+            n = strip_parens(n)
+            kind = n['kind']
+            if kind in PASSTHROUGH and n.get('inner'):
+                return value(n['inner'][0])
+            if kind == 'IntegerLiteral':
+                return int(n['value'])
+            if kind == 'CXXBoolLiteralExpr':
+                return int(n['value'])
+            if kind == 'DeclRefExpr':
+                name = self.function_constants.get(n['referencedDecl']['id'])
+                return int(self.constants[name]) if name in self.constants else None
+            if kind == 'UnaryOperator' and n['opcode'] in ('!', '-'):
+                v = value(n['inner'][0])
+                return None if v is None else (int(not v) if n['opcode'] == '!' else -v)
+            if kind == 'BinaryOperator':
+                a, b = (value(x) for x in n['inner'])
+                op = n['opcode']
+                if op == '&&' and a == 0 or op == '||' and a not in (0, None):
+                    return int(op == '||')
+                if a is None or b is None:
+                    return None
+                ops = {'==': a == b, '!=': a != b, '<': a < b, '<=': a <= b, '>': a > b, '>=': a >= b,
+                       '&&': bool(a and b), '||': bool(a or b), '+': a + b, '-': a - b, '*': a * b}
+                return int(ops[op]) if op in ops else None
+            return None
+        v = value(node)
+        return None if v is None else bool(v)
+
+    def live(self, node):
+        """walk(), skipping branches that function constants rule out."""
+        if not node:
+            return
+        yield node
+        if node.get('kind') == 'IfStmt' and not node.get('hasInit') and not node.get('hasVar'):
+            cond, then, *otherwise = node['inner']
+            known = self.static_value(cond)
+            if known is not None:
+                chosen = then if known else (otherwise[0] if otherwise else None)
+                if chosen is not None:
+                    yield from self.live(chosen)
+                return
+        for child in node.get('inner', ()):
+            yield from self.live(child)
 
     def run(self, plan=None, block_size=64, kernels=None):
         if kernels:
@@ -639,7 +768,10 @@ class Importer:
         for decl in self.decls:
             self.current = decl['name']
             function_ids.append(self.function(decl, types))
-        module = self.graph.add('GpuModule', {'name': self.module}, {'functions': function_ids})
+        structs = [self.graph.add('StructDecl', {'name': name},
+                                  {'fields': [self.graph.add('Field', {'name': f}, {'type': self.type_node(t)}) for f, t in fields]})
+                   for name, fields in self.structs.items()]
+        module = self.graph.add('GpuModule', {'name': self.module}, {'functions': function_ids, 'structs': structs})
         pipeline = self.pipeline(module, plan, block_size)
         return self.graph.program(module, pipeline)
 
@@ -683,7 +815,7 @@ class Importer:
                     shape_param = p
                 elif count is not None and p['id'] == count['id']:
                     kind = 'shape3'
-                elif not type_is_buffer(kind) and kind not in VALUE_TERMS:
+                elif not type_is_buffer(kind) and kind not in VALUE_TERMS and not is_struct(kind):
                     self.attempt(lambda: self.reject(Unsupported(
                         p, 'scalar-kernel-argument', 'kernel arguments can be integers or float')))
             position += 1
@@ -909,12 +1041,23 @@ class Importer:
             return [self.block(node)]
         if kind == 'NullStmt':
             return []
+        if kind == 'CStyleCastExpr' and node.get('castKind') == 'ToVoid' and peel_void(node)['kind'] == 'DeclRefExpr':
+            return []  # (void)x; marks a local as unused and does nothing
+        if kind == 'AttributedStmt':  # [[unroll]], likely/unlikely: hints that do not change meaning
+            return self.read_statement(node['inner'][-1])
         if kind == 'DeclStmt':
             return self.local_group(node)
         if kind == 'IfStmt':
             if node.get('hasInit') or node.get('hasVar'):
                 raise Unsupported(node, 'if-declaration', 'declarations inside if (...) are not supported')
             cond, then, *otherwise = node['inner']
+            known = self.static_value(cond)
+            if known is not None:  # decided by function constants: keep only the branch taken, as Metal does
+                note = f'{self.current}: branches decided by function constants were folded'
+                if note not in self.adaptations:
+                    self.adaptations.append(note)
+                chosen = then if known else (otherwise[0] if otherwise else None)
+                return [] if chosen is None else self.read_statement(chosen)
             children = {'condition': self.expr(cond), 'thenBody': self.as_block(then)}
             if otherwise:
                 children['elseBody'] = self.as_block(otherwise[0])
@@ -978,6 +1121,11 @@ class Importer:
             return []
         self.scope[decl['id']] = ('untyped', name)  # until it is read, so later uses are not reported again
         t = describe(decl['type']['qualType'])
+        if t[0] == 'pointer' and t[2] in SCALAR_TERMS - {'bool'} and \
+                not {'threadgroup', 'constant', 'thread'} & set(decl['type']['qualType'].replace('*', ' ').split()):
+            return self.buffer_local(decl, name, type_buffer(t[2], 'read' if t[1] else 'write'))
+        if t[0] == 'scalar' and t[1] in self.records:
+            raise Unsupported(decl, 'local-type', f'local {name}: struct locals are not in qpel yet')
         if t[0] != 'scalar' or t[1] not in SCALAR_TERMS:
             raise Unsupported(decl, 'local-type', f'local {name} of type {decl["type"]["qualType"]} is not in qpel yet')
         init = decl['inner'][0] if 'init' in decl else None
@@ -1016,6 +1164,15 @@ class Importer:
         if message not in self.adaptations:
             self.adaptations.append(message)
         return renamed
+
+    def buffer_local(self, decl, name, kind):
+        """A pointer local into a device buffer (a view): `device float* row = (device float*)(dst + off)`."""
+        children = {'type': self.type_node(kind)}
+        if 'init' in decl:
+            children['value'] = self.expr(decl['inner'][0], address=True)
+        ir = self.graph.add('Variable', {'name': self.unique_name(name)}, children)
+        self.scope[decl['id']] = ('local', ir, kind)
+        return [ir]
 
     def unique_name(self, name):
         """C allows one name in sibling blocks; qpel names are unique in a function."""
@@ -1253,6 +1410,17 @@ class Importer:
         if kind == 'DeclRefExpr':
             ref = n['referencedDecl']
             entry = self.typed(self.scope.get(ref['id']), n)
+            if entry is None and ref['id'] in self.function_constants:
+                return self.constant_value(self.function_constants[ref['id']], scalar_of(n), n)
+            if entry is None and ref['id'] in self.global_values:
+                name, init = self.global_values[ref['id']]
+                message = f'program-scope constant {name} was read as its value'
+                if message not in self.adaptations:
+                    self.adaptations.append(message)
+                return self.expr(init)
+            if entry is None and ref['id'] in self.globals:
+                raise Unsupported(n, 'global-variable', f'{self.globals[ref["id"]]} is a program-scope variable; '
+                                                        'qpel has no global data yet')
             if entry is None:
                 if ref.get('name') in ('threadIdx', 'blockIdx', 'blockDim', 'gridDim'):
                     raise Unsupported(n, 'thread-builtin', 'only blockIdx.x * blockDim.x + threadIdx.x is supported')
@@ -1302,9 +1470,10 @@ class Importer:
             if op in ('<<', '>>'):
                 return add('Binary', {'operator': op}, {'left': self.expr(left), 'right': self.shift_count(right)})
             if scalar_of(n) == 'pointer':
-                if not address or op not in ('+', '-') or scalar_of(left) != 'pointer':
-                    raise Unsupported(n, 'pointer', 'pointer arithmetic is only supported as an atomic address')
-                return add('Binary', {'operator': op}, {'left': self.expr(left, address=True), 'right': self.offset(right)})
+                if op not in ('+', '-') or scalar_of(left) != 'pointer':
+                    raise Unsupported(n, 'pointer', 'only pointer + integer and pointer - integer are supported')
+                offset = self.offset(right) if address else self.expr(right)  # atomics keep their unsigned offsets
+                return add('Binary', {'operator': op}, {'left': self.expr(left, address=True), 'right': offset})
             return add('Binary', {'operator': op}, {'left': self.expr(left), 'right': self.expr(right)})
         if kind == 'UnaryOperator':
             op = n['opcode']
@@ -1316,12 +1485,19 @@ class Importer:
             if op == '&' and address and peel(operand)['kind'] == 'ArraySubscriptExpr':
                 return self.element_address(peel(operand))
             raise Unsupported(n, 'operator', f'operator {op} is not supported here')
+        if n.get('castKind') == 'BitCast':  # (device float*)(src + off): the bytes read as another type
+            target = describe(n['type']['qualType'])
+            if target[0] != 'pointer' or target[2] not in SCALAR_TERMS - {'bool'}:
+                raise Unsupported(n, 'conversion', f'reinterpreting as {n["type"]["qualType"]} is not in qpel')
+            return add('View', {'element': target[2]}, {'base': self.expr(n['inner'][0], address=True)})
         if kind in EXPLICIT_CASTS:  # explicit cast to float or half, see peel()
             operand = peel(n['inner'][0])
             source = scalar_of(operand)
             allowed = INTEGER_TERMS | {'f32', 'f16', 'bf16'} if scalar_of(n) == 'f32' else {'f32'}
             if source == scalar_of(n) == 'f16':
                 return self.core(operand, False, False)  # (half)h is h
+            if source == 'bool':  # (float)(x > 0): 1 or 0
+                return self.convert_types(self.expr(operand), 'bool', scalar_of(n), n)
             inner = n['inner'][0]
             if has_explicit_cast(inner):  # (float)(int)i: convert to int first, then to float
                 source = scalar_of(inner)
@@ -1350,6 +1526,8 @@ class Importer:
                 return add(GROUP_NODES[entry[1]], {'axis': field})
             if self.groups and decl_name(base) in CUDA_BUILTINS and field in ('x', 'y', 'z'):
                 return add(GROUP_NODES[CUDA_BUILTINS[decl_name(base)]], {'axis': field})
+            if entry and entry[0] in ('param', 'local') and is_struct(entry[2]):
+                return add('Member', {'member': self.safe_name(field)}, {'base': self.name(entry[1])})
             if entry and entry[0] == 'param' and entry[2] == 'shape3' and field in ('x', 'y', 'z'):
                 return add('Member', {'member': field}, {'base': self.name(entry[1])})
             if decl_name(base) in ('threadIdx', 'blockIdx', 'blockDim', 'gridDim'):
@@ -1378,8 +1556,10 @@ class Importer:
         core = peel(node)
         entry = self.scope.get(core.get('referencedDecl', {}).get('id')) if core['kind'] == 'DeclRefExpr' else None
         self.typed(entry, node)
-        if not entry or entry[0] != 'param' or not type_is_buffer(entry[2]):
-            raise Unsupported(node, 'buffer', 'only buffer parameters can be indexed')
+        if core['kind'] != 'DeclRefExpr' and scalar_of(core) == 'pointer':
+            raise Unsupported(node, 'buffer', 'index a buffer or a buffer local, not a pointer expression')
+        if not entry or entry[0] not in ('param', 'local') or not type_is_buffer(entry[2]):
+            raise Unsupported(node, 'buffer', 'only buffers and buffer locals can be indexed')
         return entry[2]
 
     def buffer(self, node):
@@ -1460,6 +1640,13 @@ class Importer:
                 and same_expression(peel(args[0])['inner'][1], args[1]):
             # qpel's Metal spelling of round, which keeps the sign of a zero result
             return add('Math', {'function': 'round'}, {'arguments': [self.expr(args[1])]})
+        if callee == 'clamp' and len(args) == 3 and all(scalar_of(a) == 'f32' for a in args):
+            # Metal's clamp(x, lo, hi) is min(max(x, lo), hi)
+            low = add('Math', {'function': 'fmax'}, {'arguments': [self.expr(args[0]), self.expr(args[1])]})
+            return add('Math', {'function': 'fmin'}, {'arguments': [low, self.expr(args[2])]})
+        if callee == 'select' and len(args) == 3 and scalar_of(args[2]) == 'bool':
+            # Metal's select(a, b, c) is c ? b : a
+            return add('Select', children={'condition': self.expr(args[2]), 'yes': self.expr(args[1]), 'no': self.expr(args[0])})
         if callee in MATH_CALLS and all(scalar_of(a) == 'f32' for a in args):
             function = MATH_CALLS[callee]
             need(MATH[function])
@@ -1586,7 +1773,7 @@ class Importer:
             bindings = []
             for name, ident in self.kernel_params[kernel].items():
                 kind = type_term(self.graph.nodes[self.graph.nodes[ident]['children']['type'][0]])
-                role = ('shape' if kind == 'shape3' else 'value' if kind in VALUE_TERMS else 'input' if access(kind) == 'read'
+                role = ('shape' if kind == 'shape3' else 'value' if kind in VALUE_TERMS or is_struct(kind) else 'input' if access(kind) == 'read'
                         else 'scratch' if access(kind) == 'atomic' else 'output')
                 previous = resources.setdefault(name, {'name': name, 'kind': role, 'type': kind})
                 if previous['type'] != kind:
@@ -1597,7 +1784,10 @@ class Importer:
             stage = {'kernel': kernel, 'grid': grid, 'blockSize': block_size, 'completionBarrier': True, 'bindings': bindings}
             if self.domains[kernel] == 'grid3d':
                 stage.update(blockSize=GRID3D_BLOCK[0], domain='grid3d', blockShape=list(GRID3D_BLOCK))
-            if self.domains[kernel] == 'groups':
+            if self.domains[kernel] == 'groups' and getattr(self, 'geometry', None):
+                block = list(self.geometry['block'])
+                stage.update(blockSize=block[0], domain='groups', blockShape=block, groups=list(self.geometry['groups']))
+            elif self.domains[kernel] == 'groups':
                 # Without a plan: one thread per element of the shape, in whole groups.
                 stage.update(blockSize=GROUPS_BLOCK, domain='groups', blockShape=[GROUPS_BLOCK, 1, 1],
                              groups=[f'(W*H*N + {GROUPS_BLOCK - 1})/{GROUPS_BLOCK}', '1', '1'])
@@ -1645,6 +1835,36 @@ def signed_operand(node, unsigned='u32'):
                 (unsigned == 'u64' or inner in ('i32', 'i16', 'i8')):
             return cast_operand(n)
     return None
+
+
+def records(unit):
+    """{name: clang record} for every struct the unit defines, under its own or its typedef name."""
+    by_id, named = {}, {}
+
+    def visit(node):
+        kind = node.get('kind')
+        if kind in ('CXXRecordDecl', 'RecordDecl') and node.get('completeDefinition'):
+            by_id[node['id']] = node
+            if node.get('name'):
+                named[node['name']] = node
+        if kind in ('NamespaceDecl', 'LinkageSpecDecl'):
+            for child in node.get('inner', ()):
+                visit(child)
+    for node in unit.get('inner', ()):
+        visit(node)
+
+    def typedefs(node):
+        if node.get('kind') == 'TypedefDecl':
+            for t in walk(node):
+                decl = t.get('decl', {})
+                if t.get('kind') == 'RecordType' and decl.get('id') in by_id:
+                    named.setdefault(node['name'], by_id[decl['id']])
+        if node.get('kind') in ('NamespaceDecl', 'LinkageSpecDecl'):
+            for child in node.get('inner', ()):
+                typedefs(child)
+    for node in unit.get('inner', ()):
+        typedefs(node)
+    return named
 
 
 def instance_name(base, arguments):
@@ -1726,6 +1946,14 @@ def contains_any(node, ids):
         return True
     return any(contains_any(c, ids) for c in node.get('inner', ())
                if c.get('kind') in ('FunctionDecl', 'FunctionTemplateDecl', 'NamespaceDecl', 'LinkageSpecDecl'))
+
+
+def peel_void(node):
+    """The operand of (void)expr, without parentheses or implicit conversions."""
+    node = node['inner'][0]
+    while node['kind'] in ('ParenExpr', 'ImplicitCastExpr') and node.get('inner'):
+        node = node['inner'][0]
+    return node
 
 
 def has_explicit_cast(node):
@@ -1848,12 +2076,16 @@ def assigned_decls(body):
     return out
 
 
-def import_source(path, dialect=None, module=None, plan=None, block_size=64, include=(), kernels=None):
+def import_source(path, dialect=None, module=None, plan=None, block_size=64, include=(), kernels=None,
+                  constants=None, geometry=None):
     """Import every kernel and device function in `path`. Returns (program, report).
 
     `plan` is an optional launch plan (the pipeline.json qpel writes); without one,
     each kernel becomes one dispatch over the single shape parameter. `kernels`
-    imports only those kernels and the functions they call."""
+    imports only those kernels and the functions they call; `constants` gives the
+    values of Metal function constants, specialising the kernels to them. `geometry`
+    ({'groups': [x, y, z], 'block': [x, y, z]}) launches Groups kernels without a plan
+    the way the original's host does."""
     path = Path(path)
     dialect = dialect or clang_ast.dialect_of(path)
     unit, source = clang_ast.parse(path, dialect, include)
@@ -1862,6 +2094,8 @@ def import_source(path, dialect=None, module=None, plan=None, block_size=64, inc
         raise ValueError(f'{module!r} cannot be a qpel module name; pass one explicitly')
     plan = normalize_plan(plan) if plan else plan
     importer = Importer(unit, source, path, dialect, module)
+    importer.constants = dict(constants or {})
+    importer.geometry = geometry
     program = importer.run(plan, block_size, kernels)
     report = {'source': str(path), 'dialect': dialect, 'module': module,
               'kernels': [d['name'] for d in importer.decls if importer.functions[d['name']][2]],
@@ -1897,7 +2131,7 @@ def unguarded_kernels(program):
 
     axis = direct
     for n in program['nodes']:  # in document order, so a local is seen before its uses
-        if n['kind'] == 'Variable':
+        if n['kind'] == 'Variable' and n['children'].get('value'):  # buffer locals may start without one
             found = axes(nodes[n['children']['value'][0]])
             if len(found) == 1:
                 derived[n['id']] = found.pop()

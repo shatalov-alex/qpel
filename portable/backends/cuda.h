@@ -25,6 +25,8 @@ static_assert(sizeof(QpelShape) == 16, "qpel shape ABI must be 16 bytes");
 #define QPEL_READ_F32 const float*
 #define QPEL_WRITE_F32 float*
 
+// A local the program never reads (both compilers would warn).
+#define QPEL_UNUSED __attribute__((unused))
 #define QPEL_FMA_F32(a, b, c) __fmaf_rn((a), (b), (c))
 // f32-strict-v1: every float32 operation rounds on its own. These intrinsics are never
 // contracted into an FMA, whatever nvcc's --fmad setting; only QPEL_FMA_F32 fuses.

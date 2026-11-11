@@ -21,6 +21,21 @@ def _shape(value):
         raise ValueError("Shape exceeds INT32_MAX elements")
     return (w, h, n), w * h * n
 
+def _struct(value, layout, size):
+    """A struct argument: {field: value}, packed in C's layout (checked like scalar arguments)."""
+    import struct as _pack
+    if not isinstance(value, dict) or set(value) != {f for f, _, _ in layout}:
+        raise ValueError("Struct argument needs exactly the fields " + ", ".join(f for f, _, _ in layout))
+    data = bytearray(size)
+    for field, kind, offset in layout:
+        number = value[field] if kind == 'bf16' else _value(value[field], kind) if kind in ('f32', 'f16') else value[field]
+        if kind not in ('f32', 'f16', 'bf16'):
+            _value(number, kind)  # range check; packed with its own type below
+        _pack.pack_into('<' + _PACK[kind], data, offset, number)
+    return bytes(data)
+
+_PACK = {'u8': 'B', 'i8': 'b', 'u16': 'H', 'i16': 'h', 'f16': 'e', 'bf16': 'H', 'u32': 'I', 'i32': 'i', 'f32': 'f', 'u64': 'Q', 'i64': 'q'}
+
 def _value(value, kind):
     """A scalar kernel argument, checked against its qpel type."""
     if kind in ('f32', 'f16'):
@@ -52,7 +67,7 @@ def _input(value, dtype, count, device):
 
 
 SHADER_FILE = 'components.metal'
-SHADER_SHA256 = 'fd09576611dd63c921a0ded9da9f8f757997b76aee7f494d110b7e63b1c46513'
+SHADER_SHA256 = '4a4e42524bda0aac052404971cf4f65e33f1689cf10517586710878eb797ebea'
 
 def run(inputs, shapes, values=None, *, device="mps"):
     """Inputs are tensors; shapes map names to (W,H,N); values are scalars; outputs are flat tensors."""
