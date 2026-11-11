@@ -45,7 +45,7 @@ def _groups(expressions, dims, block):
 
 def _value(value, kind):
     """A scalar kernel argument, checked against its qpel type."""
-    if kind == 'f32':
+    if kind in ('f32', 'f16'):
         if type(value) not in (int, float):
             raise ValueError("Float argument must be a Python number")
         return float(value)
@@ -59,7 +59,7 @@ def _value(value, kind):
 
 
 SHADER_FILE = 'components.cu'
-SHADER_SHA256 = 'e6cebd9fc2eb39eee06e30f630fdd4b3484e5c1f540b07bb9a62d84f2f7a6b82'
+SHADER_SHA256 = '815f7cf565fb3d9366f1cb30a0194720dd283506c6e46b78f25a1a2f321c1ffb'
 
 def run(inputs, shapes, values=None, *, device=0):
     """CuPy arrays in/out; shapes are (W,H,N); values are scalars; each stage completes before the next."""

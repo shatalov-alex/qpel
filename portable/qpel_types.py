@@ -17,7 +17,7 @@ STORAGE_FLOATS = {'f16', 'bf16'}        # storage only: convert to f32 to comput
 SCALAR_TERMS = INTEGER_TERMS | FLOATS | STORAGE_FLOATS | {'bool'}
 ACCESSES = ('read', 'write', 'atomic')
 ATOMIC_ELEMENTS = {'u32', 'i32'}
-VALUE_TERMS = INTEGER_TERMS | {'f32'}   # scalar kernel arguments
+VALUE_TERMS = INTEGER_TERMS | {'f32', 'f16'}   # scalar kernel arguments
 LEGACY = {'VoidType': 'void', 'BoolType': 'bool', 'U8Type': 'u8', 'U32Type': 'u32', 'I32Type': 'i32',
           'F32Type': 'f32', 'F16Type': 'f16', 'Shape3DType': 'shape3',
           'ReadOnlyU8BufferType': 'buffer<u8, read>', 'U32BufferType': 'buffer<u32, write>',
@@ -27,6 +27,12 @@ LEGACY = {'VoidType': 'void', 'BoolType': 'bool', 'U8Type': 'u8', 'U32Type': 'u3
           'ReadOnlyF16BufferType': 'buffer<f16, read>', 'F16BufferType': 'buffer<f16, write>'}
 BUFFER = re.compile(r'buffer<(\w+), (read|write|atomic)>')
 COMPARISONS = {'==', '!=', '<', '>', '<=', '>='}
+# Math functions on float32: name -> arity. EXACT ones give the same bits on every backend;
+# the others are within MATH_ULPS of the exact result (NUMERICS.md, math functions).
+MATH = {'fabs': 1, 'fmin': 2, 'fmax': 2, 'floor': 1, 'ceil': 1, 'trunc': 1, 'round': 1, 'copysign': 2, 'sqrt': 1,
+        'exp': 1, 'exp2': 1, 'log': 1, 'log2': 1, 'sin': 1, 'cos': 1, 'tanh': 1}
+EXACT_MATH = {'fabs', 'fmin', 'fmax', 'floor', 'ceil', 'trunc', 'round', 'copysign', 'sqrt'}
+MATH_ULPS = 4
 LEGACY_CASTS = {'I32Cast': 'i32', 'U32Cast': 'u32', 'U8Cast': 'u8', 'F32Cast': 'f32', 'F16Cast': 'f16'}
 
 
@@ -207,6 +213,11 @@ class TypeChecker:
         if k == 'F32Fma':
             types = [e(role) for role in ('left', 'right', 'addend')]
             check(all(t == 'f32' for t in types), 'FMA_TYPE', 'FMA requires three float32 operands; convert integers explicitly')
+            return 'f32'
+        if k == 'Math':
+            args = self.children(node, 'arguments')
+            check(a['function'] in MATH and len(args) == MATH[a['function']], 'MATH', f"{a['function']} takes {MATH.get(a['function'], '?')} arguments")
+            check(all(self.expr(x, env, function) == 'f32' for x in args), 'MATH_TYPE', a['function'] + ' takes float32 arguments')
             return 'f32'
         if k == 'F16Cast':
             check(e('operand') == 'f32', 'CAST_TYPE', 'Float16 storage conversion requires float32')

@@ -66,6 +66,7 @@ inline unsigned int umax(unsigned int a, unsigned int b) { return max(a, b); }
 inline float __fmaf_rn(float a, float b, float c) { return std::fma(a, b, c); }
 inline float fmaf(float a, float b, float c) { return std::fma(a, b, c); }
 inline float __fadd_rn(float a, float b) { volatile float r = a + b; return r; }
+inline float __fsqrt_rn(float a) { return std::sqrt(a); }
 inline float __fsub_rn(float a, float b) { volatile float r = a - b; return r; }
 inline float __fmul_rn(float a, float b) { volatile float r = a * b; return r; }
 inline float __fdiv_rn(float a, float b) { volatile float r = a / b; return r; }

@@ -16,7 +16,8 @@ from .simulate import DTYPES, VALUE_TYPES, volume
 
 TORCH = {np.uint8: torch.uint8, np.uint32: torch.int32, np.int32: torch.int32, np.float32: torch.float32,
          np.float16: torch.float16}
-SCALAR = {'u32': torch.int32, 'i32': torch.int32, 'f32': torch.float32, 'u64': torch.int64, 'i64': torch.int64}
+SCALAR = {'u32': torch.int32, 'i32': torch.int32, 'f32': torch.float32, 'u64': torch.int64, 'i64': torch.int64,
+          'f16': torch.float16}
 WRAP = {'u32': 32, 'u64': 64}  # unsigned values travel as the signed type's bit pattern
 
 

@@ -48,7 +48,8 @@ class _Values(dict):
 
 DTYPES = _Types()
 VALUE_TYPES = _Values()
-C_VALUE = {'u32': 'qpel_sim_u32', 'i32': 'qpel_sim_i32', 'f32': 'qpel_sim_f32', 'u64': 'qpel_sim_u64', 'i64': 'qpel_sim_i64'}
+C_VALUE = {'u32': 'qpel_sim_u32', 'i32': 'qpel_sim_i32', 'f32': 'qpel_sim_f32', 'u64': 'qpel_sim_u64', 'i64': 'qpel_sim_i64',
+           'f16': 'qpel_sim_f16'}
 WIDE = {'u64', 'i64'}  # passed as two 32-bit words, low word first
 
 
@@ -139,7 +140,8 @@ class Program:
                  'static int qpel_sim_i32(unsigned int w) { int v; std::memcpy(&v, &w, 4); return v; }',
                  'static float qpel_sim_f32(unsigned int w) { float v; std::memcpy(&v, &w, 4); return v; }',
                  'static unsigned long long qpel_sim_u64(unsigned int lo, unsigned int hi) { return (unsigned long long)hi << 32 | lo; }',
-                 'static long long qpel_sim_i64(unsigned int lo, unsigned int hi) { return (long long)qpel_sim_u64(lo, hi); }']
+                 'static long long qpel_sim_i64(unsigned int lo, unsigned int hi) { return (long long)qpel_sim_u64(lo, hi); }',
+                 'static __half qpel_sim_f16(unsigned int w) { unsigned short b = (unsigned short)w; __half v; std::memcpy(&v, &b, 2); return v; }']
         namespaces = sorted({q.rpartition('::')[0] for q in (self.original or {}).get('qualified', {}).values()} - {''})
         lines += [f'using namespace {n};' for n in namespaces]
         lines += ['int main(int argc, char** argv) {', '  std::string dir = argv[1];',
@@ -210,6 +212,8 @@ class Program:
                 if kind in WIDE:
                     bits = value % 2**64
                     words['value.' + name], words['value.' + name + '.hi'] = bits % 2**32, bits >> 32
+                elif kind == 'f16':
+                    words['value.' + name] = struct.unpack('<H', struct.pack('<e', value))[0]
                 else:
                     words['value.' + name] = struct.unpack('<I', struct.pack('<f' if kind == 'f32' else '<i' if kind == 'i32' else '<I', value))[0]
             for s in self.plan['stages']:

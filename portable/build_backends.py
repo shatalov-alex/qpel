@@ -71,7 +71,8 @@ def build(source, output, plan_path=None):
         brain = b'#define QPEL_BF16_ENABLED 1\n' if b'QPEL_BF16' in body or b'QPEL_TO_BF16' in body else b''
         saturate = b'#define QPEL_F32_TO_INT_ENABLED 1\n' if b'QPEL_F32_TO_' in body else b''
         groups = b'#define QPEL_GROUPS_ENABLED 1\n' if b'QPEL_GROUPS_PARAM' in body else b''
-        result = half + reduction + group + signed + values + grid3d + widths + brain + saturate + groups + b'// Generated backend package. Edit the MPS model or backend support.\n' + support + b'\n' + body
+        maths = b'#define QPEL_MATH_ENABLED 1\n' if b'QPEL_MATH_' in body else b''
+        result = half + reduction + group + signed + values + grid3d + widths + brain + saturate + groups + maths + b'// Generated backend package. Edit the MPS model or backend support.\n' + support + b'\n' + body
         path = output / (module+'.'+suffix)
         path.write_bytes(result)
         if backend == 'metal':

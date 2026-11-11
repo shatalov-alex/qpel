@@ -29,7 +29,7 @@ sys.path.insert(0, str(HERE))
 from frontends import roundtrip  # noqa: E402
 from frontends.c_import import import_source  # noqa: E402
 from qpel_ir import Lowering  # noqa: E402
-from qpel_types import normalize_plan  # noqa: E402
+from qpel_types import EXACT_MATH, MATH_ULPS, normalize_plan  # noqa: E402
 from . import cases as test_cases  # noqa: E402
 from .simulate import Program  # noqa: E402
 
@@ -55,17 +55,34 @@ def sources():
     return out
 
 
-def compare(expected, actual, names, defined=None):
-    """None, or where the first difference is. `defined` limits outputs to their written prefix."""
+def ulp_distance(a, b):
+    """Distance in float32 units in the last place (ordered bit patterns); NaN to NaN is 0."""
+    def ordered(x):
+        bits = x.astype(np.float32).view(np.int32).astype(np.int64)
+        return np.where(bits < 0, -(bits & 0x7fffffff), bits)
+    distance = np.abs(ordered(a) - ordered(b))
+    return np.where(np.isnan(a) & np.isnan(b), 0, distance)
+
+
+def compare(expected, actual, names, defined=None, ulps=0):
+    """None, or where the first difference is. `defined` limits outputs to their written prefix;
+    `ulps` > 0 lets float32 outputs differ by that many units in the last place."""
     for name in names:
         a, b = np.asarray(expected[name]), np.asarray(actual[name])
         if defined and name in defined:
             a, b = a[:defined[name]], b[:defined[name]]
             expected, actual = dict(expected, **{name: a}), dict(actual, **{name: b})
-        if a.dtype.kind == 'f':
-            a, b = a.view(f'u{a.itemsize}'), b.view(f'u{b.itemsize}')
         if a.shape != b.shape:
             return f'{name}: {a.shape} != {b.shape}'
+        if ulps and a.dtype == np.float32:
+            bad = np.flatnonzero(ulp_distance(a, b) > ulps)
+            if bad.size:
+                i = bad[0]
+                return (f'{name}[{i}]: original {a[i].item()!r}, qpel {b[i].item()!r} '
+                        f'({bad.size} differ by more than {ulps} ulp)')
+            continue
+        if a.dtype.kind == 'f':
+            a, b = a.view(f'u{a.itemsize}'), b.view(f'u{b.itemsize}')
         bad = np.flatnonzero(a != b)
         if bad.size:
             i = bad[0]
@@ -97,6 +114,10 @@ def check_source(name, path, dialect, plan, include, grids, work, gpu):
         original = Program(path, plan, work/'sim_original', original=report, include=include, grids=grids)
     host = load_host(generated) if gpu else None
     rows = {'cuda': (f'{dialect} -> qpel -> cuda', True), 'metal': (f'{dialect} -> qpel -> metal', gpu)}
+    # Bounded math functions may differ by a few ulp between C libraries and GPUs; results
+    # that pass through two of them (original and translation) get twice the bound.
+    bounded = any(n['kind'] == 'Math' and n['attributes']['function'] not in EXACT_MATH for n in program['nodes'])
+    ulps = 2*MATH_ULPS if bounded else 0
     for case in test_cases.for_program(name, plan):
         label = f'{path.name} {case.label}'
         if dialect == 'cuda':
@@ -106,9 +127,9 @@ def check_source(name, path, dialect, plan, include, grids, work, gpu):
         else:
             yield f'{dialect} original', label, 'skipped: no Apple GPU'
             continue
-        yield rows['cuda'][0], label, compare(expected, simulated.run(case), outputs, case.defined)
+        yield rows['cuda'][0], label, compare(expected, simulated.run(case), outputs, case.defined, ulps)
         if rows['metal'][1]:
-            yield rows['metal'][0], label, compare(expected, metal.run_generated(host, plan, case), outputs, case.defined)
+            yield rows['metal'][0], label, compare(expected, metal.run_generated(host, plan, case), outputs, case.defined, ulps)
         else:
             yield rows['metal'][0], label, 'skipped: no Apple GPU'
 

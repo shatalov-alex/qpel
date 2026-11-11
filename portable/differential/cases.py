@@ -44,6 +44,7 @@ def generic(plan, seed, shapes=SHAPES, values=None):
                                          int(rng.integers(-2**31, 2**31)) if kind == 'i32' else
                                          int(rng.integers(0, 2**63)) if kind == 'u64' else
                                          int(rng.integers(-2**63, 2**63 - 1)) if kind == 'i64' else
+                                         float(np.float16(rng.uniform(-8, 8))) if kind == 'f16' else
                                          float(np.float32(rng.uniform(-8, 8))))
         cases.append(Case(sizes, inputs, chosen, f'{shape}'))
     return cases

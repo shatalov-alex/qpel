@@ -6,10 +6,10 @@ import re
 import math
 import struct
 
-from qpel_types import INTEGER_TERMS, INTEGERS_BITS, SCALAR_TERMS, buffer, is_valid
+from qpel_types import INTEGER_TERMS, INTEGERS_BITS, MATH, SCALAR_TERMS, buffer, is_valid
 
 TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType'.split())
-EXPRESSIONS = set('Name Literal I32Literal Constant Cast GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin'.split())
+EXPRESSIONS = set('Name Literal I32Literal Constant Cast Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin'.split())
 STATEMENTS = set('Block Variable Assign Evaluate If While DoWhile For Break Continue Return'.split())
 
 # Child role -> (allowed concepts, minimum count, maximum count or None).
@@ -31,6 +31,7 @@ CHILDREN = {
     'U32Cast': {'operand': one(EXPRESSIONS)},
     'U8Cast': {'operand': one(EXPRESSIONS)},
     'Cast': {'operand': one(EXPRESSIONS)},
+    'Math': {'arguments': many(EXPRESSIONS)},
     'WorkgroupSumF32': {'value': one(EXPRESSIONS)},
     'ReduceSumF32': {role: one(EXPRESSIONS) for role in ('buffer','start','count')},
     'F16Cast': {'operand': one(EXPRESSIONS)},
@@ -85,7 +86,7 @@ ATTRIBUTES = {
     'ThreadIndex': {'axis': str},
     # IR version 3
     'ScalarType': {'scalar': str}, 'BufferType': {'element': str, 'access': str},
-    'Cast': {'to': str}, 'Constant': {'value': str, 'scalar': str},
+    'Cast': {'to': str}, 'Constant': {'value': str, 'scalar': str}, 'Math': {'function': str},
     'GroupIndex': {'axis': str}, 'LocalIndex': {'axis': str}, 'GroupSize': {'axis': str}, 'GroupCount': {'axis': str},
 }
 DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer'},
@@ -240,6 +241,8 @@ def validate_structure(nodes):
             fail('Unknown scalar type ' + a['scalar'])
         if kind == 'BufferType' and not is_valid(buffer(a['element'], a['access'])):
             fail(f"Invalid buffer type buffer<{a['element']}, {a['access']}>")
+        if kind == 'Math' and a['function'] not in MATH:
+            fail('Unknown math function ' + a['function'])
         if kind == 'Cast' and a['to'] not in SCALAR_TERMS - {'bool'}:
             fail('Unsupported conversion target ' + a['to'])
         if kind == 'Constant':

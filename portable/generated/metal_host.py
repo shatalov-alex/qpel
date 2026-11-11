@@ -23,7 +23,7 @@ def _shape(value):
 
 def _value(value, kind):
     """A scalar kernel argument, checked against its qpel type."""
-    if kind == 'f32':
+    if kind in ('f32', 'f16'):
         if type(value) not in (int, float):
             raise ValueError("Float argument must be a Python number")
         return float(value)
@@ -52,7 +52,7 @@ def _input(value, dtype, count, device):
 
 
 SHADER_FILE = 'components.metal'
-SHADER_SHA256 = '1af04a665fd7e722b7f8dadbd1a37576f8f8d1a28ccaf6cf94b0eb78f9a3c120'
+SHADER_SHA256 = '8046943e7e6b83a69e40dafb8fe548141a9e8ee8b0e6d87137abddc975ade7ef'
 
 def run(inputs, shapes, values=None, *, device="mps"):
     """Inputs are tensors; shapes map names to (W,H,N); values are scalars; outputs are flat tensors."""

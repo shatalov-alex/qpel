@@ -59,6 +59,21 @@ A kernel with domain `Groups` (IR version 3) states its geometry instead of runn
 
 Every float32 `+ - * /` rounds to nearest even on its own, as written; only `F32Fma` fuses a multiply and an add. Compilers otherwise contract `a*b + c` into an FMA when they choose (nvcc does by default; so does Metal), which changes the last bit. qpel's CUDA uses `__fadd_rn`, `__fsub_rn`, `__fmul_rn` and `__fdiv_rn`, which nvcc never contracts whatever its flags; its Metal turns contraction off with `#pragma clang fp contract(off)`. Generated sources that compute in float32 carry `// qpel numeric contract: f32-strict-v1`. The behaviour rows run originals the same way (the CPU simulator with `-ffp-contract=off`, Metal originals with the same pragma), i.e. as written. Found by the `grid_stride` example (`scale * x[i] + bias`), whose Metal output differed by one ulp before. Division on the Apple GPU was correctly rounded on 65536 random normal operands. Subnormals still flush to zero on Apple GPUs.
 
+## Math functions
+
+`Math {function}` (IR version 3) applies a function to float32 arguments and gives float32. Two classes:
+
+- **Exact**: `fabs fmin fmax floor ceil trunc round copysign sqrt`. They give the same bits on every backend: `round` rounds halves away from zero, `sqrt` is correctly rounded (CUDA `__fsqrt_rn` whatever `-prec-sqrt` says; Metal `precise::sqrt`, measured correctly rounded on 65536 inputs). `fmin`/`fmax` return the other operand when one is NaN; the sign of a zero result from `fmin(-0, +0)` is not pinned.
+- **Bounded**: `exp exp2 log log2 sin cos tanh` are within `MATH_ULPS` = 4 ulp of the exact result. CUDA documents at most 2 ulp for each (without `-use_fast_math`); Metal's `precise::` versions measured at most 1 (exp, exp2), 2 (log, log2, cos, tanh) and 3 (sin) ulp on 65536 random inputs against float64. qpel's Metal always calls `metal::precise::`, never `metal::fast::`. Behaviour rows compare outputs of programs that use a bounded function within twice the bound (original and translation each contribute), everything else bit for bit.
+
+Metal has no `erf`, `expm1` or `log1p`; qpel will define them itself rather than take each platform's.
+
+## Small additions
+
+- Scalar arguments may be `f16` (CUDA `__half` by value, Metal `constant half&`).
+- `bool` converts to integers and float32 as C does (1 or 0), written as a `Select`.
+- An element count of any integer type (`int k`, `long long n`) may size a 1D kernel; its uses read the shape's volume converted to that type.
+
 ## Single emitter
 
 Since 2026-10-19 MPS no longer generates code; it exports IR only, and this numeric emitter is the only one. `build_backends.build` rejects source without the `u32-modulo-v1` contract line, and every manifest records `numeric_contract: u32-modulo-v1` (plus `i32-wrap-v1` when the program uses i32, `integers-v3` when it uses a version 3 construct, and `f32-strict-v1` when it computes in float32).

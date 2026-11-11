@@ -402,6 +402,36 @@ def run_grid_stride(name, host, plan):
     return cases
 
 
+# --- math functions: exact ones bit for bit, bounded ones within the documented ulp bound ---
+
+def run_math_ops(name, host, plan):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from qpel_types import MATH_ULPS
+    from differential.matrix import ulp_distance
+    rng = np.random.default_rng(20261114)
+    cases = 0
+    for size in (1, 7, 64, 1000, 4099):
+        v = (rng.standard_normal(size)*np.exp2(rng.integers(-6, 12, size))).astype(np.float32)
+        v[:min(size, 6)] = np.float32([0.5, -0.5, 2.5, -1e-3, 1e6, -0.0])[:min(size, 6)]
+        out = host.run({'x': torch.from_numpy(v).to('mps')}, {'n': (size, 1, 1)})
+        f = np.float32
+        x = v.astype(np.float64)
+        rounded = np.where(np.abs(x - np.trunc(x)) >= 0.5, np.trunc(x) + np.sign(x), np.trunc(x))  # half away from zero
+        with np.errstate(all='ignore'):
+            inner = (np.floor(v) + np.ceil(v)).astype(f) - np.trunc(v)
+            clamped = np.maximum(np.minimum(inner.astype(f), f(100)), f(-100))
+            exact = (clamped + np.copysign(rounded, -x).astype(f)).astype(f) + np.sqrt(np.abs(v)).astype(f)
+            terms = [np.exp((v*f(0.01)).astype(np.float64)),
+                     np.log((np.abs(v) + f(1)).astype(np.float64)),
+                     np.sin(x)*np.cos(x), np.tanh(x), np.exp2(-np.abs(x)), np.log2((np.abs(v) + f(2)).astype(np.float64))]
+        np.testing.assert_array_equal(out['exact'].cpu().numpy().view(np.uint32), exact.astype(f).view(np.uint32))
+        bounded = sum(terms).astype(f)
+        far = ulp_distance(out['bounded'].cpu().numpy(), bounded) > 4*MATH_ULPS  # six bounded terms add up
+        assert not far.any(), f'{size}: bounded math off by more than {4*MATH_ULPS} ulp at {np.flatnonzero(far)[:5]}'
+        cases += 1
+    return cases
+
+
 # --- SAM 2 connected components, imported from the unmodified CUDA original ---
 
 def sam2_oracle(mask, w, h):
@@ -464,7 +494,7 @@ def run_sam2_cc(name, host, plan):
 TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fma32': run_fma32,
          'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components,
          'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset, 'box_sum': run_box_sum,
-         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride}
+         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride, 'math_ops': run_math_ops}
 
 
 def main(argv=None):

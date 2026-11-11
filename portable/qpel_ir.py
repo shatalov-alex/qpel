@@ -5,7 +5,7 @@ and whole-resource pipeline effects, not numerical lowering, bounds or races.
 """
 import json
 from qpel_schema import validate_envelope, validate_structure
-from qpel_types import validate_types, TypeChecker, LEGACY, term, is_buffer, element, access, is_signed, bits, unsigned_of, arithmetic, INTEGER_TERMS
+from qpel_types import EXACT_MATH, validate_types, TypeChecker, LEGACY, term, is_buffer, element, access, is_signed, bits, unsigned_of, arithmetic, INTEGER_TERMS
 from qpel_pipeline import validate_pipeline
 from qpel_bounds import validate_static_bounds
 
@@ -16,8 +16,8 @@ LEGACY_MACROS={'void':'void','bool':'bool','u8':'QPEL_U8','u32':'QPEL_U32','i32'
        'buffer<i32, write>':'QPEL_WRITE_I32','buffer<f32, read>':'QPEL_READ_F32','buffer<f32, write>':'QPEL_WRITE_F32',
        'buffer<f16, read>':'QPEL_READ_F16','buffer<f16, write>':'QPEL_WRITE_F16'}
 TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType'}
-KINDS=TYPE_KINDS|set('Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin Pipeline Resource Dispatch Binding'.split())
-COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage','groups'}
+KINDS=TYPE_KINDS|set('Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin Pipeline Resource Dispatch Binding'.split())
+COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage','groups','math_exact','math_bounded'}
 PROFILES={'metal':COMMON_FEATURES,'cuda':COMMON_FEATURES}
 SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3'}
 # Version 2 adds else, for/do/break/continue, signed 32-bit integers and their atomics,
@@ -25,7 +25,7 @@ SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-
 V2_KINDS={'Grid3D','ThreadIndex','For','DoWhile','Break','Continue','I32Type','ReadOnlyI32BufferType','I32BufferType','AtomicI32BufferType','I32Literal','I32Cast','U32Cast','U8Cast'}
 # Version 3 writes types as terms (ScalarType, BufferType) and adds 8-, 16- and 64-bit
 # integers, bf16 storage, writable u8 buffers, Cast and Constant.
-V3_KINDS={'ScalarType','BufferType','Cast','Constant','Groups','GroupIndex','LocalIndex','GroupSize','GroupCount'}
+V3_KINDS={'ScalarType','BufferType','Cast','Constant','Math','Groups','GroupIndex','LocalIndex','GroupSize','GroupCount'}
 def type_macro(t):
     """Backend macro spelling a type term."""
     if t in LEGACY_MACROS:return LEGACY_MACROS[t]
@@ -94,6 +94,7 @@ def validate(program, backend=None):
         if n['kind'] in INT32_KINDS:required.add('int32')
         if n['kind']=='Grid3D':required.add('grid_3d')
         if n['kind']=='Groups':required.add('groups')
+        if n['kind']=='Math':required.add('math_exact' if n['attributes']['function'] in EXACT_MATH else 'math_bounded')
         if n['kind'] in TYPE_KINDS|{'Cast','Constant'}:
             used=term(n) if n['kind'] in TYPE_KINDS else n['attributes'].get('to') or n['attributes'].get('scalar')
             item=element(used) if is_buffer(used) else used
@@ -173,6 +174,7 @@ class Lowering:
             return value if value in ('true','false') else str(int(value.rstrip('uU'))) + 'u'
         if k=='I32Literal':return a['value']
         if k=='Constant':return constant(a['scalar'],int(a['value']))
+        if k=='Math':return 'QPEL_MATH_'+a['function'].upper()+'('+joined('arguments',', ')+')'
         if k=='Cast':return self.cast(e('operand'),self.expression_types[self.child(n,'operand')['id']],a['to'])
         if k=='I32Cast':return '((QPEL_I32)('+e('operand')+'))'
         if k=='U32Cast':return '((QPEL_U32)('+e('operand')+'))'

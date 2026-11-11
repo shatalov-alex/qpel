@@ -12,7 +12,7 @@ import re
 from qpel_schema import is_identifier
 from qpel_types import (SCALAR_TERMS, VALUE_TERMS, access, buffer as type_buffer, fits, is_buffer as type_is_buffer,
                         is_signed, node_spec, normalize_plan, term as type_term)
-from qpel_types import access as type_access, bits as type_bits, INTEGER_TERMS
+from qpel_types import access as type_access, bits as type_bits, INTEGER_TERMS, MATH
 from . import clang_ast
 from .clang_ast import position
 
@@ -271,6 +271,11 @@ MAXIMUM = {'max', 'umax'}
 FMA = {'__fmaf_rn', 'fmaf', 'fma'}
 TO_F16 = {'__float2half_rn', '__float2half'}
 TO_BF16 = {'__float2bfloat16_rn', '__float2bfloat16'}
+# C, CUDA and Metal spellings of qpel's math functions (on float arguments).
+MATH_CALLS = {name: f for f in ('fabs', 'fmin', 'fmax', 'floor', 'ceil', 'trunc', 'round', 'copysign', 'sqrt',
+                                'exp', 'exp2', 'log', 'log2', 'sin', 'cos', 'tanh')
+              for name in (f, f + 'f')}
+MATH_CALLS.update({'abs': 'fabs', '__fsqrt_rn': 'sqrt'})
 ROUNDED = {'__fadd_rn': '+', '__fsub_rn': '-', '__fmul_rn': '*', '__fdiv_rn': '/'}
 SATURATE = {f'qpel_f32_to_{t}': t for t in ('u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64')}
 TO_F32 = {'__half2float'}
@@ -671,7 +676,8 @@ class Importer:
         if kernel:
             if count is not None:
                 entry = self.scope[count['id']]
-                self.scope[count['id']] = ('count', entry[1], entry[2])
+                index = next(i for i, p in enumerate(params_of(decl)) if p['id'] == count['id'])
+                self.scope[count['id']] = ('count', entry[1], types[(name, index)])
                 self.adaptations.append(f'{name}: count {count["name"]} became a shape (count, 1, 1)')
             elif shape_param is None:
                 self.attempt(lambda: self.reject(Unsupported(
@@ -833,7 +839,7 @@ class Importer:
         if any(types.get((decl['name'], i)) == 'shape3' for i in range(len(params))):
             return None
         unsigned = {p['id']: p for i, p in enumerate(params)
-                    if types.get((decl['name'], i)) == 'u32' and not self.dialect.builtin(p)}
+                    if types.get((decl['name'], i)) in INTEGER_TERMS and not self.dialect.builtin(p)}
         grid = {p['id'] for p in params if self.dialect.builtin(p) == 'grid'}
         body = body_of(decl)
         for node in walk(body):
@@ -1156,6 +1162,12 @@ class Importer:
             one, zero = (('I32Literal', '1'), ('I32Literal', '0')) if target == 'i32' else (('Literal', '1u'), ('Literal', '0u'))
             return add('Select', children={'condition': value, 'yes': add(one[0], {'value': one[1]}),
                                            'no': add(zero[0], {'value': zero[1]})})
+        if source == 'bool' and target in INTEGER_TERMS | {'f32'}:  # C converts true to 1 and false to 0
+            if target == 'f32':
+                one, zero = add('F32Literal', {'value': '1'}), add('F32Literal', {'value': '0'})
+            else:
+                one, zero = (add('Constant', {'scalar': target, 'value': v}) for v in ('1', '0'))
+            return add('Select', children={'condition': value, 'yes': one, 'no': zero})
         if target == 'i32' and source in ('u8', 'u32'):
             return add('I32Cast', children={'operand': value})
         if (source, target) == ('i32', 'u32'):
@@ -1207,7 +1219,9 @@ class Importer:
                     raise Unsupported(n, 'thread-builtin', 'only blockIdx.x * blockDim.x + threadIdx.x is supported')
                 raise Unsupported(n, 'unknown-name', f'{ref.get("name")} is not a parameter or local')
             if entry[0] == 'grid':
-                return self.thread_index(entry[1], n)
+                index = self.thread_index(entry[1], n)
+                own = scalar_of(n)  # `const int i = blockIdx.x * blockDim.x + threadIdx.x` is an int
+                return self.convert_types(index, 'u32', own, n) if own in INTEGER_TERMS and own != 'u32' else index
             if entry[0] == 'position':
                 raise Unsupported(n, 'thread-builtin', 'use the .x, .y and .z components of the thread position')
             if entry[0] == 'extent':
@@ -1216,7 +1230,9 @@ class Importer:
             if entry[0] == 'count':
                 member = lambda m: add('Member', {'member': m}, {'base': self.name(entry[1])})
                 xy = add('Binary', {'operator': '*'}, {'left': member('x'), 'right': member('y')})
-                return add('Binary', {'operator': '*'}, {'left': xy, 'right': member('z')})
+                volume = add('Binary', {'operator': '*'}, {'left': xy, 'right': member('z')})
+                # the count had its own type (int k, long long n); the shape's volume is unsigned
+                return self.convert_types(volume, 'u32', entry[2], n) if entry[2] != 'u32' else volume
             if entry[0] == 'group-builtin':
                 if entry[2]:
                     raise Unsupported(n, 'thread-builtin', 'use the .x, .y and .z components of a thread builtin')
@@ -1293,6 +1309,9 @@ class Importer:
             raise Unsupported(n, 'member', 'only shape.x, shape.y and shape.z members are supported')
         if kind == 'CallExpr':
             return self.call(n, statement)
+        if kind == 'CXXConstructExpr' and len(n.get('inner', ())) == 1 and scalar_of(n) in ('f16', 'bf16', 'f32'):
+            argument = n['inner'][0]  # __half(f), __nv_bfloat16(f): a conversion written as a constructor
+            return self.convert_types(self.expr(argument), scalar_of(argument), scalar_of(n), n)
         raise Unsupported(n, 'expression', f'{kind} is not supported')
 
     def thread_index(self, axis, node):
@@ -1382,6 +1401,10 @@ class Importer:
             need(2)
             return add('Binary', {'operator': '/' if callee.endswith('div') else '%'},
                        {'left': self.expr(args[0]), 'right': self.expr(args[1])})
+        if callee in MATH_CALLS and all(scalar_of(a) == 'f32' for a in args):
+            function = MATH_CALLS[callee]
+            need(MATH[function])
+            return add('Math', {'function': function}, {'arguments': [self.expr(a) for a in args]})
         if callee in ROUNDED:  # CUDA's separately rounded float operations are qpel's float operators
             need(2)
             return add('Binary', {'operator': ROUNDED[callee]}, {'left': self.expr(args[0]), 'right': self.expr(args[1])})

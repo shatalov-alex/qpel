@@ -141,3 +141,23 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long, -9223372036854775808.0f, 9223372
 #define QPEL_GROUP_COUNT(axis) qpel_group_count.axis
 #define QPEL_GROUPS_THREAD_INDEX(axis) (qpel_group.axis * qpel_group_size.axis + qpel_local.axis)
 #endif
+
+#ifdef QPEL_MATH_ENABLED
+// Math functions (NUMERICS.md): the precise versions, never metal::fast.
+#define QPEL_MATH_FABS(x) metal::fabs((x))
+#define QPEL_MATH_FMIN(a, b) metal::fmin((a), (b))
+#define QPEL_MATH_FMAX(a, b) metal::fmax((a), (b))
+#define QPEL_MATH_FLOOR(x) metal::floor((x))
+#define QPEL_MATH_CEIL(x) metal::ceil((x))
+#define QPEL_MATH_TRUNC(x) metal::trunc((x))
+#define QPEL_MATH_ROUND(x) metal::round((x))
+#define QPEL_MATH_COPYSIGN(a, b) metal::copysign((a), (b))
+#define QPEL_MATH_SQRT(x) metal::precise::sqrt((x))
+#define QPEL_MATH_EXP(x) metal::precise::exp((x))
+#define QPEL_MATH_EXP2(x) metal::precise::exp2((x))
+#define QPEL_MATH_LOG(x) metal::precise::log((x))
+#define QPEL_MATH_LOG2(x) metal::precise::log2((x))
+#define QPEL_MATH_SIN(x) metal::precise::sin((x))
+#define QPEL_MATH_COS(x) metal::precise::cos((x))
+#define QPEL_MATH_TANH(x) metal::precise::tanh((x))
+#endif

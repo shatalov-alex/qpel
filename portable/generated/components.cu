@@ -150,6 +150,27 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long long, -9223372036854775808.0f, 92
 #define QPEL_GROUPS_THREAD_INDEX(axis) (blockIdx.axis * blockDim.axis + threadIdx.axis)
 #endif
 
+#ifdef QPEL_MATH_ENABLED
+// Math functions (NUMERICS.md). Exact: the same bits on every backend. sqrt is __fsqrt_rn, which is
+// correctly rounded whatever -prec-sqrt says. Bounded: CUDA documents at most 2 ulp for these.
+#define QPEL_MATH_FABS(x) fabsf((x))
+#define QPEL_MATH_FMIN(a, b) fminf((a), (b))
+#define QPEL_MATH_FMAX(a, b) fmaxf((a), (b))
+#define QPEL_MATH_FLOOR(x) floorf((x))
+#define QPEL_MATH_CEIL(x) ceilf((x))
+#define QPEL_MATH_TRUNC(x) truncf((x))
+#define QPEL_MATH_ROUND(x) roundf((x))
+#define QPEL_MATH_COPYSIGN(a, b) copysignf((a), (b))
+#define QPEL_MATH_SQRT(x) __fsqrt_rn((x))
+#define QPEL_MATH_EXP(x) expf((x))
+#define QPEL_MATH_EXP2(x) exp2f((x))
+#define QPEL_MATH_LOG(x) logf((x))
+#define QPEL_MATH_LOG2(x) log2f((x))
+#define QPEL_MATH_SIN(x) sinf((x))
+#define QPEL_MATH_COS(x) cosf((x))
+#define QPEL_MATH_TANH(x) tanhf((x))
+#endif
+
 // Generated from qpel IR. Do not edit.
 // qpel numeric contract: u32-modulo-v1
 QPEL_KERNEL void initialize(QPEL_PARAM(QPEL_READ_U8, mask, 0), QPEL_PARAM(QPEL_ATOMIC_U32, parent, 1), QPEL_PARAM(QPEL_ATOMIC_U32, counts, 2), QPEL_PARAM(QPEL_SHAPE, shape, 3) QPEL_GRID_PARAM(qpel_index)) {

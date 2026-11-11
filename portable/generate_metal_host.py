@@ -61,7 +61,7 @@ def _shape(value):
 
 def _value(value, kind):
     """A scalar kernel argument, checked against its qpel type."""
-    if kind == 'f32':
+    if kind in ('f32', 'f16'):
         if type(value) not in (int, float):
             raise ValueError("Float argument must be a Python number")
         return float(value)

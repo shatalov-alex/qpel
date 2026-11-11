@@ -26,7 +26,7 @@ FIXTURES = HERE/'tests/fixtures/qpel_ir'
 EXAMPLES = {'threshold': 'import', 'classify_bytes': 'classify', 'combine_masks': 'masks', 'masked_copy': 'count',
             'signed_delta': 'signed_delta', 'scale_offset': 'scale_offset', 'box_sum': 'box_sum',
             'float_scale': 'float32', 'fma_bias': 'fma32', 'half_bias': 'half', 'window_sum': 'window_sum',
-            'grid_stride': 'grid_stride'}
+            'grid_stride': 'grid_stride', 'math_ops': 'math_ops'}
 SOURCE_DIRS = {'cuda': HERE/'cuda_examples', 'metal': HERE/'metal_examples'}
 CORPUS = HERE/'corpus'  # unmodified real sources; entries with a fixture must import to it
 
