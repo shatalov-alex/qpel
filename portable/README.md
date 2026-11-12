@@ -1,17 +1,25 @@
-# qpel portable compiler prototype
+# qpel compiler
 
-qpel is a typed GPU language developed in the existing JetBrains MPS project. Its shared program graph lowers to Metal and CUDA. It is not yet a universal CUDA/Metal translator or a Triton implementation.
+The qpel compiler: IR validation, CUDA and Metal generation, the Clang-based CUDA and Metal
+importers, the text syntax, and the checks that run all of them. For an overview, see the
+[project README](../README.md).
 
 ## Current scope
 
-- MPS models, editors and editor-time checks; MPS exports each program as qpel IR (`<pipeline>.qpel.json`). All code generation and authoritative validation happen in this Python compiler.
-- Unsigned integer operations, float32 computation, explicit FMA, float16 storage/conversions, sequential and cooperative float32 sums, and device-relaxed uint32 atomics.
-- Explicit one-dimensional dispatch pipelines with typed resources, ordered stages and block sizes 1..256.
-- Generated PyTorch/Metal and initial CuPy/CUDA host modules from the same Pipeline.
-- Restricted elementwise CUDA importer; no Triton or Metal-source importer.
-- Constant memory-range diagnostics. Dynamic bounds, full initialization and race safety are not proven.
+- **IR version 3** (`CORE.md`): typed programs with integer widths from 8 to 64 bits, `f16`/`bf16`
+  storage, float32 arithmetic (f32-strict-v1), exact and bounded math functions, structs, buffer
+  views, 1D/2D/3D and explicit-group launch geometry, and multi-stage launch plans.
+- **Importers** (`IMPORT.md`): unmodified CUDA and Metal source through clang's JSON AST, with
+  per-construct diagnostics; templates, library-header device functions and Metal function
+  constants are supported.
+- **Backends:** CUDA (nvcc, sm_75–sm_90) and Metal (3.0/3.1), plus Python hosts
+  (PyTorch/Metal, CuPy/CUDA).
+- **Text syntax** (`TEXT.md`): `.qpel` files that print and parse back to the same IR.
+- **Not yet:** shared memory, barriers, warp/simdgroup operations and matrix tiles (Phase 3), and
+  host-API and library mapping (Phase 4). See `ROADMAP.md`.
 
-The files under languages/ are MPS persistence, not text to edit manually. The exported program.qpel.json is a compiler interchange format, not a human-oriented language syntax.
+JetBrains MPS (`../languages/`) is an optional structured editor that exports the same IR. Its
+files are MPS persistence, not text to edit by hand.
 
 ## Offline check and build
 

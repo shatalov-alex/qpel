@@ -1,0 +1,31 @@
+name: Kernel does not import
+description: A CUDA or Metal kernel that qpel rejects or cannot translate.
+labels: [importer]
+body:
+  - type: input
+    id: source
+    attributes:
+      label: Source
+      description: Project and file (link if public), or attach a minimal kernel below.
+    validations:
+      required: true
+  - type: dropdown
+    id: dialect
+    attributes:
+      label: Dialect
+      options: [CUDA, Metal]
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostic
+    attributes:
+      label: Diagnostic
+      description: The importer's output (reason code and source position).
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: kernel
+    attributes:
+      label: Minimal kernel
+      render: cpp

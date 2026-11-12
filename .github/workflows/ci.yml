@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  test:
+    name: Compiler, importers, CPU behaviour rows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: portable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install clang and NumPy
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang
+          python -m pip install --quiet "numpy>=2.0"
+          clang --version | head -1
+      - name: Unit tests
+        run: python -m unittest discover -s tests -p 'test_*.py'
+      - name: Corpus coverage
+        run: python -m frontends.corpus --check --dialect cuda   # Metal sources need Xcode
+      - name: Behaviour rows (CPU simulator)
+        run: python -m differential.matrix --cpu
+      - name: Differential fuzzing (CPU paths)
+        run: python -m fuzz --count 25 --seed 1 --cpu
+
+  nvcc:
+    name: nvcc compile (sm_75–sm_90)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: portable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile every fixture with NVIDIA's nvcc in Docker
+        run: python nvcc_check.py
