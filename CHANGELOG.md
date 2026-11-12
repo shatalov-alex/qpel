@@ -4,7 +4,19 @@ Notable changes to qpel, by milestone. Dates are when the milestone was reached 
 The IR has its own version (currently 3), recorded in every program and launch plan;
 older programs keep building.
 
-## [Unreleased]
+## [Unreleased] — Phase 3
+
+### Added
+- **Unit tests for every component** (353, from 168): behaviour rows per original source
+  (examples, SAM 2, all 52 llama.cpp programs), fuzz regressions, declared features per
+  fixture, the whole-corpus coverage floor and the Apple GPU fixture tests. GPGPU-Sim rows
+  with `QPEL_NVIDIA=1`; `QPEL_REQUIRE` makes a missing capability fail instead of skip.
+
+### Changed
+- `check_all.py` runs the behaviour rows, coverage floor and Apple GPU tests through the unit
+  tests; `--gpu` and `--nvidia` now make those capabilities required.
+- Importing several kernels of one large file walks its call graph once, and Metal originals
+  compile only the template instantiations they run (behaviour rows: 176 s to about 80 s).
 
 ## [0.3.0] — 2026-11-12 — Phase 2
 

@@ -82,14 +82,14 @@ module saxpy {
 
 ## Status
 
-qpel is in active development. Phase 2 of the [roadmap](portable/ROADMAP.md) is complete; Phase 3 is next.
+qpel is in active development. Phase 2 of the [roadmap](portable/ROADMAP.md) is complete; Phase 3 is in progress.
 
 | Phase | Scope | State |
 |---|---|---|
 | 0 | Consolidation: one compiler, IR as the source of truth | done |
 | 1 | Offline Clang-based CUDA and Metal importers, round-trip matrix | done |
 | 2 | IR v3, real-world corpus (llama.cpp), text syntax, fuzzing, NVIDIA gate | done |
-| 3 | Shared memory, barriers, warp/simdgroup ops, matrix tiles, benchmarks | next |
+| 3 | Shared memory, barriers, warp/simdgroup ops, matrix tiles, benchmarks | in progress |
 | 4 | Host API and library mapping (cuBLAS/CUB → MPS/Accelerate), Triton frontend | planned |
 
 The corpus coverage report (`python3 -m frontends.corpus`) currently counts 101 of 691

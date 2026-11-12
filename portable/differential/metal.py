@@ -9,6 +9,8 @@ is how qpel's generated Metal host launches the same stage.
 import os
 os.environ.setdefault('PYTORCH_ENABLE_MPS_FALLBACK', '0')  # a CPU fallback would hide GPU failures
 
+import re
+
 import numpy as np
 import torch
 
@@ -91,10 +93,23 @@ def specialise(text, constants):
     return text
 
 
+INSTANTIATION = re.compile(r'template\s*\[\[\s*host_name\("([^"]+)"\)\s*\]\][^;{]*;')
+
+
+def instantiating_only(text, names):
+    """The source without the explicit template instantiations (`template [[host_name("x")]]
+    kernel ... f<T>;`) of kernels other than `names`. Nothing else changes, so the kernels that
+    run are the original's; ggml-metal.metal has 544 such instantiations, and compiling them
+    all for every specialisation is most of the cost of running one of its kernels."""
+    return INSTANTIATION.sub(lambda m: m.group(0) if m.group(1) in names else '', text)
+
+
 def run_original(source, plan, report, case, include=(), constants=None):
     """{data resource: output array} after running every stage of `plan` with the original kernels."""
+    needed = {report['qualified'][s['kernel']] for s in plan['stages']}
     # Run the original as written: no FMA contraction, as the CPU simulator (-ffp-contract=off).
-    lib = _compiled('#pragma clang fp contract(off)\n' + specialise(inline_includes(source, include), constants))
+    text = instantiating_only(specialise(inline_includes(source, include), constants), needed)
+    lib = _compiled('#pragma clang fp contract(off)\n' + text)
     resources = {r['name']: r for r in plan['resources']}
     buffers = {}
     for r in plan['resources']:

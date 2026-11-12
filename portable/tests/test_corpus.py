@@ -11,6 +11,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 from frontends import clang_ast, corpus
 from frontends.c_import import Importer, import_source, Unsupported
+from qpel_test_support import unavailable
 
 HAS_CLANG = shutil.which('clang') is not None
 
@@ -85,12 +86,20 @@ void launch(unsigned int* out, unsigned int n) { k<<<(n + 63) / 64, 64>>>(out, n
 
 @unittest.skipUnless(HAS_CLANG, 'clang required')
 class Coverage(unittest.TestCase):
-    # The whole corpus takes minutes, so check_all runs `frontends.corpus --check`; SAM 2 stays a unit test.
-    def test_sam2_coverage_matches_the_recorded_result(self):
+    def test_coverage_matches_the_recorded_result(self):
+        """The coverage floor: every corpus kernel imports, or is blocked, exactly as recorded in
+        corpus/coverage.json. Metal sources need Xcode's Metal toolchain; without it only the
+        CUDA sources are checked (and the test says so)."""
         recorded = json.loads(corpus.COVERAGE.read_text())
-        entry = next(e for e in corpus.entries() if e['source'].startswith('sam2/'))
-        self.assertEqual(corpus.source_coverage(entry), recorded[entry['source']],
-                         'corpus coverage changed; check it, then run python3 -m frontends.corpus --update')
+        dialect = None if clang_ast.metal_available() else 'cuda'
+        found = corpus.coverage(dialect=dialect)
+        self.assertTrue(found)
+        for source, kernels in found.items():
+            with self.subTest(source=source):
+                self.assertEqual(kernels, recorded[source],
+                                 'corpus coverage changed; check it, then run python3 -m frontends.corpus --update')
+        if dialect:
+            unavailable(self, 'metal', 'no Metal toolchain: only the CUDA sources were checked')
 
     def test_corpus_sources_are_unmodified(self):
         for entry in corpus.entries():

@@ -377,7 +377,7 @@ class Importer:
         main = list(clang_ast.main_file_decls(unit, path))
         # Device functions defined in the library's own headers (llama.cpp's common.cuh) are
         # imported when the file's GPU code reaches them; system headers never reach here.
-        self.reachable = reachable_functions(unit, main, self.dialect)
+        self.reachable = cached_reachable(unit, path, main, self.dialect)
         self.header = False
         decls = []
         main_ids = {id(node) for node in main}
@@ -1920,6 +1920,23 @@ def header_host_bodies(unit, main_ids, dialect):
         if id(node) not in main_ids and not node.get('isImplicit'):
             visit(node)
     return out
+
+
+_REACHABLE = {}  # (id(unit), path, dialect) -> (unit, ids); clang_ast caches units, which never change
+
+
+def cached_reachable(unit, path, main, dialect):
+    """reachable_functions, once per parsed unit: importing several kernels of one large
+    library file (llama.cpp's ggml-metal.metal) would otherwise walk all of it every time."""
+    key = (id(unit), str(path), dialect)
+    hit = _REACHABLE.get(key)
+    if hit and hit[0] is unit:
+        return hit[1]
+    if len(_REACHABLE) >= 8:
+        _REACHABLE.clear()
+    ids = frozenset(reachable_functions(unit, main, dialect))
+    _REACHABLE[key] = (unit, ids)
+    return ids
 
 
 def reachable_functions(unit, main, dialect):

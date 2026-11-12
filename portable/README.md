@@ -51,11 +51,23 @@ Run everything that needs no NVIDIA hardware with one command:
 python3 portable/check_all.py --gpu --python /path/to/venv/bin/python
 ```
 
-This runs the unit tests, the Metal compile check, the nvcc compile check and the Apple GPU tests, then prints a summary. `--python` must be an interpreter with the packages in `requirements.txt` (NumPy, PyTorch). Without `--gpu`, or with `--no-nvcc`, the summary lists what was not run. To run only the compiler tests:
+This runs the unit tests, the round trips, the Metal and nvcc compile checks and the fuzzer, then prints a summary. `--python` must be an interpreter with the packages in `requirements.txt` (NumPy, PyTorch). `--gpu` makes the Apple GPU and the Metal toolchain required, and `--nvidia` adds the GPGPU-Sim rows; without them, or with `--no-nvcc`, the summary lists what was not run. To run only the unit tests (about 3.5 minutes on an M4 Pro):
 
 ```sh
 python3 -m unittest discover -s portable/tests -p 'test_*.py'
 ```
+
+Besides the compiler, importer and host tests, the unit tests hold one test per component:
+
+| Tests | What each one checks |
+|---|---|
+| `test_behaviour_rows` | one original (example, SAM 2, each pinned llama.cpp program): the unmodified original against qpel's CUDA on the CPU simulator, and against qpel's Metal on the Apple GPU |
+| `test_fuzz_regressions` | one saved fuzzer failure: text round trip, re-import, CPU simulator against Apple GPU |
+| `test_features` | one fixture: declared features = launch plan = manifest = enabled support blocks |
+| `test_corpus` | the coverage floor: every corpus kernel imports or is blocked exactly as `corpus/coverage.json` records |
+| `test_gpu_fixtures` | one fixture on the Apple GPU against its independent oracle (`gpu_tests/`) |
+
+The behaviour rows are prepared in parallel worker processes, grouped by source file. Optional capabilities skip when absent: the Apple GPU (PyTorch with MPS), the Metal toolchain (Xcode) and GPGPU-Sim. `QPEL_NVIDIA=1` adds the GPGPU-Sim rows (minutes, in Docker), and `QPEL_REQUIRE=gpu,metal,nvidia` turns a missing capability into a failure; `check_all.py --gpu --nvidia` sets both.
 
 Numerical checks need clang++; CUDA host ABI tests need NumPy. Missing optional prerequisites produce skips, which must not be treated as release validation. CUDA orchestration and CPU simulation are not proof of NVIDIA execution; nvcc compilation is covered by the check below.
 

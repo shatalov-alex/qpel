@@ -189,15 +189,21 @@ def check_source(name, path, dialect, plan, include, grids, options, work, gpu):
             yield rows['metal'][0], label, 'skipped: no Apple GPU'
 
 
-def rows(names=None, gpu=None):
+def gpu_available():
+    """True when the Apple GPU rows can run (PyTorch with MPS)."""
+    try:
+        from . import metal
+        return metal.available()
+    except ImportError:
+        return False
+
+
+def rows(names=None, gpu=None, index=None):
+    """Yield (row, case label, error or None); `index` limits it to sources()[index]."""
     if gpu is None:
-        try:
-            from . import metal
-            gpu = metal.available()
-        except ImportError:
-            gpu = False
-    for index, (name, path, dialect, plan, include, grids, options) in enumerate(sources()):
-        if names and name not in names:
+        gpu = gpu_available()
+    for number, (name, path, dialect, plan, include, grids, options) in enumerate(sources()):
+        if names and name not in names or index is not None and number != index:
             continue
         if dialect == 'metal' and not metal_available():
             yield 'metal original', path.name, 'skipped: no Metal toolchain (Xcode) to import it'
@@ -210,6 +216,40 @@ def rows(names=None, gpu=None):
                 yield from check_source(name, path, dialect, plan, include, grids, options, work, gpu)
             except (ValueError, RuntimeError) as error:
                 yield f'{dialect} -> qpel', path.name, str(error)
+
+
+def source_rows(indices, gpu=None):
+    """{index: every row of sources()[index]} for the given sources: the unit of work for
+    parallel runs. Sources of one file share its parse (clang_ast caches per process)."""
+    return {index: list(rows(index=index, gpu=gpu)) for index in indices}
+
+
+def parallel(gpu=None, workers=None, chunk=6, metal_chunk=6):
+    """(executor, {source index: future of source_rows}) computed in fresh worker processes
+    (spawned, so PyTorch's GPU state is never forked); the caller shuts the executor down.
+    Sources are grouped by file, in chunks of `chunk`, so a large library file is parsed a
+    few times in parallel rather than once per program. Metal files get larger chunks: after
+    the first program a worker reuses the file's parse and its compiled library, and Metal
+    compiles of ggml-metal.metal running side by side wait for each other."""
+    import multiprocessing
+    import os
+    from concurrent.futures import ProcessPoolExecutor
+    gpu = gpu_available() if gpu is None else gpu
+    by_file = {}
+    for index, (_, path, *_rest) in enumerate(sources()):
+        by_file.setdefault(path, []).append(index)
+    tasks = []
+    for path, group in by_file.items():
+        size = metal_chunk if path.suffix == '.metal' else chunk
+        tasks += [group[i:i + size] for i in range(0, len(group), size)]
+    tasks.sort(key=len, reverse=True)  # the long ones first
+    workers = workers or max(1, min(len(tasks), os.cpu_count() or 2))
+    executor = ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context('spawn'))
+    futures = {}
+    for task in tasks:
+        future = executor.submit(source_rows, task, gpu)
+        futures.update({index: future for index in task})
+    return executor, futures
 
 
 def main(argv=None):

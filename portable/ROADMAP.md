@@ -9,7 +9,7 @@ qpel is a neutral intermediate language between NVIDIA CUDA and Apple Metal: ker
 | 0 | Consolidation: one compiler, IR as the source of truth | done 2026-10-19 |
 | 1 | Offline Clang-based CUDA and Metal importers, round-trip matrix | done 2026-11-11 |
 | 2 | IR v3, real-world corpus (llama.cpp), text syntax, fuzzing, NVIDIA gate | done 2026-11-12 (GPGPU-Sim and a Tesla T4) |
-| 3 | Shared memory, barriers, warp/simdgroup ops, matrix tiles, benchmarks, test enrichment | next |
+| 3 | Shared memory, barriers, warp/simdgroup ops, matrix tiles, benchmarks, test enrichment | in progress: test enrichment done |
 | 4 | Host API and library mapping, Triton frontend | planned |
 
 ## 1. Design decisions
@@ -137,7 +137,7 @@ The nvcc check compiles every fixture (sm_75–sm_90), the Metal check compiles 
 - Atomics beyond u32 (f32 add, i32/u64 where supported), with capability gating.
 - Optimisation passes kept separate from portability lowering: constant folding, CSE, vectorised loads.
 - A benchmark harness reporting time per kernel against the native original on both platforms.
-- **Test enrichment: unit tests beyond SAM 2.** Today the unit tests run behaviour rows only for the hand-written examples and SAM 2; the llama.cpp programs, fuzz regressions and declared features are checked only by `check_all.py`. Move them into `tests/`: one test per corpus program (CPU-simulator rows always, Apple GPU rows when available, GPGPU-Sim rows when Docker is), a test that replays every `fuzz/regressions/` program, a test that fixture features match their generated support blocks, and a coverage floor per corpus (`--check`). Keep the default run fast by sharing compiled programs between cases and marking the slow rows, so `unittest discover` covers every component, not just the first one ported.
+- ~~**Test enrichment: unit tests beyond SAM 2.**~~ Done 2026-11-12: `unittest discover` covers every component (353 tests, from 168). One test per original source (all 81: examples, SAM 2, 52 llama.cpp programs) runs the CPU-simulator rows and, when there is one, the Apple GPU rows; the GPGPU-Sim rows run with `QPEL_NVIDIA=1`. One test per fuzz regression, one per fixture for declared features against the generated support blocks, the whole-corpus coverage floor, and the Apple GPU fixture tests. Rows are prepared in parallel workers grouped by source file; the importer now walks a large file's call graph once per parse and the Metal originals compile only the template instantiations they run, which brought the rows from 176 s to about 80 s. `QPEL_REQUIRE` turns a missing GPU, Metal toolchain or GPGPU-Sim into a failure (`check_all.py --gpu --nvidia`).
 
 ### Phase 4: host and library layer, for "migrate apps" (ongoing)
 - A host API IR: buffers, queues/streams, events, launch, copies. Backends for CUDA runtime C++, Metal (Swift/ObjC++/metal-cpp), and the existing Python hosts.

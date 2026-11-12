@@ -35,12 +35,8 @@ jobs:
           sudo apt-get install -y -qq clang
           python -m pip install --quiet "numpy>=2.0"
           clang --version | head -1
-      - name: Unit tests
-        run: python -m unittest discover -s tests -p 'test_*.py'
-      - name: Corpus coverage
-        run: python -m frontends.corpus --check --dialect cuda   # Metal sources need Xcode
-      - name: Behaviour rows (CPU simulator)
-        run: python -m differential.matrix --cpu
+      - name: Unit tests (behaviour rows, regressions, features, coverage floor)
+        run: python -m unittest discover -s tests -p 'test_*.py'   # Metal and GPU parts skip on Linux
       - name: Differential fuzzing (CPU paths)
         run: python -m fuzz --count 25 --seed 1 --cpu
 
