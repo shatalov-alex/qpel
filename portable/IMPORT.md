@@ -78,7 +78,7 @@ First entry: SAM 2 `sam2/csrc/connected_components.cu` (commit 2b90b9f). On 2026
 
 `corpus/sam2/connected_components.plan.json` is the launch plan transcribed from the original host function (`get_connected_componnets`): `img` input, `label` and `count_final` outputs, `count_init` zeroed (`torch::zeros`), six stages in its order with 16 × 16 blocks. Imported with it, the file must give the `sam2_cc` fixture exactly (a row of the round-trip matrix). That fixture compiles with nvcc and Metal and passes 65 cases on the Apple GPU against an independent NumPy model of the original's labelling (8-connected components; label = 1 + smallest 2 × 2 block index in the component; count = area).
 
-The original launches one thread per 2 × 2 pixel block and loops over the batch on the host. qpel runs one thread per pixel of a `(W, H, 1)` shape. Threads past the original's grid fail the kernels' own guards, so the result is the same, but 4 times as many threads are launched. Launch geometry belongs to the host layer (Phase 4).
+The original launches one thread per 2 × 2 pixel block and loops over the batch on the host. qpel runs one thread per pixel of a `(W, H, 1)` shape. Threads past the original's grid fail the kernels' own guards, so the result is the same, but 4 times as many threads are launched. Launch geometry belongs to the host layer (Phase 7).
 
 ## Fuzzing
 

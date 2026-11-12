@@ -15,8 +15,9 @@ importers, the text syntax, and the checks that run all of them. For an overview
 - **Backends:** CUDA (nvcc, sm_75–sm_90) and Metal (3.0/3.1), plus Python hosts
   (PyTorch/Metal, CuPy/CUDA).
 - **Text syntax** (`TEXT.md`): `.qpel` files that print and parse back to the same IR.
-- **Not yet:** shared memory, barriers, warp/simdgroup operations and matrix tiles (Phase 3), and
-  host-API and library mapping (Phase 4). See `ROADMAP.md`.
+- **Not yet:** PyTorch extension headers and op hosts (Phase 3), general shared memory, barriers and
+  warp/simdgroup operations (Phase 5), matrix tiles (Phase 6), and host-API and library mapping
+  (Phase 7). See `ROADMAP.md`.
 
 JetBrains MPS (`../languages/`) is an optional structured editor that exports the same IR. Its
 files are MPS persistence, not text to edit by hand.

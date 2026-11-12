@@ -27,7 +27,7 @@ kernel leaves unwritten (`Case.defined`) are not compared.
   `-ffp-contract=off` and UBSan, so an original that executes undefined behaviour fails loudly instead of
   producing a reference. Each launch runs all blocks and threads one after another: one valid CUDA schedule,
   exact for race-free kernels and for atomics whose combined effect does not depend on order. Barriers and
-  shared memory are rejected (they need threads that run together; Phase 3).
+  shared memory are rejected (they need threads that run together; Phases 3 and 5).
 - **Originals are driven from qpel's launch plan.** The importer records how each original argument maps onto
   qpel's (`report['arguments']`): the same resource, a count that became a shape (it receives W·H·N), or
   scalar extents (they receive the shape's members). Host functions are blanked out by their source ranges, so

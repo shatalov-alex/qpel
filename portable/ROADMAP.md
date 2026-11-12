@@ -9,8 +9,11 @@ qpel is a neutral intermediate language between NVIDIA CUDA and Apple Metal: ker
 | 0 | Consolidation: one compiler, IR as the source of truth | done 2026-10-19 |
 | 1 | Offline Clang-based CUDA and Metal importers, round-trip matrix | done 2026-11-11 |
 | 2 | IR v3, real-world corpus (llama.cpp), text syntax, fuzzing, NVIDIA gate | done 2026-11-12 (GPGPU-Sim and a Tesla T4) |
-| 3 | Shared memory, barriers, warp/simdgroup ops, matrix tiles, benchmarks, test enrichment | in progress: test enrichment done |
-| 4 | Host API and library mapping, Triton frontend | planned |
+| 3 | First real port: PyTorch extensions (TRELLIS.2 pilot), header stubs, PyTorch op host, benchmarks v0 | in progress (test enrichment done) |
+| 4 | `qpel verify` for any port; public release | planned |
+| 5 | Breadth: shared memory, atomics, warp/simdgroup ops, block scans | planned |
+| 6 | Performance: matrix tiles, benchmarks | planned |
+| 7 | Libraries, Triton | later |
 
 ## 1. Design decisions
 
@@ -27,6 +30,7 @@ So:
 - A **text syntax** (`.qpel`, [TEXT.md](TEXT.md)) lets people and tools write qpel without an IDE.
 - **Importers use Clang** (its JSON AST, offline) instead of hand-written parsers.
 - **Numerics are specified, not inherited** from either platform ([NUMERICS.md](NUMERICS.md)): defined integer wrapping, explicit casts, FMA distinct from `a*b + c`, separately rounded float32, f16/bf16 for storage with float32 arithmetic, stated bounds for transcendentals. Every rule is checked by running the same program on both platforms.
+- **Translator and verifier** (2026-11-12): besides translating, qpel checks that any port, written by hand or by an AI tool, behaves like its original on both platforms. Progress is measured by real ports of CUDA-only libraries that people ask to run on Macs.
 - Longer term, lowering qpel IR to **MLIR** would connect it to existing optimisation passes and to SPIR-V/Vulkan as a third backend.
 
 ## 2. Starting point (2026-10-19)
@@ -131,30 +135,57 @@ The nvcc check compiles every fixture (sm_75–sm_90), the Metal check compiles 
   **GPGPU-Sim half done 2026-11-12** (gpgpusim/README.md): every behaviour-matrix source runs as real CUDA on a simulated Turing GPU in Docker (`python3 -m differential.gpgpusim`, `check_all.py --nvidia`). 720 cases pass: the unmodified CUDA originals, and qpel's CUDA from both CUDA and Metal originals, against the CPU-simulator and Apple-GPU references. Fuzzing runs there too (`fuzz --nvidia`). Getting there fixed eleven GPGPU-Sim bugs (`gpgpusim/qpel-fixes.patch`, checked by `selftest.cu`), among them f16 tie rounding, 64-bit immediates, `bfi.b64`/`mad.wide` (CUDA's `sinf` for large arguments returned 0), signed byte loads and the sign of zero in `abs`/`neg`. It also found one qpel importer bug (unsigned literals converted to `int`). qpel's generated code needed no change.
   **Real-card half done 2026-11-12; Phase 2 closed.** `differential/hardware.py` builds the same programs for x86-64 here and runs them on a Kaggle Tesla T4 (sm_75): all 720 cases and `gpgpusim/selftest.cu` pass, and the generated CuPy host passes all 20 fixture tests (`gpu_tests/run_gpu_tests.py --device cuda`). No qpel change was needed.
 
-### Phase 3: performance-capable core (4–8 weeks)
-- Shared-memory tiling, warp/simdgroup ops (`shuffle`, `ballot`, `simd_sum`), and subgroup size as a queried capability.
-- Matrix tiles mapped to WMMA/mma.sync on CUDA and `simdgroup_matrix` on Metal: the minimum for GEMM and attention.
-- Atomics beyond u32 (f32 add, i32/u64 where supported), with capability gating.
-- Optimisation passes kept separate from portability lowering: constant folding, CSE, vectorised loads.
-- A benchmark harness reporting time per kernel against the native original on both platforms.
-- ~~**Test enrichment: unit tests beyond SAM 2.**~~ Done 2026-11-12: `unittest discover` covers every component (353 tests, from 168). One test per original source (all 81: examples, SAM 2, 52 llama.cpp programs) runs the CPU-simulator rows and, when there is one, the Apple GPU rows; the GPGPU-Sim rows run with `QPEL_NVIDIA=1`. One test per fuzz regression, one per fixture for declared features against the generated support blocks, the whole-corpus coverage floor, and the Apple GPU fixture tests. Rows are prepared in parallel workers grouped by source file; the importer now walks a large file's call graph once per parse and the Metal originals compile only the template instantiations they run, which brought the rows from 176 s to about 80 s. `QPEL_REQUIRE` turns a missing GPU, Metal toolchain or GPGPU-Sim into a failure (`check_all.py --gpu --nvidia`).
+### Replan (2026-11-12)
+After Phase 2 the plan was reordered around users. The people asking for CUDA code on Macs are mostly users and maintainers of CUDA-only PyTorch extensions and kernel libraries, and the part of qpel no other tool offers is proving that a port behaves like its original. So qpel is a **translator and a verifier**, progress is measured by real ports a maintainer can accept, and every phase ends with a pilot on a real repository. The old Phase 3 (performance core) is split into Phases 5 and 6; host APIs, libraries and Triton move last.
 
-### Phase 4: host and library layer, for "migrate apps" (ongoing)
-- A host API IR: buffers, queues/streams, events, launch, copies. Backends for CUDA runtime C++, Metal (Swift/ObjC++/metal-cpp), and the existing Python hosts.
-- A library-mapping table and shims: cuBLAS GEMM → MPSMatrixMultiplication/MPSGraph; CUB/Thrust reductions and scans → qpel library kernels; cuDNN conv → MPSGraph. Unmappable calls are reported, not silently dropped.
-- A Triton frontend (an early motivation for the project). Triton's block/tile model needs Phase 3 tiles. Importing Triton TTIR/TTGIR is likely easier than CUDA C++.
+| Phase | Scope | Pilot / exit |
+|---|---|---|
+| 3 | First real port: PyTorch extensions | TRELLIS.2 `o-voxel` kernels translated, verified, timed |
+| 4 | `qpel verify`: equivalence of any port; public release | a third-party hand port and an AI-generated port verified |
+| 5 | Breadth: shared memory, atomics, warp/simdgroup ops, block scans | mamba selective scan, pytorch_sparse, mmcv NMS/RoIAlign |
+| 6 | Performance: matrix tiles, vector loads, benchmarks | gsplat rasterisation, bitsandbytes dequantisation |
+| 7 | Libraries (cuBLAS/CUB/Thrust → MPS/Accelerate), Triton | re-evaluated when reached |
 
-### Feature wish-list (good additions, roughly by value)
-1. Clang-based CUDA and MSL importers with coverage reports
-2. Text syntax and LSP, for editor support outside MPS
-3. Workgroup memory, barriers, subgroup ops
-4. Matrix tiles (WMMA ↔ simdgroup_matrix)
-5. bf16, i32 and i64 types, vector types
-6. Differential testing / fuzzing harness across backends
-7. Host IR plus C++/Swift host generation
-8. Library mapping (BLAS, conv, reductions)
-9. Triton TTIR import
-10. MLIR export, to plug into existing optimisation and SPIR-V/Vulkan as a third backend
+### Phase 3: first real port, PyTorch extensions (≈3–4 weeks, v0.4.0)
+Done before the replan: **test enrichment.** `unittest discover` covers every component (353 tests, from 168). One test per original source (all 81: examples, SAM 2, 52 llama.cpp programs) runs the CPU-simulator rows and, when there is one, the Apple GPU rows; the GPGPU-Sim rows run with `QPEL_NVIDIA=1`. One test per fuzz regression, one per fixture for declared features against the generated support blocks, the whole-corpus coverage floor, and the Apple GPU fixture tests. Rows are prepared in parallel workers grouped by source file; the importer now walks a large file's call graph once per parse and the Metal originals compile only the template instantiations they run (rows: 176 s to about 80 s). `QPEL_REQUIRE` turns a missing GPU, Metal toolchain or GPGPU-Sim into a failure (`check_all.py --gpu --nvidia`).
+
+Pilot: Microsoft TRELLIS.2's `o-voxel` extension (13 kernels: Z-order and Hilbert serialisation, a hash table, a rasteriser), whose maintainers asked for non-CUDA backends.
+- Declaration-only header stubs for `cuda.h`, `cooperative_groups.h` (`this_grid`, `this_thread_block`, `thread_rank`), `torch/extension.h` and the ATen/c10 basics, with host bodies blanked as for llama.cpp. Today clang stops at these includes in every PyTorch extension surveyed.
+- Importer: cooperative-groups thread ranks, `atomicCAS` and the other integer atomics at 32 and 64 bits, `size_t` indexing idioms, and whatever else the pilot surfaces.
+- Minimal shared memory: static `__shared__` arrays and `__syncthreads` ↔ `threadgroup` arrays and `threadgroup_barrier`, as far as the rasteriser needs (general rules in Phase 5).
+- **PyTorch op host:** a generated Python function with the extension's signature that runs the Metal kernels on MPS tensors, so a Mac path sits next to the CUDA one.
+- **Benchmark harness v0:** time per kernel; qpel's Metal against the extension's CPU path on the Apple GPU, qpel's CUDA against the original on NVIDIA (`differential/hardware.py`).
+- `pip install qpel` (wheel, `qpel` command).
+- **Exit:** the pilot's kernels translated and verified on the CPU simulator, the Apple GPU and NVIDIA hardware, and timed; the port is ready to offer to the maintainers (at the public release, or earlier as standalone code).
+
+### Phase 4: `qpel verify`, equivalence of any port (≈3 weeks, v0.5.0, public release)
+- `qpel verify original.cu port.metal`: cases derived from the launch plan, both sides run (CPU simulator, Apple GPU, NVIDIA through GPGPU-Sim or a hardware runner), outputs compared under NUMERICS.md (bit-exact, or within stated ulp bounds), first difference reported. Unlike today's matrix, the port need not import to the same IR; only its signature must map.
+- Edge cases per kernel from the fuzzer: NaN, ±0, subnormals, boundaries, odd sizes.
+- A machine-readable report, and an entry point an AI porting agent can call inside its loop.
+- Public release: final review of the docs, private vulnerability reporting, repository public; the Phase 3 port offered upstream.
+- **Exit:** a third-party hand port and an AI-generated port verified, with the results published.
+
+### Phase 5: breadth for kernel libraries (≈6–8 weeks, v0.6.0)
+- Shared memory in general (static and dynamic) and barriers, with the uniformity checks generalised.
+- Atomics beyond integers: float add, 64-bit, compare-and-swap loops, gated by capability.
+- Warp/simdgroup operations: shuffle, ballot, reductions (`__shfl_*` ↔ `simd_shuffle`, `simd_sum`), with the subgroup width as a capability (32 on both platforms today).
+- A block-level library subset: CUB BlockLoad, BlockScan and BlockReduce ↔ qpel library kernels.
+- An extensions corpus with coverage per repository (TRELLIS.2, Hunyuan3D-2, mamba, pytorch_sparse, mmcv, gsplat), replacing the corpus percentage as the headline number.
+- **Pilots:** mamba's selective-scan forward kernel, pytorch_sparse, mmcv NMS and RoIAlign.
+
+### Phase 6: performance (≈6–8 weeks, v0.7.0)
+- Matrix tiles: WMMA/`mma.sync` ↔ `simdgroup_matrix` (M1–M4) and the M5 matrix tiles; the minimum for GEMM and attention.
+- Vectorised loads, and optimisation passes kept separate from portability lowering (constant folding, CSE).
+- Benchmark harness v1: against the native originals on both platforms, published per pilot.
+- **Pilots:** gsplat rasterisation, bitsandbytes dequantisation.
+
+### Phase 7: libraries and other frontends (later; re-evaluated when reached)
+- A host-API IR and a library-mapping table: cuBLAS GEMM → MPSMatrixMultiplication/MPSGraph; CUB/Thrust reductions and scans → qpel library kernels; cuDNN convolution → MPSGraph. Unmappable calls are reported, not dropped.
+- Triton: first as an input to `qpel verify`; a Triton frontend only if Triton's own Apple backend does not land.
+
+### Deferred
+- Bringing the JetBrains MPS editor up to IR v2/v3: the text syntax is the main way to write qpel.
+- LSP, MLIR export and SPIR-V/Vulkan as a third backend: after Phase 7.
 
 ## Verification baseline
 - `python3 check_all.py --gpu --python <venv with torch>`: all four steps pass on 2026-10-19 (128 unit tests with 0 skipped, 13 Metal files, 13 CUDA files plus host link, 12/12 fixtures on the Apple GPU).

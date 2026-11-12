@@ -89,11 +89,14 @@ qpel is in active development. Phase 2 of the [roadmap](portable/ROADMAP.md) is 
 | 0 | Consolidation: one compiler, IR as the source of truth | done |
 | 1 | Offline Clang-based CUDA and Metal importers, round-trip matrix | done |
 | 2 | IR v3, real-world corpus (llama.cpp), text syntax, fuzzing, NVIDIA gate | done |
-| 3 | Shared memory, barriers, warp/simdgroup ops, matrix tiles, benchmarks | in progress |
-| 4 | Host API and library mapping (cuBLAS/CUB → MPS/Accelerate), Triton frontend | planned |
+| 3 | First real port: PyTorch extensions, header stubs, PyTorch op host, benchmarks | in progress |
+| 4 | `qpel verify`: check any port (hand-written or AI-generated) against its original | planned |
+| 5 | Shared memory, atomics, warp/simdgroup ops, block scans | planned |
+| 6 | Matrix tiles and performance | planned |
+| 7 | Library mapping (cuBLAS/CUB → MPS/Accelerate), Triton | later |
 
 The corpus coverage report (`python3 -m frontends.corpus`) currently counts 101 of 691
-llama.cpp and SAM 2 kernels as importable. Most of the rest need Phase 3 features.
+llama.cpp and SAM 2 kernels as importable. Most of the rest need Phase 5 features (shared memory, warp operations).
 
 ## Repository layout
 
