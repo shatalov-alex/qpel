@@ -4,10 +4,13 @@ Each program is generated as qpel text (programs.py) and must
   1. parse, validate and print back to the same text;
   2. come back unchanged from qpel -> CUDA -> qpel and qpel -> Metal -> qpel;
   3. give the same outputs from its CUDA on the CPU simulator and its Metal on the
-     Apple GPU (floats bit for bit, subnormals read as signed zeros).
+     Apple GPU (floats bit for bit, subnormals read as signed zeros);
+  4. with --nvidia, give the same outputs from its CUDA on GPGPU-Sim, a simulated
+     NVIDIA GPU (differential/gpgpusim.py; all programs run in one container).
 
     python3 -m fuzz --count 30 --seed 1    # check_all runs a fixed set
     python3 -m fuzz --seed 7 --keep /tmp/f # keep failing programs
+    python3 -m fuzz --nvidia               # also on GPGPU-Sim
 """
 import argparse
 import json
@@ -23,8 +26,9 @@ sys.path.insert(0, str(HERE))
 from fuzz.programs import generate  # noqa: E402
 
 
-def check(text, seed, work, gpu):
-    """None, or (stage, error) for the first failure."""
+def check(text, seed, work, gpu, nvidia=None):
+    """None, or (stage, error) for the first failure. nvidia: (folder, pending list) to stage the
+    program's CUDA for GPGPU-Sim; its cases are appended to the list and compared after the run."""
     from qpel import compile_program
     from qpel_ir import validate
     from qpel_text import parse_program, print_program
@@ -50,6 +54,14 @@ def check(text, seed, work, gpu):
     (work/'sim').mkdir()
     simulated = Program(next(generated.glob('*.cu')), plan, work/'sim')
     host = load_host(generated) if gpu else None
+    target = None
+    if nvidia:
+        import shutil
+        from differential.gpgpusim import GpuProgram
+        folder, pending = nvidia
+        folder.mkdir(parents=True)
+        source = shutil.copy(next(generated.glob('*.cu')), folder/'program.cu')  # outlives `work`
+        target = GpuProgram(Path(source), plan, folder/'gpu')
     rng = np.random.default_rng(seed)
     outputs = [r['name'] for r in plan['resources'] if r['kind'] == 'output']
     for size in (1, 37, 300):
@@ -58,6 +70,11 @@ def check(text, seed, work, gpu):
         inputs['a'][:size // 3] = rng.integers(-300, 300, size // 3)  # small values too
         case = Case({'count': (size, 1, 1)}, inputs)
         cpu = simulated.run(case)
+        if target:
+            case_folder = target.work/f'c{size:03}'
+            case_folder.mkdir()
+            target.write_case(case, case_folder)
+            pending.append((target, case_folder, cpu, outputs, size))
         if gpu:
             from differential import metal
             error = compare(cpu, metal.run_generated(host, plan, case), outputs)
@@ -72,7 +89,19 @@ def main(argv=None):
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--cpu', action='store_true', help='skip the Apple GPU comparison')
     parser.add_argument('--keep', type=Path, help='write failing programs to this folder')
+    parser.add_argument('--nvidia', action='store_true', help='also run every program on GPGPU-Sim (Docker)')
     args = parser.parse_args(argv)
+    nvidia_root, pending = None, []
+    if args.nvidia:
+        from differential import gpgpusim
+        if not gpgpusim.image_ready():
+            print('no Docker or GPGPU-Sim image: --nvidia needs both')
+            return 1
+        problem = gpgpusim.selftest()
+        if problem:
+            print(f'FAIL GPGPU-Sim self-test (gpgpusim/selftest.cu):\n{problem}')
+            return 1
+        nvidia_root = Path(tempfile.mkdtemp(prefix='qpel-fuzz-nvidia-')).resolve()
     gpu = False
     if not args.cpu:
         try:
@@ -85,21 +114,47 @@ def main(argv=None):
     regressions = sorted((HERE/'fuzz/regressions').glob('*.qpel'))
     programs = [(f'regression {p.stem}', 0, print_program(parse_program(p.read_text()))) for p in regressions]
     programs += [(f'seed {args.seed*100000 + i}', args.seed*100000 + i, None) for i in range(args.count)]
-    for label, seed, text in programs:
+    failed = set()
+
+    def fail(label, seed, text, stage, error):
+        nonlocal failures
+        if label in failed:
+            return
+        failed.add(label)
+        failures += 1
+        print(f'FAIL {label}: {stage}\n     {error[:600]}')
+        if args.keep:
+            args.keep.mkdir(parents=True, exist_ok=True)
+            (args.keep/f'fuzz_{seed}.qpel').write_text(text)
+    staged = {}  # GpuProgram -> (label, seed, text)
+    for number, (label, seed, text) in enumerate(programs):
         text = text or generate(seed)
+        before = len(pending)
+        nvidia = (nvidia_root/f'p{number:04}', pending) if nvidia_root else None
         with tempfile.TemporaryDirectory(prefix='qpel-fuzz-') as work:
             try:
-                result = check(text, seed, Path(work), gpu)
+                result = check(text, seed, Path(work), gpu, nvidia)
             except Exception:
                 result = ('crash', traceback.format_exc()[-1500:])
         if result:
-            failures += 1
-            print(f'FAIL {label}: {result[0]}\n     {result[1][:600]}')
-            if args.keep:
-                args.keep.mkdir(parents=True, exist_ok=True)
-                (args.keep/f'fuzz_{seed}.qpel').write_text(text)
+            fail(label, seed, text, *result)
+        for target, *_ in pending[before:]:
+            staged[target] = (label, seed, text)
+    if pending:
+        from differential import gpgpusim
+        from differential.matrix import compare
+        import shutil
+        try:
+            gpgpusim.run_all(nvidia_root, [nvidia_root])
+            for target, folder, cpu, outputs, size in pending:
+                actual, error = target.outcome(folder)
+                error = error or compare(cpu, actual, outputs)
+                if error:
+                    fail(*staged[target], 'cuda (simulator) vs cuda (GPGPU-Sim)', f'{size} elements: {error}')
+        finally:
+            shutil.rmtree(nvidia_root, ignore_errors=True)
     print(f'{len(programs) - failures}/{len(programs)} programs passed ({len(regressions)} regressions, {args.count} random)'
-          + ('' if gpu else ' (no Apple GPU: CPU paths only)'))
+          + ('' if gpu else ' (no Apple GPU: CPU paths only)') + (' (with GPGPU-Sim)' if args.nvidia else ''))
     return 1 if failures else 0
 
 

@@ -145,6 +145,7 @@ The nvcc check compiles every fixture (sm_75–sm_90), the Metal check compiles 
 - Grow the corpus to real code: llama.cpp `ggml-cuda` and `ggml-metal` element-wise and reduction kernels, and PyTorch MPS custom kernels. Publish a **coverage metric** (% importable, % round-trip-clean) per corpus and direction.
 - Add differential fuzzing across backends to the round-trip matrix.
 - **Milestone gate:** at the end of this phase, run the deferred NVIDIA execution tests (GPGPU-Sim, then one real card).
+  **GPGPU-Sim half done 2026-11-12** (gpgpusim/README.md): every behaviour-matrix source runs as real CUDA on a simulated Turing GPU in Docker (`python3 -m differential.gpgpusim`, `check_all.py --nvidia`). 720 cases pass: the unmodified CUDA originals, and qpel's CUDA from both CUDA and Metal originals, against the CPU-simulator and Apple-GPU references. Fuzzing runs there too (`fuzz --nvidia`). Getting there fixed eleven GPGPU-Sim bugs (`gpgpusim/qpel-fixes.patch`, checked by `selftest.cu`), among them f16 tie rounding, 64-bit immediates, `bfi.b64`/`mad.wide` (CUDA's `sinf` for large arguments returned 0), signed byte loads and the sign of zero in `abs`/`neg`. It also found one qpel importer bug (unsigned literals converted to `int`). qpel's generated code needed no change. Remaining: one run on a real NVIDIA card.
 
 ### Phase 3: performance-capable core (4–8 weeks)
 - Shared-memory tiling, warp/simdgroup ops (`shuffle`, `ballot`, `simd_sum`), and subgroup size as a queried capability.
@@ -152,6 +153,7 @@ The nvcc check compiles every fixture (sm_75–sm_90), the Metal check compiles 
 - Atomics beyond u32 (f32 add, i32/u64 where supported), with capability gating.
 - Optimisation passes kept separate from portability lowering, as Codex already argued: constant folding, CSE, vectorised loads.
 - A benchmark harness reporting time per kernel against the native original on both platforms.
+- **Test enrichment: unit tests beyond SAM 2.** Today the unit tests run behaviour rows only for the hand-written examples and SAM 2; the llama.cpp programs, fuzz regressions and declared features are checked only by `check_all.py`. Move them into `tests/`: one test per corpus program (CPU-simulator rows always, Apple GPU rows when available, GPGPU-Sim rows when Docker is), a test that replays every `fuzz/regressions/` program, a test that fixture features match their generated support blocks, and a coverage floor per corpus (`--check`). Keep the default run fast by sharing compiled programs between cases and marking the slow rows, so `unittest discover` covers every component, not just the first one ported.
 
 ### Phase 4: host and library layer, for "migrate apps" (ongoing)
 - A host API IR: buffers, queues/streams, events, launch, copies. Backends for CUDA runtime C++, Metal (Swift/ObjC++/metal-cpp), and the existing Python hosts.

@@ -1,0 +1,357 @@
+diff --git a/src/cuda-sim/half.h b/src/cuda-sim/half.h
+index fab1a229..e6544aa2 100644
+--- a/src/cuda-sim/half.h
++++ b/src/cuda-sim/half.h
+@@ -220,7 +220,7 @@
+ /// `std::numeric_limits<float>::round_style` to synchronize the rounding mode
+ /// with that of the underlying single-precision implementation.
+ #ifndef HALF_ROUND_STYLE
+-#define HALF_ROUND_STYLE -1  // = std::round_indeterminate
++#define HALF_ROUND_STYLE 1  // = std::round_indeterminate -> round_to_nearest, as PTX .rn
+ #endif
+ 
+ /// Tie-breaking behaviour for round to nearest.
+@@ -231,7 +231,7 @@
+ /// redefined to `1` (before including half.hpp) if more IEEE-conformant
+ /// behaviour is needed.
+ #ifndef HALF_ROUND_TIES_TO_EVEN
+-#define HALF_ROUND_TIES_TO_EVEN 0  // ties away from zero
++#define HALF_ROUND_TIES_TO_EVEN 1  // ties away from zero -> ties to even, as IEEE 754 and NVIDIA GPUs
+ #endif
+ 
+ /// Value signaling overflow.
+diff --git a/src/cuda-sim/half.hpp b/src/cuda-sim/half.hpp
+index 8f1a8ebe..06f93c91 100644
+--- a/src/cuda-sim/half.hpp
++++ b/src/cuda-sim/half.hpp
+@@ -210,7 +210,7 @@
+ /// set to infinity) and is the fastest rounding mode possible. It can even be set to `std::numeric_limits<float>::round_style` 
+ /// to synchronize the rounding mode with that of the underlying single-precision implementation.
+ #ifndef HALF_ROUND_STYLE
+-	#define HALF_ROUND_STYLE	-1			// = std::round_indeterminate
++	#define HALF_ROUND_STYLE	1			// = std::round_indeterminate -> round_to_nearest, as PTX .rn
+ #endif
+ 
+ /// Tie-breaking behaviour for round to nearest.
+@@ -219,7 +219,7 @@
+ /// thus equal to the round() function), but can be redefined to `1` (before including half.hpp) if more IEEE-conformant 
+ /// behaviour is needed.
+ #ifndef HALF_ROUND_TIES_TO_EVEN
+-	#define HALF_ROUND_TIES_TO_EVEN	0		// ties away from zero
++	#define HALF_ROUND_TIES_TO_EVEN	1		// ties away from zero -> ties to even, as IEEE 754 and NVIDIA GPUs
+ #endif
+ 
+ /// Value signaling overflow.
+diff --git a/src/cuda-sim/instructions.cc b/src/cuda-sim/instructions.cc
+index f6324fbf..1682d87d 100644
+--- a/src/cuda-sim/instructions.cc
++++ b/src/cuda-sim/instructions.cc
+@@ -870,12 +870,12 @@ void abs_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+     case U64_TYPE:
+       d.s64 = my_abs(a.u64);
+       break;
+-    case F32_TYPE:
+-      d.f32 = my_abs(a.f32);
++    case F32_TYPE:  // clears the sign bit: abs(-0.0) is +0.0 (x < 0 ? -x : x kept -0.0)
++      d.f32 = std::fabs(a.f32);
+       break;
+     case F64_TYPE:
+     case FF64_TYPE:
+-      d.f64 = my_abs(a.f64);
++      d.f64 = std::fabs(a.f64);
+       break;
+     default:
+       printf("Execution error: type mismatch with instruction\n");
+@@ -1710,9 +1710,16 @@ void bfi_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+   data = src2_data;
+   unsigned pos = src3_data.u32 & 0xFF;
+   unsigned len = src4_data.u32 & 0xFF;
++  // 64-bit fields need 64-bit masks: bfi.b64 (used by CUDA's sinf/cosf argument
++  // reduction) lost every bit above 31.
+   for (i = 0; i < len && pos + i < max; i++) {
+-    data.u32 = (~((0x00000001) << (pos + i))) & data.u32;
+-    data.u32 = data.u32 | ((src1_data.u32 & ((0x00000001) << (i))) << (pos));
++    if (max == 64) {
++      data.u64 = (~(1ull << (pos + i))) & data.u64;
++      data.u64 = data.u64 | (((src1_data.u64 >> i) & 1ull) << (pos + i));
++    } else {
++      data.u32 = (~(1u << (pos + i))) & data.u32;
++      data.u32 = data.u32 | (((src1_data.u32 >> i) & 1u) << (pos + i));
++    }
+   }
+   thread->set_operand_value(dst, data, i_type, thread, pI);
+ }
+@@ -2447,6 +2454,25 @@ ptx_reg_t f2x(ptx_reg_t x, unsigned from_width, unsigned to_width, int to_sign,
+   }
+ 
+   ptx_reg_t y;
++  if (to_width == 64 && (to_sign == 0 || to_sign == 1)) {
++    // 64-bit results went through a 32-bit int and were clamped to its range. PTX: round
++    // by the mode, saturate to the destination range, NaN -> 0.
++    float r = x.f32;
++    switch (mode) {
++      case cudaRoundNearest: r = rintf(r); break;
++      case cudaRoundMinInf: r = floorf(r); break;
++      case cudaRoundPosInf: r = ceilf(r); break;
++      default: r = truncf(r); break;
++    }
++    if (std::isnan(r))
++      y.u64 = 0;
++    else if (to_sign == 1)
++      y.s64 = r >= 9223372036854775808.0f ? 9223372036854775807ll
++              : r < -9223372036854775808.0f ? (-9223372036854775807ll - 1) : (long long)r;
++    else
++      y.u64 = r >= 18446744073709551616.0f ? ~0ull : r <= 0.0f ? 0ull : (unsigned long long)r;
++    return y;
++  }
+   if (to_sign == 1) {  // convert to 64-bit number first?
+     int tmp = cuda_math::float2int(x.f32, mode);
+     if ((x.u32 & 0x7f800000) == 0) tmp = 0;  // round denorm. FP to 0
+@@ -2640,6 +2666,7 @@ ptx_reg_t s2f(ptx_reg_t x, unsigned from_width, unsigned to_width, int to_sign,
+         break;
+     }
+   } else {
++    y = x;  // was uninitialised: 64-bit sources converted garbage
+     switch (to_width) {
+       case 16:
+         assert(0);
+@@ -2712,6 +2739,7 @@ ptx_reg_t u2f(ptx_reg_t x, unsigned from_width, unsigned to_width, int to_sign,
+         break;
+     }
+   } else {
++    y = x;  // was uninitialised: 64-bit sources converted garbage
+     switch (to_width) {
+       case 16:
+         assert(0);
+@@ -3392,21 +3420,35 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
+   type_info_key::type_decode(type, size, t);
+   if (!vector_spec) {
+     mem->read(addr, size / 8, &data.s64);
+-    if (type == S16_TYPE || type == S32_TYPE) sign_extend(data, size, dst);
++    // ld.s8 sign-extends too (it was left zero-extended).
++    if (type == S8_TYPE || type == S16_TYPE || type == S32_TYPE) sign_extend(data, size, dst);
+     thread->set_operand_value(dst, data, type, thread, pI);
+   } else {
+     ptx_reg_t data1, data2, data3, data4;
++    // Elements narrower than 64 bits kept stale upper bits; signed ones were not sign-extended.
++    data1.u64 = data2.u64 = data3.u64 = data4.u64 = 0;
++    struct SignExtend {
++      static void apply(ptx_reg_t &d, unsigned bits) {
++        if (bits < 64 && (d.u64 >> (bits - 1) & 1)) d.u64 |= ~0ull << bits;
++      }
++    };
++    const bool is_signed = type == S8_TYPE || type == S16_TYPE || type == S32_TYPE;
+     mem->read(addr, size / 8, &data1.s64);
+     mem->read(addr + size / 8, size / 8, &data2.s64);
+     if (vector_spec != V2_TYPE) {  // either V3 or V4
+       mem->read(addr + 2 * size / 8, size / 8, &data3.s64);
+       if (vector_spec != V3_TYPE) {  // v4
+         mem->read(addr + 3 * size / 8, size / 8, &data4.s64);
++        if (is_signed) for (ptx_reg_t *d : {&data1, &data2, &data3, &data4}) SignExtend::apply(*d, size);
+         thread->set_vector_operand_values(dst, data1, data2, data3, data4);
+-      } else  // v3
++      } else {  // v3
++        if (is_signed) for (ptx_reg_t *d : {&data1, &data2, &data3}) SignExtend::apply(*d, size);
+         thread->set_vector_operand_values(dst, data1, data2, data3, data3);
+-    } else  // v2
++      }
++    } else {  // v2
++      if (is_signed) for (ptx_reg_t *d : {&data1, &data2}) SignExtend::apply(*d, size);
+       thread->set_vector_operand_values(dst, data1, data2, data2, data2);
++    }
+   }
+   thread->m_last_effective_address = addr;
+   thread->m_last_memory_space = space;
+@@ -3862,7 +3904,15 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
+   unsigned i_type = pI->get_type();
+   ptx_reg_t a = thread->get_operand_value(src1, dst, i_type, thread, 1);
+   ptx_reg_t b = thread->get_operand_value(src2, dst, i_type, thread, 1);
+-  ptx_reg_t c = thread->get_operand_value(src3, dst, i_type, thread, 1);
++  // mad.wide adds a double-width operand; reading it at the source width lost its upper half.
++  unsigned c_type = i_type;
++  if (pI->is_wide()) {
++    if (i_type == S16_TYPE) c_type = S32_TYPE;
++    if (i_type == U16_TYPE) c_type = U32_TYPE;
++    if (i_type == S32_TYPE) c_type = S64_TYPE;
++    if (i_type == U32_TYPE) c_type = U64_TYPE;
++  }
++  ptx_reg_t c = thread->get_operand_value(src3, dst, c_type, thread, 1);
+ 
+   // take the carry bit, it should be the 4th operand
+   ptx_reg_t carry_bit;
+@@ -3891,7 +3941,7 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
+           ((long long int)(t.s32 + c.s32 + carry_bit.pred) & 0x100000000) >> 32;
+       break;
+     case S32_TYPE:
+-      t.s64 = a.s32 * b.s32;
++      t.s64 = (long long)a.s32 * b.s32;  // was a 32-bit product, losing mad.wide/.hi's upper half
+       if (pI->is_wide())
+         d.s64 = t.s64 + c.s64 + carry_bit.pred;
+       else if (pI->is_hi())
+@@ -3926,7 +3976,7 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
+               32;
+       break;
+     case U32_TYPE:
+-      t.u64 = a.u32 * b.u32;
++      t.u64 = (unsigned long long)a.u32 * b.u32;  // was a 32-bit product
+       if (pI->is_wide())
+         d.u64 = t.u64 + c.u64 + carry_bit.pred;
+       else if (pI->is_hi())
+@@ -4325,10 +4375,13 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+         assert(0);
+       break;
+     case S64_TYPE:
+-      t.s64 = a.s64 * b.s64;
++      t.s64 = (long long)((unsigned long long)a.s64 * (unsigned long long)b.s64);
+       assert(!pI->is_wide());
+-      // assert(!pI->is_hi());
+-      d.s64 = t.s64;
++      // mul.hi.s64 returned the low half (nvcc uses it for 64-bit division by constants).
++      if (pI->is_hi())
++        d.s64 = (long long)(((__int128)a.s64 * (__int128)b.s64) >> 64);
++      else
++        d.s64 = t.s64;
+       break;
+     case U16_TYPE:
+       t.u32 = ((unsigned)a.u16) * ((unsigned)b.u16);
+@@ -4355,8 +4408,9 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+     case U64_TYPE:
+       t.u64 = a.u64 * b.u64;
+       assert(!pI->is_wide());
+-      assert(!pI->is_hi());
+-      if (pI->is_lo())
++      if (pI->is_hi())  // was unimplemented (an assertion)
++        d.u64 = (unsigned long long)(((unsigned __int128)a.u64 * b.u64) >> 64);
++      else if (pI->is_lo())
+         d.u64 = t.u64;
+       else
+         assert(0);
+@@ -4464,15 +4518,16 @@ void neg_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+     case U64_TYPE:
+       assert(0);
+       break;
++    // neg flips the sign bit: neg(+0.0) is -0.0 (0 - x gave +0.0).
+     case F16_TYPE:
+-      data.f16 = 0.0f - src1_data.f16;
+-      break;  // assert(0); break;
++      data.f16 = -src1_data.f16;
++      break;
+     case F32_TYPE:
+-      data.f32 = 0.0f - src1_data.f32;
++      data.f32 = -src1_data.f32;
+       break;
+     case F64_TYPE:
+     case FF64_TYPE:
+-      data.f64 = 0.0f - src1_data.f64;
++      data.f64 = -src1_data.f64;
+       break;
+     default:
+       assert(0);
+@@ -5503,7 +5558,7 @@ void shl_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+       if (b.u32 >= 64)
+         d.u64 = 0;
+       else
+-        d.u64 = (a.u64 << b.u64);
++        d.u64 = (a.u64 << b.u32);  // the amount is .u32
+       break;
+     default:
+       printf("Execution error: type mismatch with instruction\n");
+@@ -5542,7 +5597,7 @@ void shr_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+     case U64_TYPE:
+     case B64_TYPE:
+       if (b.u32 < 64)
+-        d.u64 = (a.u64 >> b.u64);
++        d.u64 = (a.u64 >> b.u32);  // the amount is .u32
+       else
+         d.u64 = 0;
+       break;
+@@ -5569,8 +5624,8 @@ void shr_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+       }
+       break;
+     case S64_TYPE:
+-      if (b.u64 < 64)
+-        d.s64 = (a.s64 >> b.u64);
++      if (b.u32 < 64)
++        d.s64 = (a.s64 >> b.u32);  // the amount is .u32
+       else {
+         if (a.s64 < 0) {
+           if (b.s32 < 0) {
+diff --git a/src/cuda-sim/ptx.l b/src/cuda-sim/ptx.l
+index 3d4bd50e..265605a3 100644
+--- a/src/cuda-sim/ptx.l
++++ b/src/cuda-sim/ptx.l
+@@ -266,10 +266,10 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
+ 
+ [0-9]+\.[0-9]+ 	 TC; sscanf(yytext,"%lf", &yylval->double_value); return DOUBLE_OPERAND;
+ 	
+-0[xX][0-9a-fA-F]+U? TC; CHECK_UNSIGNED; sscanf(yytext,"%x", &yylval->int_value); return INT_OPERAND;
++0[xX][0-9a-fA-F]+U? TC; CHECK_UNSIGNED; yylval->int_value = (long long)strtoull(yytext, NULL, 16); return INT_OPERAND;
+ 0[0-7]+U?   	TC; printf("GPGPU-Sim: ERROR ** parsing octal not (yet) implemented\n"); abort(); return INT_OPERAND;
+ 0[bB][01]+U?  	TC; printf("GPGPU-Sim: ERROR ** parsing binary not (yet) implemented\n"); abort(); return INT_OPERAND;
+-[-]?[0-9]+U?    TC; CHECK_UNSIGNED; yylval->int_value =  atoi(yytext); return INT_OPERAND;
++[-]?[0-9]+U?    TC; CHECK_UNSIGNED; yylval->int_value = yytext[0] == '-' ? strtoll(yytext, NULL, 10) : (long long)strtoull(yytext, NULL, 10); return INT_OPERAND;
+ 
+ 0[fF][0-9a-fA-F]{8}  TC; sscanf(yytext+2,"%x", (unsigned*)(void*)&yylval->float_value); return FLOAT_OPERAND;
+ 0[dD][0-9a-fA-F]{16}  TC; sscanf(yytext+2,"%Lx", (unsigned long long*)(void*)&yylval->double_value); return DOUBLE_OPERAND;
+diff --git a/src/cuda-sim/ptx.y b/src/cuda-sim/ptx.y
+index 5e1a51c4..dbabfb1f 100644
+--- a/src/cuda-sim/ptx.y
++++ b/src/cuda-sim/ptx.y
+@@ -42,7 +42,7 @@ class ptx_recognizer;
+ %union {
+   double double_value;
+   float  float_value;
+-  int    int_value;
++  long long int_value;  /* 64-bit: PTX immediates such as mov.u64 %rd, 4294967296 */
+   char * string_value;
+   void * ptr_value;
+ }
+diff --git a/src/cuda-sim/ptx_ir.h b/src/cuda-sim/ptx_ir.h
+index 4a7d39b6..4d12cea5 100644
+--- a/src/cuda-sim/ptx_ir.h
++++ b/src/cuda-sim/ptx_ir.h
+@@ -536,6 +536,9 @@ class operand_info {
+     m_is_return_var = false;
+     m_immediate_address = false;
+   }
++  operand_info(long long x, gpgpu_context *ctx) : operand_info(0, ctx) {
++    m_value.m_int = x;  // a 64-bit integer literal, kept whole
++  }
+   operand_info(float x, gpgpu_context *ctx) {
+     init(ctx);
+     m_is_non_arch_reg = false;
+@@ -869,7 +872,7 @@ class operand_info {
+   bool m_operand_neg;
+   addr_t m_const_mem_offset;
+   union {
+-    int m_int;
++    long long m_int;  // was int: 64-bit literals were truncated
+     unsigned int m_unsigned;
+     float m_float;
+     double m_double;
+diff --git a/src/cuda-sim/ptx_parser.cc b/src/cuda-sim/ptx_parser.cc
+index a80eeae6..423980af 100644
+--- a/src/cuda-sim/ptx_parser.cc
++++ b/src/cuda-sim/ptx_parser.cc
+@@ -866,7 +866,7 @@ void ptx_recognizer::change_operand_neg() {
+   g_operands.back().set_operand_neg();
+ }
+ 
+-void ptx_recognizer::add_literal_int(int value) {
++void ptx_recognizer::add_literal_int(long long value) {
+   PTX_PARSE_DPRINTF("add_literal_int");
+   g_operands.push_back(operand_info(value, gpgpu_ctx));
+ }
+diff --git a/src/cuda-sim/ptx_parser.h b/src/cuda-sim/ptx_parser.h
+index 96eadf6d..e5a1bb76 100644
+--- a/src/cuda-sim/ptx_parser.h
++++ b/src/cuda-sim/ptx_parser.h
+@@ -139,7 +139,7 @@ class ptx_recognizer {
+   void add_wmma_option(int option);
+   void add_builtin_operand(int builtin, int dim_modifier);
+   void add_memory_operand();
+-  void add_literal_int(int value);
++  void add_literal_int(long long value);
+   void add_literal_float(float value);
+   void add_literal_double(double value);
+   void add_address_operand(const char *identifier, int offset);

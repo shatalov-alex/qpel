@@ -133,23 +133,31 @@ class Program:
             device = source.with_name('device_' + source.name)
             device.write_bytes(bytes(text))
             source = device
-        main = self.work/'main.cpp'
-        main.write_text(self.program(source))
+        self.source, self.include = source, include
+        self.main = self.work/self.MAIN
+        self.main.write_text(self.program(source))
         self.binary = self.work/'simulate'
+        self.build()
+
+    MAIN = 'main.cpp'
+
+    def build(self):
         build = subprocess.run(['clang++', '-std=c++17', '-O1', '-ffp-contract=off', '-fsanitize=undefined',
                                 '-fno-sanitize-recover=all', '-w', '-I', str(INCLUDE),
-                                *[arg for folder in include for arg in ('-I', str(folder))],
-                                str(main), '-o', str(self.binary)], capture_output=True, text=True, timeout=180)
+                                *[arg for folder in self.include for arg in ('-I', str(folder))],
+                                str(self.main), '-o', str(self.binary)], capture_output=True, text=True, timeout=180)
         if build.returncode:
-            raise RuntimeError(f'{source.name} does not compile for the simulator:\n{build.stderr[-4000:]}')
+            raise RuntimeError(f'{self.source.name} does not compile for the simulator:\n{build.stderr[-4000:]}')
 
     def word(self, name):
         if name not in self.scalars:
             self.scalars.append(name)
         return f'S[{self.scalars.index(name)}]'
 
+    HEADERS = ('"cuda_runtime.h"', '"cuda_fp16.h"', '"cuda_bf16.h"')
+
     def program(self, source):
-        lines = ['#include "cuda_runtime.h"', '#include "cuda_fp16.h"', '#include "cuda_bf16.h"', f'#include "{source}"', '#include <vector>', '#include <string>',
+        lines = [f'#include {h}' for h in self.HEADERS] + [f'#include "{source}"', '#include <vector>', '#include <string>',
                  '#include <cstring>', '#include <fstream>',
                  'struct Ptr { void* p; template <class T> operator T*() const { return (T*)p; } };',
                  'static std::vector<char> load(const std::string& path) {',
@@ -172,8 +180,10 @@ class Program:
                              f'std::memcpy(&qpel_struct_{r["name"]}, b.data(), sizeof qpel_struct_{r["name"]}); }}')
         for r in data:
             lines.append(f'  std::vector<char> b_{r["name"]} = load(dir + "/{r["name"]}.bin");')
+        lines += self.upload(data)
         for s in self.plan['stages']:
             lines += self.stage(s)
+        lines += self.download(data)
         for r in data:
             lines.append(f'  {{ std::ofstream f(dir + "/{r["name"]}.out", std::ios::binary); '
                          f'f.write(b_{r["name"]}.data(), b_{r["name"]}.size()); }}')
@@ -197,7 +207,7 @@ class Program:
                 kind = VALUE_TYPES[r['type']]
                 words = [self.word('value.' + name)] + ([self.word('value.' + name + '.hi')] if kind in WIDE else [])
                 return f'{C_VALUE[kind]}({", ".join(words)})'
-            return f'Ptr{{b_{name}.data()}}'
+            return self.buffer(name)
         if self.original:
             args = []
             for a in self.original['arguments'][kernel]:
@@ -215,6 +225,19 @@ class Program:
             callee = kernel
         g = [self.word(f'grid.{kernel}.{a}') for a in 'xyz']
         b = [self.word(f'block.{kernel}.{a}') for a in 'xyz']
+        return self.launch(kernel, callee, args, g, b)
+
+    # How buffers reach the kernels and how a launch runs: overridden for real CUDA (gpgpusim.py).
+    def upload(self, data):
+        return []
+
+    def download(self, data):
+        return []
+
+    def buffer(self, name):
+        return f'Ptr{{b_{name}.data()}}'
+
+    def launch(self, kernel, callee, args, g, b):
         return [f'  gridDim = dim3({", ".join(g)}); blockDim = dim3({", ".join(b)});',
                 '  for (unsigned bz = 0; bz < gridDim.z; ++bz) for (unsigned by = 0; by < gridDim.y; ++by)'
                 ' for (unsigned bx = 0; bx < gridDim.x; ++bx)',
@@ -227,48 +250,55 @@ class Program:
         """{resource name: output array} for every data resource after all stages."""
         with tempfile.TemporaryDirectory(dir=self.work) as folder:
             folder = Path(folder)
-            words = {}
-            for name, shape in case.shapes.items():
-                for a, v in zip('xyz', shape):
-                    words[f'{name}.{a}'] = v
-            for name, value in case.values.items():
-                if is_struct(self.resources[name]['type']):
-                    fields = self.plan['structs'][self.resources[name]['type'][7:]]
-                    (folder/f'value_{name}.bin').write_bytes(pack_struct(fields, value))
-                    continue
-                kind = VALUE_TYPES[self.resources[name]['type']]
-                if kind in WIDE:
-                    bits = value % 2**64
-                    words['value.' + name], words['value.' + name + '.hi'] = bits % 2**32, bits >> 32
-                elif kind == 'f16':
-                    words['value.' + name] = struct.unpack('<H', struct.pack('<e', value))[0]
-                else:
-                    words['value.' + name] = struct.unpack('<I', struct.pack('<f' if kind == 'f32' else '<i' if kind == 'i32' else '<I', value))[0]
-            for s in self.plan['stages']:
-                shape = case.shapes[s['grid']]
-                grid, block = geometry(s, shape)
-                if self.original and s['kernel'] in self.grids:
-                    names = dict(zip('WHN', shape))
-                    grid = tuple(evaluate(e, names) for e in self.grids[s['kernel']])
-                for a, gv, bv in zip('xyz', grid, block):
-                    words[f'grid.{s["kernel"]}.{a}'], words[f'block.{s["kernel"]}.{a}'] = gv, bv
-            (folder/'scalars.bin').write_bytes(struct.pack(f'<{len(self.scalars)}I', *(words[n] for n in self.scalars)))
-            outputs = {}
-            for r in self.plan['resources']:
-                if r['kind'] in ('shape', 'value'):
-                    continue
-                count = volume(case.shapes[r['extent']])
-                if r['kind'] == 'input':
-                    array = np.ascontiguousarray(case.inputs[r['name']], dtype=DTYPES[r['type']]).reshape(-1)
-                    if array.size != count:
-                        raise ValueError(f'{r["name"]} has {array.size} elements, not {count}')
-                else:
-                    array = np.zeros(count, DTYPES[r['type']])
-                (folder/(r['name'] + '.bin')).write_bytes(array.tobytes())
+            self.write_case(case, folder)
             result = subprocess.run([str(self.binary), str(folder)], capture_output=True, text=True, timeout=300)
             if result.returncode:
                 raise RuntimeError(f'simulator failed on {case.label}: {result.stderr[-3000:]}')
-            for r in self.plan['resources']:
-                if r['kind'] not in ('shape', 'value'):
-                    outputs[r['name']] = np.frombuffer((folder/(r['name'] + '.out')).read_bytes(), DTYPES[r['type']]).copy()
-            return outputs
+            return self.read_outputs(folder)
+
+    def write_case(self, case, folder):
+        """Write a case's scalars and input buffers into `folder`, where the program reads them."""
+        words = {}
+        for name, shape in case.shapes.items():
+            for a, v in zip('xyz', shape):
+                words[f'{name}.{a}'] = v
+        for name, value in case.values.items():
+            if is_struct(self.resources[name]['type']):
+                fields = self.plan['structs'][self.resources[name]['type'][7:]]
+                (folder/f'value_{name}.bin').write_bytes(pack_struct(fields, value))
+                continue
+            kind = VALUE_TYPES[self.resources[name]['type']]
+            if kind in WIDE:
+                bits = value % 2**64
+                words['value.' + name], words['value.' + name + '.hi'] = bits % 2**32, bits >> 32
+            elif kind == 'f16':
+                words['value.' + name] = struct.unpack('<H', struct.pack('<e', value))[0]
+            else:
+                words['value.' + name] = struct.unpack('<I', struct.pack('<f' if kind == 'f32' else '<i' if kind == 'i32' else '<I', value))[0]
+        for s in self.plan['stages']:
+            shape = case.shapes[s['grid']]
+            grid, block = geometry(s, shape)
+            if self.original and s['kernel'] in self.grids:
+                names = dict(zip('WHN', shape))
+                grid = tuple(evaluate(e, names) for e in self.grids[s['kernel']])
+            for a, gv, bv in zip('xyz', grid, block):
+                words[f'grid.{s["kernel"]}.{a}'], words[f'block.{s["kernel"]}.{a}'] = gv, bv
+        (folder/'scalars.bin').write_bytes(struct.pack(f'<{len(self.scalars)}I', *(words[n] for n in self.scalars)))
+        for r in self.plan['resources']:
+            if r['kind'] in ('shape', 'value'):
+                continue
+            count = volume(case.shapes[r['extent']])
+            if r['kind'] == 'input':
+                array = np.ascontiguousarray(case.inputs[r['name']], dtype=DTYPES[r['type']]).reshape(-1)
+                if array.size != count:
+                    raise ValueError(f'{r["name"]} has {array.size} elements, not {count}')
+            else:
+                array = np.zeros(count, DTYPES[r['type']])
+            (folder/(r['name'] + '.bin')).write_bytes(array.tobytes())
+
+    def read_outputs(self, folder):
+        outputs = {}
+        for r in self.plan['resources']:
+            if r['kind'] not in ('shape', 'value'):
+                outputs[r['name']] = np.frombuffer((folder/(r['name'] + '.out')).read_bytes(), DTYPES[r['type']]).copy()
+        return outputs

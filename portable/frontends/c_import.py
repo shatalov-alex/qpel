@@ -1342,6 +1342,8 @@ class Importer:
         if target == 'f32':
             return self.graph.add('F32Literal', {'value': str(value)})
         if target == 'i32':
+            if value >= 2**31:  # an unsigned literal converted to int: C wraps it (4294967295u -> -1)
+                return self.constant(n, 'i32', value - 2**32)
             return self.graph.add('I32Literal', {'value': str(value)})
         if target == 'u8':
             return self.graph.add('U8Cast', children={'operand': self.literal(n, 'u32')})

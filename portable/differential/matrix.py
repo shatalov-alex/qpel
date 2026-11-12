@@ -126,44 +126,64 @@ def load_host(folder):
     return host
 
 
+class Prepared:
+    """One original imported to qpel, with qpel's generated package built from it."""
+
+    def __init__(self, name, path, dialect, plan, include, options, work):
+        from qpel import compile_program
+        self.name, self.path, self.dialect, self.plan, self.include, self.options = \
+            name, path, dialect, plan, include, options
+        self.program, self.report = import_source(path, plan=plan, include=include, kernels=options.get('kernels'),
+                                                  module=options.get('module'), constants=options.get('constants'))
+        saved = work/'program.qpel.json'
+        saved.write_text(json.dumps(self.program))
+        compile_program(saved, work/'package')
+        self.generated = work/'package/package/generated'
+        self.cuda = self.generated/(plan['module'] + '.cu')
+        self.outputs = [r['name'] for r in plan['resources'] if r['kind'] == 'output']
+        # Bounded math functions may differ by a few ulp between C libraries and GPUs; results
+        # that pass through two of them (original and translation) get twice the bound.
+        bounded = any(n['kind'] == 'Math' and n['attributes']['function'] not in EXACT_MATH
+                      for n in self.program['nodes'])
+        self.ulps = 2*MATH_ULPS if bounded else 0
+
+    def cases(self):
+        o = self.options
+        return test_cases.for_program(self.name, self.plan, values=o.get('values'), shapes=o.get('shapes'),
+                                      inputs=o.get('inputs'))
+
+    def compare(self, expected, actual, case):
+        """compare() with this program's outputs, tolerance and byte-buffer views."""
+        sign = self.dialect == 'cuda'  # a Metal original carries Apple's zero signs (see compare)
+        return compare(expected, actual, self.outputs, case.defined, self.ulps, self.options.get('outputs'), sign)
+
+    def run_metal_original(self, case):
+        from . import metal
+        return metal.run_original(self.path, self.plan, self.report, case, self.include, self.options.get('constants'))
+
+
 def check_source(name, path, dialect, plan, include, grids, options, work, gpu):
     """Yield (row, case label, error or None) for one original source."""
-    from qpel import compile_program
     from . import metal
-    program, report = import_source(path, plan=plan, include=include, kernels=options.get('kernels'),
-                                    module=options.get('module'), constants=options.get('constants'))
-    saved = work/'program.qpel.json'
-    saved.write_text(json.dumps(program))
-    compile_program(saved, work/'package')
-    generated = work/'package/package/generated'
-    module = plan['module']
-    outputs = [r['name'] for r in plan['resources'] if r['kind'] == 'output']
-    simulated = Program(generated/(module + '.cu'), plan, work/'sim_qpel')
+    p = Prepared(name, path, dialect, plan, include, options, work)
+    simulated = Program(p.cuda, plan, work/'sim_qpel')
     original = None
     if dialect == 'cuda':
-        original = Program(path, plan, work/'sim_original', original=report, include=include, grids=grids)
-    host = load_host(generated) if gpu else None
+        original = Program(path, plan, work/'sim_original', original=p.report, include=include, grids=grids)
+    host = load_host(p.generated) if gpu else None
     rows = {'cuda': (f'{dialect} -> qpel -> cuda', True), 'metal': (f'{dialect} -> qpel -> metal', gpu)}
-    # Bounded math functions may differ by a few ulp between C libraries and GPUs; results
-    # that pass through two of them (original and translation) get twice the bound.
-    bounded = any(n['kind'] == 'Math' and n['attributes']['function'] not in EXACT_MATH for n in program['nodes'])
-    ulps = 2*MATH_ULPS if bounded else 0
-    for case in test_cases.for_program(name, plan, values=options.get('values'), shapes=options.get('shapes'),
-                                       inputs=options.get('inputs')):
+    for case in p.cases():
         label = f'{path.name} {case.label}'
         if dialect == 'cuda':
             expected = original.run(case)
         elif gpu:
-            expected = metal.run_original(path, plan, report, case, include, options.get('constants'))
+            expected = p.run_metal_original(case)
         else:
             yield f'{dialect} original', label, 'skipped: no Apple GPU'
             continue
-        views = options.get('outputs')
-        sign = dialect == 'cuda'  # a Metal original carries Apple's zero signs (see compare)
-        yield rows['cuda'][0], label, compare(expected, simulated.run(case), outputs, case.defined, ulps, views, sign)
+        yield rows['cuda'][0], label, p.compare(expected, simulated.run(case), case)
         if rows['metal'][1]:
-            yield rows['metal'][0], label, compare(expected, metal.run_generated(host, plan, case), outputs, case.defined,
-                                                   ulps, views, sign)
+            yield rows['metal'][0], label, p.compare(expected, metal.run_generated(host, plan, case), case)
         else:
             yield rows['metal'][0], label, 'skipped: no Apple GPU'
 

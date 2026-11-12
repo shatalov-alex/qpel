@@ -54,6 +54,11 @@ kernel leaves unwritten (`Case.defined`) are not compared.
   constrain scalar arguments (`values` in `corpus.json`): `volume` is the dispatch shape's element count (a
   count the buffers must hold), `W`/`H`/`N` one of its sizes, an integer itself.
 
+**NVIDIA execution** (`gpgpusim.py`, `../gpgpusim/README.md`): the same sources as real CUDA
+host programs on GPGPU-Sim, a simulated NVIDIA GPU in Docker. Its rows are
+`nvidia: cuda original` and `nvidia: <dialect> -> qpel -> cuda`, against the same references
+(`python3 -m differential.gpgpusim`; `check_all.py --nvidia`).
+
 `check_all.py` runs the simulator rows always and the Apple GPU rows with `--gpu`
 (`--cpu` here does the same). `tests/test_differential.py` checks that a wrong
 translation and undefined behaviour in an original are both caught.

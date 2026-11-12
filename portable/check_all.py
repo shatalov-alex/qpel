@@ -3,6 +3,7 @@
     python3 portable/check_all.py                 # unit tests, round trips, Metal and nvcc compile, CUDA behaviour rows
     python3 portable/check_all.py --gpu           # also run gpu_tests/ on the Apple GPU
     python3 portable/check_all.py --gpu --python .venv/bin/python   # interpreter with torch
+    python3 portable/check_all.py --gpu --nvidia  # also execute on GPGPU-Sim (milestone gates)
 
 Unit tests and the GPU tests run with --python (default: this interpreter), so
 NumPy-dependent tests are not silently skipped when it has NumPy installed.
@@ -20,6 +21,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--gpu', action='store_true', help='Also run the Apple GPU tests')
     parser.add_argument('--no-nvcc', action='store_true', help='Skip the Docker nvcc check')
+    parser.add_argument('--nvidia', action='store_true',
+                        help='Also run the NVIDIA execution rows and fuzzing on GPGPU-Sim in Docker (milestone gates)')
     parser.add_argument('--python', default=sys.executable, help='Interpreter for unit and GPU tests')
     args = parser.parse_args(argv)
     env = {'PYTHONDONTWRITEBYTECODE': '1'}
@@ -30,11 +33,15 @@ def main(argv=None):
     if not args.no_nvcc:
         steps.append(('nvcc compile', [sys.executable, str(HERE/'nvcc_check.py')]))
     # Originals against what qpel makes of them; the Metal rows need the Apple GPU.
-    steps.append(('fuzzing', [args.python, '-m', 'fuzz', '--count', '25', '--seed', '1'] + ([] if args.gpu else ['--cpu'])))
+    steps.append(('fuzzing', [args.python, '-m', 'fuzz', '--count', '25', '--seed', '1'] + ([] if args.gpu else ['--cpu'])
+                  + (['--nvidia'] if args.nvidia else [])))
     steps.append(('behaviour rows', [args.python, '-m', 'differential.matrix'] + ([] if args.gpu else ['--cpu'])))
     if args.gpu:
         # Corpus programs are checked on the GPU by the behaviour rows above (their Metal rows).
         steps.append(('Apple GPU', [args.python, str(HERE/'gpu_tests/run_gpu_tests.py'), '--skip-corpus']))
+    if args.nvidia:
+        # Execution on a simulated NVIDIA GPU: every behaviour-matrix source, against the same references.
+        steps.append(('NVIDIA (GPGPU-Sim)', [args.python, '-m', 'differential.gpgpusim']))
     results = []
     for label, command in steps:
         print(f'\n=== {label}', flush=True)
@@ -42,7 +49,8 @@ def main(argv=None):
     print('\n=== summary')
     for label, code in results:
         print(f'{"PASS" if code == 0 else "FAIL"} {label}')
-    skipped = [s for s in ('nvcc compile',) if args.no_nvcc] + ([] if args.gpu else ['Apple GPU'])
+    skipped = [s for s in ('nvcc compile',) if args.no_nvcc] + ([] if args.gpu else ['Apple GPU']) \
+        + ([] if args.nvidia else ['NVIDIA (GPGPU-Sim)'])
     if skipped:
         print('NOT RUN', ', '.join(skipped))
     return 0 if all(code == 0 for _, code in results) else 1
