@@ -72,7 +72,7 @@ class BoundsChecker(TypeChecker):
                 index = self.constant(self.child(node, 'index'))
                 start = None if base is None or index is None else base + index
                 count = 1
-            elif kind in {'AtomicLoad', 'AtomicStore', 'AtomicAdd', 'AtomicMin'}:
+            elif kind in {'AtomicLoad', 'AtomicStore', 'AtomicAdd', 'AtomicMin', 'AtomicCompareExchange'}:
                 start = self.origin_offset(self.child(node, 'address')); count = 1
             elif kind == 'ReduceSumF32':
                 count = self.constant(self.child(node, 'count'))

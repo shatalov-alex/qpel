@@ -141,7 +141,7 @@ class Prepared:
         compile_program(saved, work/'package')
         self.generated = work/'package/package/generated'
         self.cuda = self.generated/(plan['module'] + '.cu')
-        self.outputs = [r['name'] for r in plan['resources'] if r['kind'] == 'output']
+        self.outputs = [r['name'] for r in plan['resources'] if r['kind'] in ('output', 'inout')]
         # Bounded math functions may differ by a few ulp between C libraries and GPUs; results
         # that pass through two of them (original and translation) get twice the bound.
         bounded = any(n['kind'] == 'Math' and n['attributes']['function'] not in EXACT_MATH

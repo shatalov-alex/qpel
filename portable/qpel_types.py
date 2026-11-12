@@ -318,6 +318,8 @@ class TypeChecker:
             item = element(address)
             if k != 'AtomicLoad':
                 check(fits(item, e('value')), 'ATOMIC_VALUE', f'{item} value required')
+            if k == 'AtomicCompareExchange':
+                check(fits(item, e('expected')), 'ATOMIC_VALUE', f'{item} expected value required')
             return 'void' if k == 'AtomicStore' else item
         if k == 'Unary':
             operand = e('operand')
@@ -436,9 +438,11 @@ class TypeChecker:
         elif k == 'While':
             check(e('condition') in CONDITIONS, 'CONDITION', 'Scalar condition required')
             self.block(self.child(node, 'body'), env, function, names, loops + 1)
+            return self.endless(node, 'condition')
         elif k == 'DoWhile':
             self.block(self.child(node, 'body'), env, function, names, loops + 1)
             check(e('condition') in CONDITIONS, 'CONDITION', 'Scalar condition required')
+            return self.endless(node, 'condition')
         elif k == 'For':
             inner = set(env)  # the init variable is visible only inside the loop
             for init in self.children(node, 'init'):
@@ -448,11 +452,32 @@ class TypeChecker:
             for step in self.children(node, 'step'):
                 self.statement(step, inner, function, names, loops)
             self.block(self.child(node, 'body'), inner, function, names, loops + 1)
+            return self.endless(node, 'condition')
         elif k in ('Break', 'Continue'):
             check(loops > 0, 'LOOP_CONTEXT', k.lower() + ' must be inside a loop')
         elif k == 'Block':
             return self.block(node, env, function, names, loops)
         return False
+
+    def endless(self, loop, role):
+        """True for a loop that never ends except by return: its condition is the literal true
+        (or, for `for`, absent) and no break of its own leaves it. Code after it is unreachable,
+        so a helper may end with it (`while (true) { ... return x; }`)."""
+        conditions = self.children(loop, role)
+        if conditions and not (conditions[0]['kind'] == 'Literal' and conditions[0]['attributes']['value'] == 'true'):
+            return False
+        if not conditions and loop['kind'] != 'For':
+            return False
+        def breaks(node):
+            for values in node['children'].values():
+                for ref in values:
+                    child = self.nodes[ref]
+                    if child['kind'] == 'Break':
+                        return True
+                    if child['kind'] not in ('While', 'DoWhile', 'For') and breaks(child):
+                        return True  # a break inside a nested loop leaves only that loop
+            return False
+        return not breaks(self.child(loop, 'body'))
 
     def validate(self):
         for name, fields in self.structs.items():

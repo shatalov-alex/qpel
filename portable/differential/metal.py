@@ -30,8 +30,9 @@ def available():
 
 def tensor(array, dtype):
     array = np.ascontiguousarray(array).reshape(-1)
-    if array.dtype == np.uint32:
-        array = array.view(np.int32)
+    signed = {np.dtype(np.uint16): np.int16, np.dtype(np.uint32): np.int32, np.dtype(np.uint64): np.int64}
+    if array.dtype in signed:  # the hosts' storage types (qpel_types.TORCH_DTYPES)
+        array = array.view(signed[array.dtype])
     return torch.from_numpy(array.copy()).to('mps')
 
 
@@ -117,7 +118,7 @@ def run_original(source, plan, report, case, include=(), constants=None):
             continue
         dtype = DTYPES[r['type']]
         count = volume(case.shapes[r['extent']])
-        array = case.inputs[r['name']] if r['kind'] == 'input' else np.zeros(count, dtype)
+        array = case.inputs[r['name']] if r['kind'] in ('input', 'inout') else np.zeros(count, dtype)
         buffers[r['name']] = tensor(np.asarray(array, dtype), dtype)
     for s in plan['stages']:
         params = {b['parameter']: b['resource'] for b in s['bindings']}
@@ -164,7 +165,7 @@ def run_original(source, plan, report, case, include=(), constants=None):
 def run_generated(host, plan, case):
     """{output resource: array} from a qpel-generated Metal host module."""
     inputs = {r['name']: tensor(np.asarray(case.inputs[r['name']], DTYPES[r['type']]), DTYPES[r['type']])
-              for r in plan['resources'] if r['kind'] == 'input'}
+              for r in plan['resources'] if r['kind'] in ('input', 'inout')}
     result = host.run(inputs, case.shapes, case.values)
     types = {r['name']: DTYPES[r['type']] for r in plan['resources'] if r['kind'] not in ('shape', 'value')}
     return {name: numpy(t, types[name]) for name, t in result.items()}

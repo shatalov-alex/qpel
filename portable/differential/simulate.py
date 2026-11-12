@@ -300,7 +300,7 @@ class Program:
             if r['kind'] in ('shape', 'value'):
                 continue
             count = volume(case.shapes[r['extent']])
-            if r['kind'] == 'input':
+            if r['kind'] in ('input', 'inout'):
                 array = np.ascontiguousarray(case.inputs[r['name']], dtype=DTYPES[r['type']]).reshape(-1)
                 if array.size != count:
                     raise ValueError(f'{r["name"]} has {array.size} elements, not {count}')

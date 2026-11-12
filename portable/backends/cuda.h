@@ -173,3 +173,8 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long long, -9223372036854775808.0f, 92
 #define QPEL_MATH_COS(x) cosf((x))
 #define QPEL_MATH_TANH(x) tanhf((x))
 #endif
+
+#ifdef QPEL_CAS_ENABLED
+// Compare-and-swap (IR version 4): the value found, as atomicCAS returns it.
+#define QPEL_CAS(address, expected, value) atomicCAS((address), (expected), (value))
+#endif

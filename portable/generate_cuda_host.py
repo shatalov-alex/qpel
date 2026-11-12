@@ -86,9 +86,9 @@ def generate(plan, shader):
     plan = normalize_plan(plan)
     validate_resources(plan)
     resources = plan['resources']
-    inputs = [r['name'] for r in resources if r['kind'] == 'input']
+    inputs = [r['name'] for r in resources if r['kind'] in ('input', 'inout')]
     shapes = [r['name'] for r in resources if r['kind'] == 'shape']
-    outputs = [r['name'] for r in resources if r['kind'] == 'output']
+    outputs = [r['name'] for r in resources if r['kind'] in ('output', 'inout')]
     values = [r['name'] for r in resources if r['kind'] == 'value']
     lines = [PRELUDE, 'SHADER_FILE = ' + repr(plan['module'] + '.cu'),
              'SHADER_SHA256 = ' + repr(hashlib.sha256(shader).hexdigest()), '',
@@ -110,7 +110,7 @@ def generate(plan, shader):
             else:
                 lines.append(f"    buffers[{r['name']!r}] = np.{NUMPY_VALUES[r['type']]}(_value(values[{r['name']!r}], {r['type']!r}))")
     for r in resources:
-        if r['kind'] == 'input':
+        if r['kind'] in ('input', 'inout'):
             name = r['name']
             lines += [f'    value = inputs[{name!r}]',
                       f"    if not isinstance(value, cp.ndarray) or value.device.id != device or value.dtype != cp.{CUPY_BUFFERS[element(r['type'])]} or value.size != sizes[{r['extent']!r}]:",
@@ -121,6 +121,8 @@ def generate(plan, shader):
         name = r['name']
         if r['kind'] == 'input':
             lines.append(f'        buffers[{name!r}] = cp.ascontiguousarray(inputs[{name!r}]).reshape(-1)')
+        elif r['kind'] == 'inout':  # updated in a copy, returned as an output
+            lines.append(f'        buffers[{name!r}] = cp.array(inputs[{name!r}], copy=True, order="C").reshape(-1)')
         elif r['kind'] not in ('shape', 'value'):
             allocate = 'zeros' if r['kind'] == 'zeroed' else 'empty'  # zeroed scratch starts at zero
             lines.append(f"        buffers[{name!r}] = cp.{allocate}(sizes[{r['extent']!r}], dtype=cp.{CUPY_BUFFERS[element(r['type'])]})")

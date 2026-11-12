@@ -77,7 +77,11 @@ def describe(qual_type):
 
 
 def scalar_of(node):
-    t = describe(node.get('type', {}).get('qualType', ''))
+    # A typedef inside a template (`type`, `value_type`) names its real type only desugared.
+    found = node.get('type', {})
+    t = describe(found.get('qualType', ''))
+    if t[0] == 'scalar' and t[1] not in SCALAR_TERMS and found.get('desugaredQualType'):
+        t = describe(found['desugaredQualType'])
     return t[1] if t[0] == 'scalar' else t[0]
 
 
@@ -260,7 +264,7 @@ class Dialect:
 class Cuda(Dialect):
     name = 'cuda'
     atomics = {'atomicAdd': ('AtomicAdd', True, False), 'atomicExch': ('AtomicStore', True, False),
-               'atomicMin': ('AtomicMin', True, False)}
+               'atomicMin': ('AtomicMin', True, False), 'atomicCAS': ('AtomicCompareExchange', True, False)}
 
     def is_kernel(self, decl):
         return 'CUDAGlobalAttr' in attributes(decl)
@@ -275,7 +279,8 @@ class Metal(Dialect):
     atomics = {'atomic_load_explicit': ('AtomicLoad', False, True),
                'atomic_store_explicit': ('AtomicStore', True, True),
                'atomic_fetch_add_explicit': ('AtomicAdd', True, True),
-               'atomic_fetch_min_explicit': ('AtomicMin', True, True)}
+               'atomic_fetch_min_explicit': ('AtomicMin', True, True),
+               'qpel_atomic_cas': ('AtomicCompareExchange', True, False)}  # qpel's own Metal spelling
 
     def is_kernel(self, decl):
         return 'MetalKernelAttr' in attributes(decl)
@@ -671,6 +676,9 @@ class Importer:
             if find((decl['name'], i)) in atomic_groups or t[2] in ATOMIC_ELEMENTS.values():
                 scalar = t[2] if t[2] in ATOMIC_ELEMENTS else ATOMIC_SCALARS.get(t[2])
                 if scalar is None:
+                    if t[2] in ('u64', 'i64'):
+                        raise Unsupported(p, 'atomic-type', f'atomics on {p["type"]["qualType"]} are not portable: Metal has '
+                                                            'no 64-bit compare-and-swap or add (only 64-bit min/max on newer GPUs)')
                     raise Unsupported(p, 'atomic-type', f'atomics on {p["type"]["qualType"]} are not in qpel; only on unsigned int and int')
                 return type_buffer(scalar, 'atomic')
             if t[2] not in SCALAR_TERMS or t[2] == 'bool':
@@ -1756,6 +1764,17 @@ class Importer:
         def need(count):
             if len(args) != count:
                 raise Unsupported(n, 'call', f'{callee} expects {count} arguments')
+        target = peel(n['inner'][0]) if n.get('inner') else {}
+        if target.get('kind') == 'DeclRefExpr' and target['referencedDecl'].get('kind') == 'CXXMethodDecl' \
+                and callee in ('max', 'min', 'lowest') and not args:
+            # std::numeric_limits<T>::max() and friends (the class is in a system header): a constant
+            limit = scalar_of(n)
+            if limit not in INTEGER_TERMS:
+                raise Unsupported(n, 'numeric-limits', f'{callee}() of {limit} is only supported for integers')
+            size, signed = type_bits(limit), is_signed(limit)
+            value = {'max': 2**(size - signed) - 1, 'min': -2**(size - 1) if signed else 0,
+                     'lowest': -2**(size - 1) if signed else 0}[callee]
+            return self.constant(n, limit, value)
         if callee in MINIMUM or callee in MAXIMUM:
             need(2)
             return add('Minimum' if callee in MINIMUM else 'Maximum',
@@ -1800,6 +1819,16 @@ class Importer:
                                                  'start': self.expr(args[1]), 'count': self.expr(args[2])})
         if callee == 'qpel_group_sum_f32':
             return add('WorkgroupSumF32', children={'value': self.expr(args[0])})
+        if callee in self.dialect.atomics and self.dialect.atomics[callee][0] == 'AtomicCompareExchange':
+            need(3)  # atomicCAS(address, expected, value): the value found
+            pointee = describe(peel(args[0]).get('type', {}).get('qualType', ''))
+            if pointee[0] == 'pointer' and pointee[2] not in ('u32', 'i32', 'atomic', 'atomic_i32'):
+                raise Unsupported(n, 'atomic-type', f'{callee} on {pointee[2]} is not portable: Metal has no '
+                                                    'compare-and-swap beyond 32 bits' if pointee[2] in ('u64', 'i64')
+                                  else f'{callee} on {pointee[2]} is not in qpel; atomics are on unsigned int and int')
+            return add('AtomicCompareExchange', children={'address': self.expr(args[0], address=True),
+                                                          'expected': self.atomic_value(args[1], pointee),
+                                                          'value': self.atomic_value(args[2], pointee)})
         if callee in self.dialect.atomics:
             kind, has_value, has_order = self.dialect.atomics[callee]
             need(1 + has_value + has_order)
@@ -1839,6 +1868,9 @@ class Importer:
             raise Unsupported(None, 'no-kernel', f'{self.path} has no kernel')
         if plan is None:
             plan = self.synthesize_plan(kernels, block_size)
+            for r in plan['resources']:
+                if r['name'] in getattr(self, 'resource_kinds', {}):
+                    r['kind'] = self.resource_kinds[r['name']]
             zeroed = self.read_first(module, self.dispatch(module, plan), plan)
             for r in plan['resources']:
                 if r['name'] in zeroed:
@@ -2228,7 +2260,7 @@ def assigned_decls(body):
 
 
 def import_source(path, dialect=None, module=None, plan=None, block_size=64, include=(), kernels=None,
-                  constants=None, geometry=None):
+                  constants=None, geometry=None, resources=None):
     """Import every kernel and device function in `path`. Returns (program, report).
 
     `plan` is an optional launch plan (the pipeline.json qpel writes); without one,
@@ -2236,7 +2268,9 @@ def import_source(path, dialect=None, module=None, plan=None, block_size=64, inc
     imports only those kernels and the functions they call; `constants` gives the
     values of Metal function constants, specialising the kernels to them. `geometry`
     ({'groups': [x, y, z], 'block': [x, y, z]}) launches Groups kernels without a plan
-    the way the original's host does."""
+    the way the original's host does. `resources` ({name: kind}) overrides the kind of
+    resources the plan made without one gets, such as 'inout' for a buffer the caller fills
+    and the kernels update in place."""
     path = Path(path)
     dialect = dialect or clang_ast.dialect_of(path)
     unit, source = clang_ast.parse(path, dialect, include)
@@ -2247,6 +2281,7 @@ def import_source(path, dialect=None, module=None, plan=None, block_size=64, inc
     importer = Importer(unit, source, path, dialect, module)
     importer.constants = dict(constants or {})
     importer.geometry = geometry
+    importer.resource_kinds = dict(resources or {})
     program = importer.run(plan, block_size, kernels)
     report = {'source': str(path), 'dialect': dialect, 'module': module,
               'kernels': [d['name'] for d in importer.decls if importer.functions[d['name']][2]],

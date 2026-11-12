@@ -21,7 +21,7 @@ def validate_resources(plan):
         elif kind == 'value':
             if typ not in VALUE_TYPES and not (is_struct(typ) and typ[7:] in plan.get('structs', {})) or r.get('extent') is not None:
                 raise ValueError('A value requires an integer, float or known struct type and no extent')
-        elif kind in ('input', 'output', 'scratch', 'zeroed'):
+        elif kind in ('input', 'inout', 'output', 'scratch', 'zeroed'):
             if not is_buffer(typ) or element(typ) not in BUFFER_TYPES:
                 raise ValueError('Unsupported buffer type: ' + typ)
             extent = resources.get(r.get('extent'))
@@ -110,9 +110,9 @@ def generate(plan, shader):
     plan = normalize_plan(plan)
     validate_resources(plan)
     resources = plan['resources']
-    inputs = [r['name'] for r in resources if r['kind'] == 'input']
+    inputs = [r['name'] for r in resources if r['kind'] in ('input', 'inout')]
     shapes = [r['name'] for r in resources if r['kind'] == 'shape']
-    outputs = [r['name'] for r in resources if r['kind'] == 'output']
+    outputs = [r['name'] for r in resources if r['kind'] in ('output', 'inout')]
     values = [r['name'] for r in resources if r['kind'] == 'value']
     lines = [PRELUDE, 'SHADER_FILE = ' + repr(plan['module'] + '.metal'),
              'SHADER_SHA256 = ' + repr(hashlib.sha256(shader).hexdigest()), '',
@@ -138,8 +138,9 @@ def generate(plan, shader):
                 lines.append(f"    scalar_{r['name']} = _value(values[{r['name']!r}], {r['type']!r})")
     # Validate all inputs before compiling or allocating GPU resources.
     for r in resources:
-        if r['kind'] == 'input':
-            lines.append(f"    buffers[{r['name']!r}] = _input(inputs[{r['name']!r}], torch.{BUFFER_TYPES[element(r['type'])]}, sizes[{r['extent']!r}], device)")
+        if r['kind'] in ('input', 'inout'):  # an inout buffer is updated in a copy, returned as an output
+            lines.append(f"    buffers[{r['name']!r}] = _input(inputs[{r['name']!r}], torch.{BUFFER_TYPES[element(r['type'])]}, sizes[{r['extent']!r}], device)"
+                         + ('.clone()' if r['kind'] == 'inout' else ''))
     lines.append('    lib = _library()')
     for r in resources:
         name = r['name']
@@ -150,7 +151,7 @@ def generate(plan, shader):
                 lines.append(f"    buffers[{name!r}] = torch.frombuffer(bytearray(scalar_{name}), dtype=torch.uint8).to(device)")
             else:
                 lines.append(f"    buffers[{name!r}] = torch.tensor([scalar_{name}], device=device, dtype=torch.{VALUE_TYPES[r['type']]})")
-        elif r['kind'] != 'input':
+        elif r['kind'] not in ('input', 'inout'):
             allocate = 'zeros' if r['kind'] == 'zeroed' else 'empty'  # zeroed scratch starts at zero
             lines.append(f"    buffers[{name!r}] = torch.{allocate}(sizes[{r['extent']!r}], device=device, dtype=torch.{BUFFER_TYPES[element(r['type'])]})")
     for s in plan['stages']:

@@ -9,7 +9,7 @@ import struct
 from qpel_types import INTEGER_TERMS, INTEGERS_BITS, MATH, SCALAR_TERMS, array, buffer, is_valid
 
 TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType StructType ArrayType'.split())
-EXPRESSIONS = set('ArrayValue Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin'.split())
+EXPRESSIONS = set('ArrayValue Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange'.split())
 STATEMENTS = set('Block Variable Assign Evaluate If While DoWhile For Break Continue Return'.split())
 
 # Child role -> (allowed concepts, minimum count, maximum count or None).
@@ -68,6 +68,8 @@ for kind in ('AtomicLoad', 'AtomicStore', 'AtomicAdd', 'AtomicMin'):
     CHILDREN[kind] = {'address': one(EXPRESSIONS)}
     if kind != 'AtomicLoad':
         CHILDREN[kind]['value'] = one(EXPRESSIONS)
+# IR version 4: compare-and-swap, with CUDA's atomicCAS result (the value found)
+CHILDREN['AtomicCompareExchange'] = {role: one(EXPRESSIONS) for role in ('address', 'expected', 'value')}
 
 # Links are required except Resource.extent (shape resources have no extent).
 LINKS = {
@@ -266,7 +268,7 @@ def validate_structure(nodes):
             fail('Unsupported shape member or field name')
         if kind == 'StructType' and not is_identifier(a['name']):
             fail('Invalid struct name')
-        if kind == 'Resource' and a['kind'] not in ('input', 'output', 'scratch', 'zeroed', 'shape', 'value'):
+        if kind == 'Resource' and a['kind'] not in ('input', 'inout', 'output', 'scratch', 'zeroed', 'shape', 'value'):
             fail('Unsupported resource kind')
         if kind == 'Dispatch':
             dims = (a['blockSize'], a.get('blockHeight', 1), a.get('blockDepth', 1))

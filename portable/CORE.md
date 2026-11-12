@@ -61,7 +61,7 @@ Types are terms: `ScalarType {scalar}` and `BufferType {element, access}` constr
 
 ## IR version 4
 
-Thread-private local arrays. `ArrayType {element, length}` (term `array<T, N>`, a scalar `T` and 1 to 1024 elements) types a local `Variable`, whose value is an `ArrayValue` with exactly N `elements`. An array is not a value: its name may only be the base of an `Index`, which reads an element or, as an `Assign` target, writes one. Both backends emit `T name[N] = {...};` (thread memory in Metal). A constant index outside the array is a validation error; NUMERICS.md has the rules for the rest. Programs without arrays stay at their earlier version.
+Thread-private local arrays, compare-and-swap and in-place resources. `ArrayType {element, length}` (term `array<T, N>`, a scalar `T` and 1 to 1024 elements) types a local `Variable`, whose value is an `ArrayValue` with exactly N `elements`. An array is not a value: its name may only be the base of an `Index`, which reads an element or, as an `Assign` target, writes one. Both backends emit `T name[N] = {...};` (thread memory in Metal). A constant index outside the array is a validation error; NUMERICS.md has the rules for the rest. `AtomicCompareExchange {address, expected, value}` returns the value it found, as CUDA's `atomicCAS` does. A pipeline `Resource` of kind `inout` arrives with data, as an input does, may be written by the kernels, and is returned, as an output is. A loop whose condition is the literal `true` (or a `for` without one) and that no `break` of its own leaves counts as ending a function, so a helper may end with `while (true) { ... return x; }`. Programs without these constructs stay at their earlier version.
 
 ## Numeric revision
 

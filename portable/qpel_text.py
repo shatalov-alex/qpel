@@ -20,7 +20,8 @@ from qpel_types import LEGACY_CASTS, MATH, term
 
 BUILTIN_AXES = {'ThreadIndex': 'thread', 'GroupIndex': 'group', 'LocalIndex': 'local', 'GroupSize': 'group_size',
                 'GroupCount': 'group_count'}
-ATOMICS = {'AtomicLoad': 'load', 'AtomicStore': 'store', 'AtomicAdd': 'add', 'AtomicMin': 'min'}
+ATOMICS = {'AtomicLoad': 'load', 'AtomicStore': 'store', 'AtomicAdd': 'add', 'AtomicMin': 'min',
+           'AtomicCompareExchange': 'cas'}
 DOMAINS = {'Grid1D': 'grid1d', 'Grid3D': 'grid3d', 'Groups': 'groups'}
 PRECEDENCE = [('||',), ('&&',), ('|',), ('^',), ('&',), ('==', '!='), ('<', '>', '<=', '>='), ('<<', '>>'),
               ('+', '-'), ('*', '/', '%')]
@@ -155,6 +156,8 @@ class Printer:
             return 'qpel.index'
         if k in BUILTIN_AXES:
             return f'qpel.{BUILTIN_AXES[k]}.{a["axis"]}'
+        if k == 'AtomicCompareExchange':
+            return f'atomic.cas({e("address")}, {e("expected")}, {e("value")})'
         if k in ATOMICS:
             value = f', {e("value")}' if n['children'].get('value') else ''
             return f'atomic.{ATOMICS[k]}({e("address")}{value})'
@@ -556,7 +559,11 @@ class Parser:
             kind = {v: k for k, v in ATOMICS.items()}[op]
             args = self.arguments()
             children = {'address': args[0]}
-            if len(args) > 1:
+            if kind == 'AtomicCompareExchange':
+                if len(args) != 3:
+                    self.fail('atomic.cas takes an address, the expected value and the new value')
+                children.update(expected=args[1], value=args[2])
+            elif len(args) > 1:
                 children['value'] = args[1]
             return self.add(kind, children=children)
         if value == 'qpel':

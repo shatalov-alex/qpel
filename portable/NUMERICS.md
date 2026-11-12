@@ -79,6 +79,11 @@ Metal has no `erf`, `expm1` or `log1p`; qpel will define them itself rather than
 - `array<T, N>` locals are private to each thread and always initialized: an `ArrayValue` gives every element. The importer fills the elements a C initializer list leaves out with zero (as C does), and gives an array without an initializer all zeros (C leaves it undefined; listed as an adaptation).
 - Reading or writing an element outside the array is undefined, as for buffers. A constant index outside it is a validation error; the CPU simulator (UBSan) traps the rest when a test reaches them.
 
+## Compare-and-swap and inout resources (IR version 4)
+
+- `AtomicCompareExchange` on a `u32` or `i32` atomic buffer is a relaxed compare-and-swap that returns the value it found, CUDA's `atomicCAS`. Metal's exchange is weak (it may fail although it found the expected value), so qpel's Metal retries until it either succeeds or finds another value, which gives CUDA's strong result. It needs the `atomic_cas` feature. Metal has no 64-bit compare-and-swap, so 64-bit atomics stay out of qpel; the importer says so.
+- An `inout` resource is filled by the caller and updated by the kernels. Both generated hosts update a copy and return it, so the caller's buffer is unchanged.
+
 ## Argument structs and buffer views
 
 - **Structs** (IR version 3): the module declares `StructDecl {name}` with scalar `Field`s; `StructType {name}` (term `struct Name`) types kernel parameters, which bind `value` resources. `Member` reads a field. Fields are laid out as C does (each aligned to its size, in order), which CUDA and Metal share; CUDA passes the struct by value, Metal as `constant Name&`. Launch plans carry the layouts (`"structs"`), and both hosts pack `{field: value}` dictionaries with the same range checks as scalar arguments.

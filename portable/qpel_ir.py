@@ -16,7 +16,7 @@ LEGACY_MACROS={'void':'void','bool':'bool','u8':'QPEL_U8','u32':'QPEL_U32','i32'
        'buffer<i32, write>':'QPEL_WRITE_I32','buffer<f32, read>':'QPEL_READ_F32','buffer<f32, write>':'QPEL_WRITE_F32',
        'buffer<f16, read>':'QPEL_READ_F16','buffer<f16, write>':'QPEL_WRITE_F16'}
 TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType','StructType','ArrayType'}
-KINDS=TYPE_KINDS|set('ArrayValue View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin Pipeline Resource Dispatch Binding'.split())
+KINDS=TYPE_KINDS|set('ArrayValue View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange Pipeline Resource Dispatch Binding'.split())
 COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage','groups','math_exact','math_bounded'}
 PROFILES={'metal':COMMON_FEATURES,'cuda':COMMON_FEATURES}
 SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3',4:'qpel-portable-core-v4'}
@@ -26,8 +26,9 @@ V2_KINDS={'Grid3D','ThreadIndex','For','DoWhile','Break','Continue','I32Type','R
 # Version 3 writes types as terms (ScalarType, BufferType) and adds 8-, 16- and 64-bit
 # integers, bf16 storage, writable u8 buffers, Cast and Constant.
 V3_KINDS={'ScalarType','BufferType','Cast','Constant','Math','View','StructDecl','Field','StructType','Groups','GroupIndex','LocalIndex','GroupSize','GroupCount'}
-# Version 4 adds thread-private local arrays (array<T, N>, ArrayValue).
-V4_KINDS={'ArrayType','ArrayValue'}
+# Version 4 adds thread-private local arrays (array<T, N>, ArrayValue), compare-and-swap and
+# inout resources (filled by the caller, updated by the kernels, returned).
+V4_KINDS={'ArrayType','ArrayValue','AtomicCompareExchange'}
 def type_macro(t):
     """Backend macro spelling a type term."""
     if t in LEGACY_MACROS:return LEGACY_MACROS[t]
@@ -71,7 +72,9 @@ def version_3_features(nodes):
 
 
 def version_4_features(nodes):
-    return {n['kind'] for n in nodes if n['kind'] in V4_KINDS}
+    used={n['kind'] for n in nodes if n['kind'] in V4_KINDS}
+    if any(n['kind']=='Resource' and n['attributes'].get('kind')=='inout' for n in nodes):used.add('inout')
+    return used
 
 
 def minimum_version(program):
@@ -277,6 +280,7 @@ class Lowering:
         if k=='Continue':return 'continue;\n'
         if k=='While':return 'while ('+e('condition')+') '+e('body')+'\n'
         if k=='DoWhile':return 'do '+e('body')+' while ('+e('condition')+');\n'
+        if k=='AtomicCompareExchange':return 'QPEL_CAS('+e('address')+', '+e('expected')+', '+e('value')+')'
         if k in ('AtomicLoad','AtomicStore','AtomicAdd','AtomicMin'):
             macro={'AtomicLoad':'QPEL_LOAD','AtomicStore':'QPEL_STORE','AtomicAdd':'QPEL_ADD','AtomicMin':'QPEL_MIN'}[k]
             return macro+'('+e('address')+('' if k=='AtomicLoad' else ', '+e('value'))+')'
@@ -329,6 +333,7 @@ class Lowering:
         if 'Grid3D' in kinds:found.add('grid_3d')
         if 'Groups' in kinds:found.add('groups')
         if 'Math' in kinds:found.add('math')
+        if 'AtomicCompareExchange' in kinds:found.add('atomic_cas')
         for n in nodes:
             if n['kind']=='Parameter' and n['attributes'].get('isBuffer'):
                 t=term(self.child(n,'type'))

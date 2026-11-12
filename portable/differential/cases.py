@@ -42,7 +42,7 @@ def generic(plan, seed, shapes=SHAPES, values=None):
     for shape in shapes:
         sizes = {g: shape for g in grids}
         inputs = {r['name']: random_array(rng, DTYPES[r['type']], volume(sizes[r['extent']]))
-                  for r in plan['resources'] if r['kind'] == 'input'}
+                  for r in plan['resources'] if r['kind'] in ('input', 'inout')}
         chosen = {}
         for r in plan['resources']:
             if r['kind'] == 'value' and r['type'].startswith('struct '):
@@ -93,7 +93,69 @@ def grid_stride(plan, seed):
     return cases
 
 
+def murmur_slot(keys, size, bits):
+    """TRELLIS.2's hash (hash.cuh): the Murmur3 finalizer of a 32- or 64-bit key, modulo the size."""
+    k = keys.astype(np.uint64)
+    mask = np.uint64(2**bits - 1)
+    if bits == 32:
+        steps = ((16, 0x85ebca6b), (13, 0xc2b2ae35), (16, None))
+    else:
+        steps = ((33, 0xff51afd7ed558ccd), (33, 0xc4ceb9fe1a85ec53), (33, None))
+    with np.errstate(over='ignore'):
+        for shift, multiplier in steps:
+            k ^= k >> np.uint64(shift)
+            if multiplier is not None:
+                k = (k * np.uint64(multiplier)) & mask
+    return k % np.uint64(size)
+
+
+def hashmap_cases(plan, seed):
+    """TRELLIS.2's hash table kernels. The table has as many slots as the dispatch has threads
+    (qpel binds one extent per dispatch), empty slots hold the key type's maximum, and N is
+    the number of slots. Insertion gets distinct keys that hash to distinct slots, so the table
+    it builds is the same in any thread order; lookups get a table built here by inserting
+    keys one at a time (collisions included, one slot always left empty), and look up keys
+    of which about half are in it."""
+    rng = np.random.default_rng(seed)
+    types = {r['name']: DTYPES[r['type']] for r in plan['resources'] if r['kind'] not in ('shape', 'value')}
+    key_type, value_type = types['hashmap_keys'], types['hashmap_values']
+    bits = 8 * np.dtype(key_type).itemsize
+    empty = np.iinfo(key_type).max
+    inserting = any(r['name'] == 'hashmap_keys' and r['kind'] == 'inout' for r in plan['resources'])
+    cases = []
+    for shape in [(1, 1, 1), (2, 1, 1), (5, 1, 1), (64, 1, 1), (257, 1, 1), (1000, 1, 1)]:
+        size = volume(shape)
+        values = rng.integers(0, np.iinfo(value_type).max, size, dtype=value_type, endpoint=True)
+        if inserting:
+            keys = np.full(size, empty, key_type)
+            free = np.ones(size, bool)
+            while free.any():
+                draw = rng.integers(0, empty, 4 * size + 16, dtype=key_type)  # never the empty marker
+                for key, slot in zip(draw, murmur_slot(draw, size, bits)):
+                    if free[slot] and key not in keys:
+                        keys[slot], free[slot] = key, False
+            order = rng.permutation(size)  # threads insert them in no particular order
+            inputs = {'hashmap_keys': np.full(size, empty, key_type), 'hashmap_values': np.zeros(size, value_type),
+                      'keys': keys[order], 'values': values[order]}
+        else:
+            table = np.full(size, empty, key_type)
+            stored = np.zeros(size, value_type)
+            present = rng.integers(0, empty, max(size - 1, 0), dtype=key_type)
+            for key, value in zip(np.unique(present), values):
+                slot = int(murmur_slot(np.array([key], key_type), size, bits)[0])
+                while table[slot] != empty:
+                    slot = (slot + 1) % size
+                table[slot], stored[slot] = key, value
+            probes = np.where(rng.random(size) < 0.5, rng.choice(np.append(present, empty - 1), size),
+                              rng.integers(0, empty, size, dtype=key_type)).astype(key_type)
+            probes[probes == empty] = empty - 1
+            inputs = {'hashmap_keys': table, 'hashmap_values': stored, 'keys': probes}
+        cases.append(Case({'M': shape}, inputs, {'N': size}, f'{size} slots'))
+    return cases
+
+
 SPECIAL = {'scale_offset': scale_offset, 'sam2_cc': sam2_cc, 'grid_stride': grid_stride}
+PREFIXES = {'trellis2_hashmap_': hashmap_cases}  # families of corpus programs
 
 
 def for_program(name, plan, seed=20261111, values=None, shapes=None, inputs=None):
@@ -104,7 +166,8 @@ def for_program(name, plan, seed=20261111, values=None, shapes=None, inputs=None
     if shapes:  # a corpus program's own sizes (for example whole rows of a byte buffer)
         cases = generic(plan, seed, shapes=[tuple(s) for s in shapes])
     else:
-        cases = SPECIAL.get(name, generic)(plan, seed)
+        family = next((f for prefix, f in PREFIXES.items() if name.startswith(prefix)), None)
+        cases = SPECIAL.get(name, family or generic)(plan, seed)
     rng = np.random.default_rng(seed + 1)
     for buffer_name, element in (inputs or {}).items():  # byte buffers holding values of another type
         dtype = DTYPES[element]

@@ -170,3 +170,26 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long, -9223372036854775808.0f, 9223372
 #define QPEL_MATH_COS(x) metal::precise::cos((x))
 #define QPEL_MATH_TANH(x) metal::precise::tanh((x))
 #endif
+
+#ifdef QPEL_CAS_ENABLED
+// Compare-and-swap (IR version 4) with CUDA's atomicCAS result: the value found. Metal's
+// exchange is weak (it may fail although the value found is the expected one), so it is
+// retried until it either succeeds or finds another value.
+inline uint qpel_atomic_cas(device atomic_uint* address, uint expected, uint value) {
+    uint found = expected;
+    while (!atomic_compare_exchange_weak_explicit(address, &found, value, memory_order_relaxed, memory_order_relaxed)) {
+        if (found != expected) return found;
+        found = expected;
+    }
+    return expected;
+}
+inline int qpel_atomic_cas(device atomic_int* address, int expected, int value) {
+    int found = expected;
+    while (!atomic_compare_exchange_weak_explicit(address, &found, value, memory_order_relaxed, memory_order_relaxed)) {
+        if (found != expected) return found;
+        found = expected;
+    }
+    return expected;
+}
+#define QPEL_CAS(address, expected, value) qpel_atomic_cas((address), (expected), (value))
+#endif

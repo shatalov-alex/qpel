@@ -24,6 +24,7 @@ See `examples/saxpy.qpel`.
       shape s;                                          // resources, in order
       input  x: buffer<f32, read>  in s;                // kind name: type in extent
       output y: buffer<f32, write> in s;
+      inout  t: buffer<u32, atomic> in s;              // filled by the caller, returned (v4)
       value  n: i64;
       dispatch k over s block (64) (p = x, ...);        // 1D block
       dispatch k over s block (16, 16, 1) groups ("(W + 15)/16", "H", "1") (...);
@@ -63,7 +64,7 @@ Literals: `7u` (u32), `7` (i32), `7_i64` (any integer type; negative ones
 | `qpel.index` | GridIndex (Grid1D) |
 | `qpel.thread.x` | ThreadIndex (Grid3D, Groups) |
 | `qpel.group.x`, `qpel.local.x`, `qpel.group_size.x`, `qpel.group_count.x` | Groups builtins |
-| `atomic.load(p)`, `atomic.store(p, v)`, `atomic.add(p, v)`, `atomic.min(p, v)` | atomics on `buffer + offset` |
+| `atomic.load(p)`, `atomic.store(p, v)`, `atomic.add(p, v)`, `atomic.min(p, v)`, `atomic.cas(p, expected, v)` | atomics on `buffer + offset`; `cas` returns the value found (IR version 4) |
 | `b[i]`, `s.field`, `f(args)` | Index, Member, Call |
 
 `let fn module pipeline dispatch cast view math atomic qpel` are reserved names.
