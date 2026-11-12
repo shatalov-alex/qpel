@@ -261,7 +261,8 @@ def reimport(program):
         compile_program(saved, Path(work)/'out')
         generated = Path(work)/'out/package/generated'
         plan = json.loads((generated/'pipeline.json').read_text())
-        for dialect in ('cuda', 'metal'):
+        from frontends.clang_ast import metal_available
+        for dialect in ('cuda', 'metal') if metal_available() else ('cuda',):  # Metal import needs Xcode
             results[dialect] = check(program, next(generated.glob('*' + SUFFIX[dialect])), plan, validate)
     return results
 

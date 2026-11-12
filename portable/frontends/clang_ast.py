@@ -4,9 +4,11 @@ CUDA is parsed host-only against the small stub headers in include/, so no
 CUDA SDK is needed. Metal is parsed with Xcode's `xcrun metal`. Neither run
 generates code; the AST is only read.
 """
+import functools
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 
@@ -18,11 +20,24 @@ class SourceError(ValueError):
     """The source could not be parsed by clang at all."""
 
 
+@functools.lru_cache(maxsize=None)
+def metal_available():
+    """True when Xcode's Metal compiler can be run (macOS with the Metal toolchain). Without it,
+    Metal sources cannot be imported; the checks that need them report themselves skipped."""
+    if not shutil.which('xcrun'):
+        return False
+    return subprocess.run(['xcrun', '--find', 'metal'], capture_output=True).returncode == 0
+
+
 def command(path, dialect, include=()):
     extra = [arg for folder in include for arg in ('-I', str(folder))]
     if dialect == 'cuda':
         return ['clang', '-std=c++17', '-x', 'cuda', '--cuda-host-only', '-nocudainc', '-nocudalib',
-                '-I', str(INCLUDE), *extra, '-include', 'cuda_runtime.h',  # nvcc includes it implicitly
+                '-I', str(INCLUDE), *extra,
+                # clang's cuda_wrappers/new uses ::malloc/::free, which -nocudainc no longer declares;
+                # libc++'s <new> happens to (macOS), libstdc++'s does not (Linux).
+                '-include', 'stdlib.h',
+                '-include', 'cuda_runtime.h',  # nvcc includes it implicitly
                 '-fsyntax-only', '-Xclang', '-ast-dump=json', str(path)]
     if dialect == 'metal':
         return ['xcrun', 'metal', '-std=metal3.1', *extra, '-fsyntax-only', '-Xclang', '-ast-dump=json', str(path)]

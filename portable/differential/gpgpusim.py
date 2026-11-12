@@ -176,6 +176,9 @@ def rows(names=None, gpu=None, config=CONFIG, functional=True, keep=False):
         for index, (name, path, dialect, plan, include, grids, options) in enumerate(matrix.sources()):
             if names and name not in names:
                 continue
+            if dialect == 'metal' and not matrix.metal_available():
+                yield 'nvidia: metal original', path.name, 'skipped: no Metal toolchain (Xcode) to import it'
+                continue
             work = root/f's{index:03}'
             (work/'sim_original').mkdir(parents=True)
             try:

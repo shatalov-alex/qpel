@@ -81,10 +81,10 @@ def source_details(entry):
     return source_coverage(entry, details=True)
 
 
-def coverage(details=False):
+def coverage(details=False, dialect=None):
     """{source: {kernel: blocker codes}} for the whole corpus (with details, 'code at function:line');
-    sources are surveyed in parallel."""
-    listed = entries()
+    sources are surveyed in parallel. dialect ('cuda' or 'metal') limits it to that dialect's sources."""
+    listed = [e for e in entries() if not dialect or clang_ast.dialect_of(CORPUS/e['source']) == dialect]
     with ProcessPoolExecutor() as pool:
         found = list(pool.map(source_details if details else source_coverage, listed))
     return {entry['source']: result for entry, result in zip(listed, found)}
@@ -115,6 +115,8 @@ def main(argv=None):
     parser.add_argument('--details', action='store_true', help='list every blocker with its location')
     parser.add_argument('--messages', action='store_true', help='rank blocker messages over the whole corpus')
     parser.add_argument('--check', action='store_true', help='fail when the result differs from coverage.json')
+    parser.add_argument('--dialect', choices=('cuda', 'metal'),
+                        help='only this dialect\'s sources (Metal needs Xcode; CI on Linux checks CUDA)')
     parser.add_argument('--fixtures', action='store_true',
                         help='write the fixture of every corpus program (one kernel imported on its own)')
     args = parser.parse_args(argv)
@@ -137,11 +139,16 @@ def main(argv=None):
         for (code, message), count in total.most_common():
             print(f'{count:5} {code:22} {message}')
         return 0
-    result = coverage(details=args.details)
+    result = coverage(details=args.details, dialect=args.dialect)
     print(report(result))
     if args.details and (args.check or args.update):
         result = {source: {k: sorted({b.split(' ')[0] for b in v}) for k, v in found.items()} for source, found in result.items()}
-    if args.check and result != json.loads(COVERAGE.read_text()):
+    recorded = json.loads(COVERAGE.read_text())
+    if args.dialect:
+        if args.update:
+            parser.error('--update records the whole corpus; run it without --dialect')
+        recorded = {source: found for source, found in recorded.items() if source in result}
+    if args.check and result != recorded:
         print('corpus coverage changed; check it, then run python3 -m frontends.corpus --update')
         return 1
     if args.details:

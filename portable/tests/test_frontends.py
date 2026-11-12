@@ -240,7 +240,7 @@ class CudaIdioms(Sources):
         self.assertIn('k: w, h became a shape (w, h, 1)', report['adaptations'])
         params = [n['attributes']['name'] for n in sized['nodes'] if n['kind'] == 'Parameter']
         self.assertEqual(params, ['a', 'b', 'shape'])
-        self.assertEqual(roundtrip.reimport(sized), {'cuda': None, 'metal': None})
+        self.assertEqual(roundtrip.reimport(sized), {'cuda': None, **({'metal': None} if HAS_METAL else {})})
         with self.assertRaises(Unsupported) as caught:
             self.program(scalar.replace('x < w && ', ''))  # nothing bounds x
         self.assertEqual(caught.exception.code, 'no-extent')

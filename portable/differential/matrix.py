@@ -28,6 +28,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 from frontends import roundtrip  # noqa: E402
 from frontends.c_import import import_source  # noqa: E402
+from frontends.clang_ast import metal_available  # noqa: E402
 from qpel_ir import Lowering  # noqa: E402
 from qpel_types import EXACT_MATH, MATH_ULPS, normalize_plan  # noqa: E402
 from . import cases as test_cases  # noqa: E402
@@ -164,7 +165,6 @@ class Prepared:
 
 def check_source(name, path, dialect, plan, include, grids, options, work, gpu):
     """Yield (row, case label, error or None) for one original source."""
-    from . import metal
     p = Prepared(name, path, dialect, plan, include, options, work)
     simulated = Program(p.cuda, plan, work/'sim_qpel')
     original = None
@@ -183,6 +183,7 @@ def check_source(name, path, dialect, plan, include, grids, options, work, gpu):
             continue
         yield rows['cuda'][0], label, p.compare(expected, simulated.run(case), case)
         if rows['metal'][1]:
+            from . import metal  # PyTorch; only the Apple GPU rows need it
             yield rows['metal'][0], label, p.compare(expected, metal.run_generated(host, plan, case), case)
         else:
             yield rows['metal'][0], label, 'skipped: no Apple GPU'
@@ -197,6 +198,9 @@ def rows(names=None, gpu=None):
             gpu = False
     for index, (name, path, dialect, plan, include, grids, options) in enumerate(sources()):
         if names and name not in names:
+            continue
+        if dialect == 'metal' and not metal_available():
+            yield 'metal original', path.name, 'skipped: no Metal toolchain (Xcode) to import it'
             continue
         with tempfile.TemporaryDirectory(prefix='qpel-differential-') as work:
             work = Path(work)
@@ -230,7 +234,7 @@ def main(argv=None):
         if count:
             print(f'{"PASS" if not failed else "FAIL"} {row:24} {source}: {count - failed}/{count} cases')
     print(('all behaviour rows passed' if not failures else f'{failures} cases failed')
-          + (f' ({skipped} skipped: no Apple GPU)' if skipped else ''))
+          + (f' ({skipped} skipped: no Apple GPU or Metal toolchain)' if skipped else ''))
     return 1 if failures else 0
 
 
