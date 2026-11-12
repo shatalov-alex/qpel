@@ -1,32 +1,18 @@
-# Release readiness — 2026-10-14
+# Release readiness
 
-> Platform evaluation and the development roadmap (2026-10-19) live in [ROADMAP.md](ROADMAP.md).
+> Design decisions, the development roadmap and current status live in [ROADMAP.md](ROADMAP.md). This file lists what a supported release needs beyond them. Last reviewed 2026-11-12.
 
 ## Release scope
 
-A first public alpha can reasonably expose the documented qpel subset, MPS authoring, offline graph compilation and two generated backends. A stable 1.0 needs a frozen contract and reproducible installation, validation and support story. The original universal CUDA/Metal/Triton ambition requires substantially more language and frontend work; it must not be implied by an alpha version.
+A public alpha can expose the documented qpel subset (IR v3, [CORE.md](CORE.md), [TEXT.md](TEXT.md)), the CUDA and Metal importers, offline compilation and the two generated backends, with the numerics in [NUMERICS.md](NUMERICS.md). A stable 1.0 needs a frozen contract and a reproducible installation, validation and support story. Migrating arbitrary CUDA, Metal or Triton code needs the Phase 3 and 4 work in the roadmap, and an alpha must not imply it. A universal translator with equal performance on both vendors is not a credible release promise.
 
-## Blocking work for a supported release (in addition to NVIDIA execution)
+## Blocking work for a supported release
 
-1. **Reproducible distribution.** Establish version control/release ownership for the project, choose a license, package the MPS language and compiler, declare dependency versions, and verify installation on a clean machine. The inspected project root has no Git repository or release package metadata. Do not choose the owner's license automatically. Offline qpel.py check/build now exists, but is not an installer.
-2. **One semantic contract.** Done for code generation: MPS now only exports qpel IR, and the Python compiler is the single emitter. Freeze graph/ABI versions and add explicit migration tests. Clarify overflow, rounding/contraction, NaN/Inf/subnormal behavior, layout, aliasing and memory ordering, with documented exclusions where appropriate.
-3. **Usable authoring and diagnostics.** Exercise create/edit/check/build from a clean MPS install. Improve scopes/completion and map common-compiler node diagnostics back to editor concepts. Document examples without local machine paths. A text frontend is optional for an MPS-first alpha, but would broaden adoption later.
-4. **Safety boundary.** Document and test required bounds/initialization/synchronization preconditions. Add practical debugging diagnostics for dynamic accesses and reductions. Conservative constant checks are not a safety proof. Full formal race/bounds proof is not a prerequisite if the supported contract and diagnostics are honest and sufficient.
-5. **Runtime hardening.** Test supported dependency versions, current streams/devices, allocation/compilation failures, repeated invocation, module caching and resource lifetime. CUDA/CuPy and Metal/PyTorch currently expose different array ecosystems; decide and document the integration surface rather than silently copying between them.
-6. **Repeatable integration and performance evidence.** Automate CPU/negative tests and package integrity checks, add required compiler checks without silently skipped gates, and provide Apple GPU runs on supported configurations. Re-run SAM 2 against the exact release compiler/package, not only frozen historical artifacts. Add warm/cold timing, compilation time, throughput and memory baselines against suitable native implementations. No measured inference speedup exists yet.
-7. **Release process.** Maintain a current support matrix, examples, changelog, known limitations and reproducible build instructions; exercise rollback/migration and designate support ownership. All advertised features need evidence tied to the released source/package hashes.
-
-## Additional language work for the original broader goal
-
-- General shared memory, uniform barriers, tiled data access and multidimensional/layout-aware operations.
-- Matrix operations and reductions that can select optimized implementations for each backend; later attention/inference kernels with measured benefit.
-- Expand the CUDA frontend beyond the current restricted elementwise subset; design and implement a Triton frontend. Metal-source import is also absent.
-- Separate portable program meaning from launch tuning, subgroup widths, vendor features and fusion; unsupported constructs must fail explicitly or use an explicit fallback.
-
-These are product-development milestones, not merely testing tasks. A universal arbitrary-source translator with equal performance on both vendors is not a credible release promise.
-
-## Current implementation step
-
-The new `qpel.py check/build` command validates a saved graph for both backends without the IDE or GPU libraries. Build emits both hosts and a complete package with artifact hashes, refuses existing destinations, cleans its own reservation on failure, and reports compilation/GPU status as false. Tests cover no-write checks, complete package hashes/final provenance paths, no overwrite, invalid input, injected failure and CLI errors. This closes the offline entrypoint gap only.
-
-Suggested order: reproducible distribution and semantic convergence; CI plus runtime/integration hardening; then broader language capabilities and performance work. An explicitly experimental alpha can precede the stable contract, provided its limitations and migration policy are clear.
+1. **NVIDIA execution.** GPGPU-Sim passes every behaviour row (2026-11-12). One run on a real NVIDIA card is left, including the CuPy host ([CUDA_HOST.md](CUDA_HOST.md)).
+2. **Reproducible distribution.** Done: git repository, Apache-2.0 license, NOTICE for third-party code, pinned corpus with checksums, `requirements.txt`. Open: package the compiler (and optionally the MPS language), declare supported dependency versions, and verify installation on a clean machine.
+3. **One semantic contract.** Done: MPS only exports IR, Python is the single emitter, and NUMERICS.md specifies overflow, rounding and contraction, f16/bf16, subnormals and math accuracy. Open: freeze the IR/ABI versions with explicit migration tests, and document aliasing, layout and memory ordering.
+4. **Diagnostics.** The importers report every unsupported construct with a position and a reason. Open: map compiler diagnostics back to `.qpel` text positions and MPS editor concepts.
+5. **Safety boundary.** Document and test the bounds, initialisation and synchronisation preconditions; add debugging diagnostics for dynamic accesses and reductions. Conservative constant checks are not a safety proof; formal race and bounds proofs are not a prerequisite if the contract and diagnostics are honest.
+6. **Runtime hardening.** Test supported dependency versions, streams and devices, allocation and compilation failures, repeated invocation, module caching and resource lifetime. CuPy and PyTorch expose different array ecosystems; decide and document the integration surface rather than silently copying between them.
+7. **Performance evidence.** Warm and cold timing, compilation time, throughput and memory against the native originals (Phase 3 benchmark harness). Re-run full SAM 2 inference against the release package. No speedup is claimed.
+8. **Release process.** `check_all.py` runs every gate locally (hosted CI is configured but disabled for now). Keep the support matrix, examples, CHANGELOG and known limitations current, and tie every advertised feature to evidence from the released source.

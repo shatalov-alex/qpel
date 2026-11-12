@@ -12,6 +12,6 @@ The compiler still does not prove per-element bounds or race freedom. CUDA pads 
 
 Validation: 113 tests passed using the project Python environment (NumPy available), including six new host/package tests. Recorders verify ABI bytes, bindings, scratch reuse between stages, launch sizes, stream completion, input rejection, per-device cache, hash rejection and failure propagation. These are not CUDA execution tests. Both host packages were generated for all 12 native fixtures. Actual NVRTC compilation and NVIDIA execution remain pending; no performance or production-readiness claim is made.
 
-Optional GPU runner: outputs/qpel-cuda-host/test_cuda.py in the task workspace. Run on an NVIDIA machine with the adjacent workgroup/generated package. It covers five counts including partial groups and strided input. Real NVIDIA testing remains deferred at the user's request.
+Real NVIDIA execution of this host is part of the remaining real-card run of the Phase 2 gate (ROADMAP.md). The generated kernels themselves already run on GPGPU-Sim (gpgpusim/README.md).
 
 API references: https://docs.cupy.dev/en/stable/user_guide/kernel.html (Raw kernels, Custom user types); https://docs.cupy.dev/en/stable/reference/generated/cupy.RawModule.html.
