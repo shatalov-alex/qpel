@@ -83,6 +83,40 @@ void launch(unsigned int* out, unsigned int n) { k<<<(n + 63) / 64, 64>>>(out, n
             _, report = import_source(path)
         self.assertEqual((report['kernels'], report['helpers']), (['k'], []))
 
+    def test_pytorch_extensions_parse_with_the_stand_ins(self):
+        """A typical PyTorch CUDA extension (torch/extension.h, ATen, cooperative groups, dtype
+        dispatch, pybind11) parses offline; its kernel imports and its host code is left out."""
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d)/'ext.cu'
+            path.write_text('''
+#include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <cooperative_groups.h>
+#include <cuda.h>
+namespace cg = cooperative_groups;
+__global__ void scale(const float* x, float* y, float a, unsigned int n) {
+  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n) y[i] = x[i] * a;
+}
+torch::Tensor scale_cuda(torch::Tensor x, double a) {
+  TORCH_CHECK(x.is_cuda(), "x must be a CUDA tensor");
+  TORCH_CHECK(x.dtype() == torch::kFloat32, "float32 only");
+  const at::cuda::OptionalCUDAGuard guard(x.device());
+  auto y = torch::empty_like(x);
+  auto stream = at::cuda::getCurrentCUDAStream();
+  unsigned int n = x.numel();
+  AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "scale", [&] {
+    scale<<<(n + 255) / 256, 256, 0, stream>>>(x.data_ptr<float>(), y.data_ptr<float>(), (float)a, n);
+  });
+  auto sorted = std::get<0>(torch::sort(y));
+  return torch::zeros({n}, torch::dtype(torch::kInt64).device(x.device())) + sorted;
+}
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def("scale", &scale_cuda, py::call_guard<py::gil_scoped_release>()); }
+''')
+            _, report = import_source(path)
+        self.assertEqual(report['kernels'], ['scale'])
+
 
 @unittest.skipUnless(HAS_CLANG, 'clang required')
 class Coverage(unittest.TestCase):

@@ -168,6 +168,15 @@ __device__ long min(long, long);
 __device__ long max(long, long);
 __device__ unsigned long long min(unsigned long long, unsigned long long);
 __device__ unsigned long long max(unsigned long long, unsigned long long);
+// Mixed signs, as the SDK's math_functions.hpp declares them: the comparison is unsigned.
+__device__ unsigned int min(unsigned int, int);
+__device__ unsigned int min(int, unsigned int);
+__device__ unsigned int max(unsigned int, int);
+__device__ unsigned int max(int, unsigned int);
+__device__ unsigned long long min(unsigned long long, long long);
+__device__ unsigned long long min(long long, unsigned long long);
+__device__ unsigned long long max(unsigned long long, long long);
+__device__ unsigned long long max(long long, unsigned long long);
 __device__ float round(float);
 __device__ float trunc(float);
 __device__ float floor(float);

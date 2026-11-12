@@ -543,7 +543,7 @@ class Importer:
             if self.header:
                 node = dict(node, _header=True)
             return [node]
-        if kind in ('StaticAssertDecl', 'UsingDirectiveDecl', 'TypedefDecl') or \
+        if kind in ('StaticAssertDecl', 'UsingDirectiveDecl', 'UsingDecl', 'NamespaceAliasDecl', 'TypedefDecl') or \
                 (kind == 'CXXRecordDecl' and node.get('name') == 'QpelShape'):
             return []
         if self.header:

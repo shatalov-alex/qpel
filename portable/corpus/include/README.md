@@ -1,4 +1,4 @@
-Declaration-only stubs for the headers corpus sources include (PyTorch, ATen,
-pybind11, the CUDA driver API, cuBLAS), so clang can parse the files
-offline. They are used for importing only and declare just what the corpus files
-use. The CUDA runtime, fp16 and bf16 stubs every import uses are in frontends/include/.
+Corpus-specific header stand-ins, searched after the importer's own (`frontends/include/`), which
+now hold the general ones: the CUDA runtime, driver API, fp16/bf16, cooperative groups, cuBLAS,
+and PyTorch's extension API (torch, ATen, c10, pybind11). Add a header here only when a single
+corpus library needs it.
