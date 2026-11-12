@@ -26,6 +26,9 @@ LEGACY = {'VoidType': 'void', 'BoolType': 'bool', 'U8Type': 'u8', 'U32Type': 'u3
           'ReadOnlyF32BufferType': 'buffer<f32, read>', 'F32BufferType': 'buffer<f32, write>',
           'ReadOnlyF16BufferType': 'buffer<f16, read>', 'F16BufferType': 'buffer<f16, write>'}
 BUFFER = re.compile(r'buffer<(\w+), (read|write|atomic)>')
+# IR version 4: a fixed-size array of scalars, for thread-private local variables only.
+ARRAY = re.compile(r'array<(\w+), ([1-9][0-9]{0,3})>')
+MAX_ARRAY = 1024
 COMPARISONS = {'==', '!=', '<', '>', '<=', '>='}
 # Math functions on float32: name -> arity. EXACT ones give the same bits on every backend;
 # the others are within MATH_ULPS of the exact result (NUMERICS.md, math functions).
@@ -45,6 +48,8 @@ def term(t):
             return 'struct ' + t['attributes']['name']
         if t['kind'] == 'BufferType':
             return buffer(t['attributes']['element'], t['attributes']['access'])
+        if t['kind'] == 'ArrayType':
+            return array(t['attributes']['element'], t['attributes']['length'])
         return LEGACY.get(t['kind'], t['kind'])
     return LEGACY.get(t, t)
 
@@ -65,6 +70,22 @@ def access(t):
     return BUFFER.fullmatch(term(t)).group(2)
 
 
+def array(element, length):
+    return f'array<{element}, {length}>'
+
+
+def is_array(t):
+    return ARRAY.fullmatch(term(t)) is not None
+
+
+def array_element(t):
+    return ARRAY.fullmatch(term(t)).group(1)
+
+
+def array_length(t):
+    return int(ARRAY.fullmatch(term(t)).group(2))
+
+
 def is_struct(t):
     return term(t).startswith('struct ')
 
@@ -73,6 +94,9 @@ def is_valid(t):
     t = term(t)
     if t in SCALAR_TERMS | {'void', 'shape3'} or is_struct(t):
         return True
+    m = ARRAY.fullmatch(t)
+    if m:
+        return m.group(1) in SCALAR_TERMS and 1 <= int(m.group(2)) <= MAX_ARRAY
     m = BUFFER.fullmatch(t)
     return bool(m) and m.group(1) in SCALAR_TERMS - {'bool'} and (m.group(2) != 'atomic' or m.group(1) in ATOMIC_ELEMENTS)
 
@@ -199,7 +223,12 @@ class TypeChecker:
         if k == 'Name':
             target = self.target(node, 'declaration')
             check(target['id'] in env, 'SCOPE', 'Declaration is not visible here')
-            return self.declared(target)
+            declared = self.declared(target)
+            if is_array(declared):  # arrays are not values: they are only indexed (IR version 4)
+                parent = self.parents.get(node['id'])
+                check(parent is not None and parent['kind'] == 'Index' and parent['children']['base'] == [node['id']],
+                      'ARRAY_USE', 'A local array can only be indexed')
+            return declared
         if k == 'Literal':
             return 'bool' if a['value'] in ('true', 'false') else 'u32'
         if k == 'I32Literal':
@@ -274,6 +303,13 @@ class TypeChecker:
         if k == 'Index':
             base, index = e('base'), e('index')
             check(index in INTEGER_TERMS, 'INDEX_TYPE', 'Index must be an integer')
+            if is_array(base):
+                at = self.child(node, 'index')
+                if at['kind'] in ('Literal', 'I32Literal', 'Constant'):
+                    value = int(at['attributes']['value'].rstrip('uU'))
+                    check(0 <= value < array_length(base), 'ARRAY_BOUNDS',
+                          f'Index {value} is outside {base}')
+                return array_element(base)
             check(is_buffer(base) and access(base) != 'atomic', 'INDEX_BASE', 'Ordinary buffer required; use atomic operations for atomic buffers')
             return element(base)
         if k.startswith('Atomic'):
@@ -324,6 +360,19 @@ class TypeChecker:
             if op in {'==', '!='} and left == right == 'bool':
                 return 'bool'
             check(False, 'BINARY', f'Unsupported types: {left} {op} {right}')
+        if k == 'ArrayValue':
+            parent = self.parents.get(node['id'])
+            check(parent is not None and parent['kind'] == 'Variable' and is_array(self.declared(parent)),
+                  'ARRAY_VALUE', 'An array value only initializes a local array')
+            expected = self.declared(parent)
+            items = self.children(node, 'elements')
+            check(len(items) == array_length(expected), 'ARRAY_VALUE',
+                  f'{expected} needs {array_length(expected)} elements, not {len(items)}')
+            for item in items:
+                actual = self.expr(item, env, function)
+                self.require(item, fits(array_element(expected), actual), 'ARRAY_VALUE',
+                             f'Expected {array_element(expected)}, got {actual}')
+            return expected
         if k == 'Select':
             check(e('condition') in CONDITIONS, 'CONDITION', 'Scalar condition required')
             yes, no = e('yes'), e('no')
@@ -352,7 +401,11 @@ class TypeChecker:
             self.unique(node, names)
             expected = self.declared(node)
             pointer = is_buffer(expected) and access(expected) != 'atomic'  # a view into a buffer (IR version 3)
-            if self.children(node, 'value'):
+            if is_array(expected):  # IR version 4: always initialized, element by element
+                check(self.children(node, 'value') and self.child(node, 'value')['kind'] == 'ArrayValue',
+                      'VARIABLE_TYPE', 'A local array needs an array value')
+                e('value')
+            elif self.children(node, 'value'):
                 actual = e('value')
                 check((expected in SCALAR_TERMS or pointer) and fits(expected, actual), 'VARIABLE_TYPE', f'Invalid initializer {expected} <- {actual}')
             else:
@@ -365,7 +418,7 @@ class TypeChecker:
                                                       is_buffer(expected) and self.target(target, 'declaration')['kind'] == 'Variable')
             if target['kind'] == 'Index':
                 base = self.expr(self.child(target, 'base'), env, function)
-                writable = is_buffer(base) and access(base) == 'write'
+                writable = is_buffer(base) and access(base) == 'write' or is_array(base)
             check(writable, 'READ_ONLY', 'Assignment target is not writable')
             check(fits(expected, actual), 'ASSIGN_TYPE', f'Incompatible assignment {expected} <- {actual}')
         elif k == 'Evaluate':

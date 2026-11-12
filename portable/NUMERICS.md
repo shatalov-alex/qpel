@@ -74,6 +74,11 @@ Metal has no `erf`, `expm1` or `log1p`; qpel will define them itself rather than
 - `bool` converts to integers and float32 as C does (1 or 0), written as a `Select`.
 - An element count of any integer type (`int k`, `long long n`) may size a 1D kernel; its uses read the shape's volume converted to that type.
 
+## Local arrays (IR version 4)
+
+- `array<T, N>` locals are private to each thread and always initialized: an `ArrayValue` gives every element. The importer fills the elements a C initializer list leaves out with zero (as C does), and gives an array without an initializer all zeros (C leaves it undefined; listed as an adaptation).
+- Reading or writing an element outside the array is undefined, as for buffers. A constant index outside it is a validation error; the CPU simulator (UBSan) traps the rest when a test reaches them.
+
 ## Argument structs and buffer views
 
 - **Structs** (IR version 3): the module declares `StructDecl {name}` with scalar `Field`s; `StructType {name}` (term `struct Name`) types kernel parameters, which bind `value` resources. `Member` reads a field. Fields are laid out as C does (each aligned to its size, in order), which CUDA and Metal share; CUDA passes the struct by value, Metal as `constant Name&`. Launch plans carry the layouts (`"structs"`), and both hosts pack `{field: value}` dictionaries with the same range checks as scalar arguments.

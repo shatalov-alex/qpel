@@ -6,10 +6,10 @@ import re
 import math
 import struct
 
-from qpel_types import INTEGER_TERMS, INTEGERS_BITS, MATH, SCALAR_TERMS, buffer, is_valid
+from qpel_types import INTEGER_TERMS, INTEGERS_BITS, MATH, SCALAR_TERMS, array, buffer, is_valid
 
-TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType StructType'.split())
-EXPRESSIONS = set('Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin'.split())
+TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType StructType ArrayType'.split())
+EXPRESSIONS = set('ArrayValue Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin'.split())
 STATEMENTS = set('Block Variable Assign Evaluate If While DoWhile For Break Continue Return'.split())
 
 # Child role -> (allowed concepts, minimum count, maximum count or None).
@@ -41,6 +41,7 @@ CHILDREN = {
     'Block': {'statements': many(STATEMENTS)},
     'Variable': {'type': one(TYPE_KINDS), 'value': optional(EXPRESSIONS)},  # only buffer locals may omit it
     'View': {'base': one(EXPRESSIONS)},
+    'ArrayValue': {'elements': many(EXPRESSIONS)},  # IR version 4: initializes a local array
     'Binary': {'left': one(EXPRESSIONS), 'right': one(EXPRESSIONS)},
     'Unary': {'operand': one(EXPRESSIONS)},
     'Index': {'base': one(EXPRESSIONS), 'index': one(EXPRESSIONS)},
@@ -92,6 +93,8 @@ ATTRIBUTES = {
     'Cast': {'to': str}, 'Constant': {'value': str, 'scalar': str}, 'Math': {'function': str},
     'StructDecl': {'name': str}, 'Field': {'name': str}, 'StructType': {'name': str}, 'View': {'element': str},
     'GroupIndex': {'axis': str}, 'LocalIndex': {'axis': str}, 'GroupSize': {'axis': str}, 'GroupCount': {'axis': str},
+    # IR version 4
+    'ArrayType': {'element': str, 'length': int},
 }
 DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer'},
              'Dispatch': {'blockHeight', 'blockDepth', 'groupsX', 'groupsY', 'groupsZ'}}
@@ -246,6 +249,8 @@ def validate_structure(nodes):
             fail('Unknown scalar type ' + a['scalar'])
         if kind == 'BufferType' and not is_valid(buffer(a['element'], a['access'])):
             fail(f"Invalid buffer type buffer<{a['element']}, {a['access']}>")
+        if kind == 'ArrayType' and not is_valid(array(a['element'], a['length'])):
+            fail(f"Invalid array type array<{a['element']}, {a['length']}>: a scalar element and 1 to 1024 of them")
         if kind == 'Math' and a['function'] not in MATH:
             fail('Unknown math function ' + a['function'])
         if kind == 'Cast' and a['to'] not in SCALAR_TERMS - {'bool'}:

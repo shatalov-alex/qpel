@@ -59,6 +59,10 @@ Resources become available only after the preceding stage completes. This delibe
 
 Types are terms: `ScalarType {scalar}` and `BufferType {element, access}` construct `u8 … i64`, `bf16`, `f16`, `f32`, `bool` and `buffer<T, read|write|atomic>`; the earlier concept names (`U32Type`, `ReadOnlyF32BufferType`, ...) are spellings of the same terms. Every checker reads types through `qpel_types.term`. See NUMERICS.md for the version 3 numeric rules.
 
+## IR version 4
+
+Thread-private local arrays. `ArrayType {element, length}` (term `array<T, N>`, a scalar `T` and 1 to 1024 elements) types a local `Variable`, whose value is an `ArrayValue` with exactly N `elements`. An array is not a value: its name may only be the base of an `Index`, which reads an element or, as an `Assign` target, writes one. Both backends emit `T name[N] = {...};` (thread memory in Metal). A constant index outside the array is a validation error; NUMERICS.md has the rules for the rest. Programs without arrays stay at their earlier version.
+
 ## Numeric revision
 
 New exports use `qpel-portable-core-v1` and the `u32-modulo-v1` numeric emitter. See NUMERICS.md for exact rules, migration limitations and CPU UBSan evidence. Earlier sections describing exact native source parity and incomplete numeric lowering refer to the preceding revision; only the compatibility rendering now has native token parity. Dynamic division-by-zero, pointer validity and GPU execution remain unchecked.

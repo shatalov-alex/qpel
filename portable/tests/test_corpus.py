@@ -31,7 +31,7 @@ class Survey(unittest.TestCase):
 namespace lib {
 template <typename T> __device__ T twice(T v) { return v + v; }
 __device__ int lowest(float* s, int n) {
-  float done[2];
+  double done[2];
   switch (n) { default: atomicAdd(s + n, 0.5f); }
   return n;
 }

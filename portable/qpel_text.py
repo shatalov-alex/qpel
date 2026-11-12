@@ -125,6 +125,8 @@ class Printer:
         args = lambda role: ', '.join(self.expr(x) for x in self.children(n, role))
         if k == 'Name':
             return self.link(n, 'declaration')['attributes']['name']
+        if k == 'ArrayValue':
+            return '[' + args('elements') + ']'
         if k == 'Literal':
             return a['value'] if a['value'] in ('true', 'false') else str(int(a['value'].rstrip('uU'))) + 'u'
         if k == 'I32Literal':
@@ -307,6 +309,13 @@ class Parser:
             return f'buffer<{element}, {access}>'
         if name == 'struct':
             return 'struct ' + self.take(kind='name')
+        if name == 'array':
+            self.take('<')
+            element = self.take(kind='name')
+            self.take(',')
+            length = self.take(kind='number')
+            self.take('>')
+            return f'array<{element}, {length}>'
         return name
 
     def type(self):
@@ -319,6 +328,11 @@ class Parser:
             return self.add('BufferType', {'element': element, 'access': access})
         if t.startswith('struct '):
             return self.add('StructType', {'name': t[len('struct '):]})
+        if t.startswith('array<'):
+            element, length = t[len('array<'):-1].split(', ')
+            if not length.isdigit():
+                self.fail('an array length is a decimal number')
+            return self.add('ArrayType', {'element': element, 'length': int(length)})
         return self.add('ScalarType', {'scalar': t})
 
     def function(self):
@@ -483,6 +497,14 @@ class Parser:
 
     def primary(self):
         kind, value, _ = self.peek()
+        if value == '[':  # an array value, initializing a local array
+            self.take('[')
+            elements = []
+            while not self.accept(']'):
+                elements.append(self.expr())
+                if self.peek()[1] != ']':
+                    self.take(',')
+            return self.add('ArrayValue', children={'elements': elements})
         if value == '(':
             self.take('(')
             node = self.expr()

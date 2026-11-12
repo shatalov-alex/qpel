@@ -36,7 +36,8 @@ W, H and N (NUMERICS.md, launch geometry).
 ## Types
 
 `bool u8 i8 u16 i16 u32 i32 u64 i64 f16 bf16 f32 void`, `shape3`,
-`buffer<T, read|write|atomic>`, `struct S`.
+`buffer<T, read|write|atomic>`, `struct S`, and for locals `array<T, N>` (IR version 4),
+initialized with an array value `[a, b, c]` of exactly N elements and indexed as `a[i]`.
 
 ## Statements
 

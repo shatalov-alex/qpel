@@ -560,10 +560,35 @@ def run_sam2_cc(name, host, plan):
     return len(cases)
 
 
+# --- IR version 4: thread-private arrays with data-dependent indices ---
+
+def sort_bytes_oracle(x):
+    v = np.sort(np.stack([x & 255, (x >> 8) & 255, (x >> 16) & 255], axis=1), axis=1).astype(np.uint32)
+    h = np.zeros((x.size, 4), np.uint32)
+    h[:, 0] = x >> 30
+    for k in range(3):
+        np.add.at(h, (np.arange(x.size), v[:, k] % 4), 1)
+    return v[:, 0] | (v[:, 1] << 8) | (v[:, 2] << 16), h[:, 0] | (h[:, 1] << 8) | (h[:, 2] << 16) | (h[:, 3] << 24)
+
+
+def run_sort_bytes(name, host, plan):
+    rng = np.random.default_rng(20261112)
+    cases = 0
+    for n in (1, 63, 64, 65, 1000, 4097):
+        x = rng.integers(0, 2**32, n, dtype=np.uint64).astype(np.uint32)
+        x[:min(n, 4)] = [0, 0xffffffff, 0x00030201, 0xc0010101][:min(n, 4)]
+        result = host.run({'x': torch.from_numpy(x.view(np.int32)).to(DEVICE)}, {'n': (n, 1, 1)})
+        sorted_, counts = sort_bytes_oracle(x)
+        np.testing.assert_array_equal(result['sorted'].cpu().numpy().view(np.uint32), sorted_)
+        np.testing.assert_array_equal(result['counts'].cpu().numpy().view(np.uint32), counts)
+        cases += 1
+    return cases
+
+
 TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fma32': run_fma32,
          'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components,
          'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset, 'box_sum': run_box_sum,
-         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride, 'math_ops': run_math_ops}
+         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride, 'math_ops': run_math_ops, 'sort_bytes': run_sort_bytes}
 
 
 def main(argv=None):

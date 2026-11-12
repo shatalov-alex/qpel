@@ -13,7 +13,7 @@ import struct
 from qpel_schema import is_identifier
 from qpel_types import (SCALAR_TERMS, VALUE_TERMS, access, buffer as type_buffer, fits, is_buffer as type_is_buffer,
                         is_signed, node_spec, normalize_plan, term as type_term)
-from qpel_types import access as type_access, bits as type_bits, INTEGER_TERMS, MATH, is_struct
+from qpel_types import access as type_access, bits as type_bits, INTEGER_TERMS, MATH, is_struct, is_array
 from qpel_types import arithmetic as type_arithmetic
 from . import clang_ast
 from .clang_ast import position
@@ -147,8 +147,38 @@ def is_member(node, base, field):
     return (node['kind'] == 'MemberExpr' and node.get('name') == field and decl_name(node['inner'][0]) == base)
 
 
+TEMPORARIES = ('ImplicitCastExpr', 'MaterializeTemporaryExpr', 'CXXBindTemporaryExpr', 'ExprWithCleanups', 'ParenExpr')
+
+
+def cooperative_rank(node):
+    """'grid' for cooperative_groups::this_grid().thread_rank(), 'block' for
+    this_thread_block().thread_rank(), else None."""
+    while node.get('kind') in TEMPORARIES and node.get('inner'):
+        node = node['inner'][0]
+    if node.get('kind') != 'CXXMemberCallExpr' or not node.get('inner'):
+        return None
+    method = node['inner'][0]
+    if method.get('kind') != 'MemberExpr' or method.get('name') != 'thread_rank' or not method.get('inner'):
+        return None
+    call = method['inner'][0]
+    while call.get('kind') in TEMPORARIES and call.get('inner'):
+        call = call['inner'][0]
+    if call.get('kind') != 'CallExpr' or not call.get('inner'):
+        return None
+    callee = call['inner'][0]
+    while callee.get('kind') in TEMPORARIES and callee.get('inner'):
+        callee = callee['inner'][0]
+    name = (callee.get('referencedDecl') or {}).get('name') if callee.get('kind') == 'DeclRefExpr' else None
+    return {'this_grid': 'grid', 'this_thread_block': 'block'}.get(name)
+
+
 def grid_axis(node):
-    """'x', 'y' or 'z' for blockIdx.a * blockDim.a + threadIdx.a (operands in any order), else None."""
+    """'x', 'y' or 'z' for blockIdx.a * blockDim.a + threadIdx.a (operands in any order), else None.
+    cooperative_groups::this_grid().thread_rank() is the x index: the grid rank of a thread is
+    the linear index over the whole grid, which for qpel's one-dimensional launch is exactly
+    blockIdx.x * blockDim.x + threadIdx.x (Importer.expr refuses it in 2D/3D kernels)."""
+    if cooperative_rank(node) == 'grid':
+        return 'x'
     node = peel(node)
     if node['kind'] != 'BinaryOperator' or node['opcode'] != '+':
         return None
@@ -274,6 +304,7 @@ GROUP_NODES = {'group': 'GroupIndex', 'local': 'LocalIndex', 'size': 'GroupSize'
 GROUPS_BLOCK = 64  # group size of a Groups kernel without a launch plan
 QPEL_GROUP_SUM_PARAMS = {'qpel_lane', 'qpel_group_size'}  # builtins backends/metal.h adds for a workgroup sum
 ATOMIC_ELEMENTS = {'u32': 'atomic', 'i32': 'atomic_i32'}  # element -> scalar of its atomic buffer
+LOCAL_ARRAY = re.compile(r'(.*\S)\s*\[([0-9]+)\]')  # `unsigned int [3]`: a local array's type
 ZERO = {'bool': ('Literal', 'false'), 'u32': ('Literal', '0u'), 'i32': ('I32Literal', '0'), 'f32': ('F32Literal', '0.0')}
 GRID3D_BLOCK = (16, 16, 1)  # default block for 2D/3D kernels without a launch plan
 MINIMUM = {'min', 'umin'}
@@ -356,6 +387,15 @@ class Importer:
         self.qualified = {}  # function -> name with its namespaces, for calling the original
         self.arguments = {}  # kernel -> how each original argument is fed from the qpel pipeline
         self.namespace = ''
+        self.namespace_names = {}  # clang id of a namespace -> its qualified prefix, 'CUDA::'
+
+        def namespaces(nodes, prefix):
+            for decl in nodes:
+                if decl.get('kind') == 'NamespaceDecl':
+                    own = prefix + decl.get('name', '') + '::'
+                    self.namespace_names[decl['id']] = own
+                    namespaces(decl.get('inner', ()), own)
+        namespaces(unit.get('inner', ()), '')
         self.source = source
         self.path = path
         self.module = module
@@ -476,13 +516,16 @@ class Importer:
             return [d for child in node.get('inner', ()) for d in self.top_level(child)]
         if kind == 'NamespaceDecl':
             # qpel has one flat module; function names must still be unique, which run() checks.
-            self.adaptations.append(f'namespace {node.get("name", "(anonymous)")} was flattened')
             outer = self.namespace
             self.namespace = outer + node.get('name', '') + '::'
             try:
-                return [d for child in node.get('inner', ()) for d in self.attempt(lambda: self.top_level(child), [])]
+                found = [d for child in node.get('inner', ()) for d in self.attempt(lambda: self.top_level(child), [])]
             finally:
                 self.namespace = outer
+            message = f'namespace {node.get("name", "(anonymous)")} was flattened'
+            if found and message not in self.adaptations:  # only where it held functions qpel imports
+                self.adaptations.append(message)
+            return found
         if kind == 'FunctionTemplateDecl':
             pattern = next((d for d in node.get('inner', ()) if d['kind'] == 'FunctionDecl'), None)
             if pattern is not None and self.dialect.is_host(pattern):
@@ -539,7 +582,9 @@ class Importer:
                 node = dict(node, name=name)
             self.taken.setdefault(node['name'], node['id'])
             if qualified:
-                self.qualified[node['name']] = self.namespace + node['name']
+                # an out-of-line definition (`void CUDA::k(...)`) names its namespace by id
+                prefix = self.namespace or self.namespace_names.get(node.get('parentDeclContextId'), '')
+                self.qualified[node['name']] = prefix + node['name']
             if self.header:
                 node = dict(node, _header=True)
             return [node]
@@ -1126,6 +1171,9 @@ class Importer:
         if t[0] == 'pointer' and t[2] in SCALAR_TERMS - {'bool'} and \
                 not {'threadgroup', 'constant', 'thread'} & set(decl['type']['qualType'].replace('*', ' ').split()):
             return self.buffer_local(decl, name, type_buffer(t[2], 'read' if t[1] else 'write'))
+        array = LOCAL_ARRAY.fullmatch(decl['type']['qualType'].strip())
+        if array:
+            return self.array_local(decl, name, array)
         if t[0] == 'scalar' and t[1] in self.records:
             raise Unsupported(decl, 'local-type', f'local {name}: struct locals are not in qpel yet')
         if t[0] != 'scalar' or t[1] not in SCALAR_TERMS:
@@ -1152,6 +1200,66 @@ class Importer:
                             {'type': self.type_node(t[1]), 'value': value})
         self.scope[decl['id']] = ('local', ir, t[1])
         return [ir]
+
+    def zero(self, scalar):
+        if scalar in ZERO:
+            return self.graph.add(ZERO[scalar][0], {'value': ZERO[scalar][1]})
+        if scalar in INTEGER_TERMS:
+            return self.graph.add('Constant', {'scalar': scalar, 'value': '0'})
+        return self.convert_types(self.graph.add('F32Literal', {'value': '0.0'}), 'f32', scalar, None)
+
+    def array_local(self, decl, name, array):
+        """A thread-private array, `uint32_t point[3] = {...}` (IR version 4). Elements the
+        initializer leaves out are zero, as in C; an array without one starts all zero (C leaves
+        it undefined)."""
+        element = describe(array.group(1))
+        length = int(array.group(2))
+        space = set(decl['type']['qualType'].replace('[', ' ').split()) & {'threadgroup', 'constant', 'device'}
+        if 'CUDASharedAttr' in attributes(decl) or space or decl.get('storageClass') == 'static':
+            # shared by the threads of a group, or one copy for all: not a thread's own array
+            raise Unsupported(decl, 'local-type', f'local {name}: '
+                              + ('shared memory' if 'CUDASharedAttr' in attributes(decl) or 'threadgroup' in space
+                                 else 'a static or constant-space array') + ' is not in qpel yet')
+        if element[0] != 'scalar' or element[1] not in SCALAR_TERMS or not 1 <= length <= 1024:
+            raise Unsupported(decl, 'local-type', f'local {name} of type {decl["type"]["qualType"]} is not in qpel: '
+                                                  'local arrays hold 1 to 1024 scalars')
+        scalar = element[1]
+        init = decl['inner'][0] if 'init' in decl else None
+        while init is not None and init['kind'] in ('ExprWithCleanups', 'ConstantExpr') and init.get('inner'):
+            init = init['inner'][0]
+        values = []
+        if init is not None:
+            if init['kind'] != 'InitListExpr':
+                raise Unsupported(decl, 'array-init', f'local array {name} is initialized with a list or not at all')
+            items = list(init.get('inner', ()))
+            if 'array_filler' in init:
+                # clang's JSON for a partly filled list: the filler for the missing elements first,
+                # then the written elements (and no 'inner').
+                filler, *written = init['array_filler']
+                if filler.get('kind') != 'ImplicitValueInitExpr':
+                    raise Unsupported(decl, 'array-init', f'local array {name}: only zero fills its missing elements')
+                items = written + items
+            if len(items) > length:
+                raise Unsupported(decl, 'array-init', f'local array {name} has more initializers than elements')
+            values = [self.expr(item) for item in items]
+        else:
+            self.adaptations.append(f'{self.current}: local array {name} had no initializer; qpel starts it at zero')
+        values += [self.zero(scalar) for _ in range(length - len(values))]
+        ir = self.graph.add('Variable', {'name': self.unique_name(name)},
+                            {'type': self.graph.add('ArrayType', {'element': scalar, 'length': length}),
+                             'value': self.graph.add('ArrayValue', children={'elements': values})})
+        self.scope[decl['id']] = ('local', ir, f'array<{scalar}, {length}>')
+        return [ir]
+
+    def local_array(self, base):
+        """The qpel Variable of a local array that `base` names, or None."""
+        core = base
+        while core.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and core.get('inner'):
+            core = core['inner'][0]
+        if core.get('kind') != 'DeclRefExpr':
+            return None
+        entry = self.scope.get(core['referencedDecl']['id'])
+        return entry[1] if entry and entry[0] == 'local' and is_array(entry[2]) else None
 
     def safe_name(self, name):
         """A C name that qpel or a backend reserves (min, max, kernel, half, ...) gets a trailing _."""
@@ -1441,6 +1549,9 @@ class Importer:
                 if ref.get('name') in ('threadIdx', 'blockIdx', 'blockDim', 'gridDim'):
                     raise Unsupported(n, 'thread-builtin', 'only blockIdx.x * blockDim.x + threadIdx.x is supported')
                 raise Unsupported(n, 'unknown-name', f'{ref.get("name")} is not a parameter or local')
+            if entry[0] == 'local' and is_array(entry[2]):
+                raise Unsupported(n, 'array-use', f'local array {ref.get("name")} can only be indexed in qpel '
+                                                  '(not passed, copied or used as a pointer)')
             if entry[0] == 'grid':
                 index = self.thread_index(entry[1], n)
                 own = scalar_of(n)  # `const int i = blockIdx.x * blockDim.x + threadIdx.x` is an int
@@ -1471,6 +1582,9 @@ class Importer:
             if scalar_of(n) != 'f32':
                 raise Unsupported(n, 'double', 'double precision is not in qpel; write a float literal such as 0.5f')
             return add('F32Literal', {'value': n['value']})
+        if cooperative_rank(n) and (self.groups or self.grid3d or cooperative_rank(n) == 'block'):
+            raise Unsupported(n, 'thread-builtin', 'cooperative groups thread_rank() is supported as the grid rank '
+                                                   'of a one-dimensional kernel')
         if grid_axis(n) and not self.groups:  # a Groups kernel reads it literally: group * size + local
             if not self.kernel:
                 raise Unsupported(n, 'thread-builtin', 'the thread index is only available in kernels')
@@ -1594,10 +1708,14 @@ class Importer:
 
     def is_atomic_element(self, node):
         node = peel(node)
-        return node['kind'] == 'ArraySubscriptExpr' and type_access(self.buffer_kind(node['inner'][0])) == 'atomic'
+        return node['kind'] == 'ArraySubscriptExpr' and self.local_array(node['inner'][0]) is None and \
+            type_access(self.buffer_kind(node['inner'][0])) == 'atomic'
 
     def index(self, node):
         base, index = node['inner']
+        array = self.local_array(base)
+        if array is not None:
+            return self.graph.add('Index', children={'base': self.name(array), 'index': self.expr(index)})
         if self.is_atomic_element(node):
             # CUDA reads buffers that other threads update atomically with plain loads;
             # qpel makes them relaxed atomic loads.

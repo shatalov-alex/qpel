@@ -5,7 +5,7 @@ and whole-resource pipeline effects, not numerical lowering, bounds or races.
 """
 import json
 from qpel_schema import validate_envelope, validate_structure
-from qpel_types import EXACT_MATH, validate_types, TypeChecker, LEGACY, term, is_buffer, element, access, is_signed, bits, unsigned_of, arithmetic, INTEGER_TERMS
+from qpel_types import EXACT_MATH, validate_types, TypeChecker, LEGACY, term, is_buffer, element, access, is_signed, bits, unsigned_of, arithmetic, INTEGER_TERMS, is_array, array_element, array_length
 from qpel_pipeline import validate_pipeline
 from qpel_bounds import validate_static_bounds
 
@@ -15,17 +15,19 @@ LEGACY_MACROS={'void':'void','bool':'bool','u8':'QPEL_U8','u32':'QPEL_U32','i32'
        'buffer<u32, atomic>':'QPEL_ATOMIC_U32','buffer<i32, atomic>':'QPEL_ATOMIC_I32','buffer<i32, read>':'QPEL_READ_I32',
        'buffer<i32, write>':'QPEL_WRITE_I32','buffer<f32, read>':'QPEL_READ_F32','buffer<f32, write>':'QPEL_WRITE_F32',
        'buffer<f16, read>':'QPEL_READ_F16','buffer<f16, write>':'QPEL_WRITE_F16'}
-TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType','StructType'}
-KINDS=TYPE_KINDS|set('View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin Pipeline Resource Dispatch Binding'.split())
+TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType','StructType','ArrayType'}
+KINDS=TYPE_KINDS|set('ArrayValue View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin Pipeline Resource Dispatch Binding'.split())
 COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage','groups','math_exact','math_bounded'}
 PROFILES={'metal':COMMON_FEATURES,'cuda':COMMON_FEATURES}
-SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3'}
+SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3',4:'qpel-portable-core-v4'}
 # Version 2 adds else, for/do/break/continue, signed 32-bit integers and their atomics,
 # shifts, ~, conversion to u8, scalar arguments and 2D/3D kernels.
 V2_KINDS={'Grid3D','ThreadIndex','For','DoWhile','Break','Continue','I32Type','ReadOnlyI32BufferType','I32BufferType','AtomicI32BufferType','I32Literal','I32Cast','U32Cast','U8Cast'}
 # Version 3 writes types as terms (ScalarType, BufferType) and adds 8-, 16- and 64-bit
 # integers, bf16 storage, writable u8 buffers, Cast and Constant.
 V3_KINDS={'ScalarType','BufferType','Cast','Constant','Math','View','StructDecl','Field','StructType','Groups','GroupIndex','LocalIndex','GroupSize','GroupCount'}
+# Version 4 adds thread-private local arrays (array<T, N>, ArrayValue).
+V4_KINDS={'ArrayType','ArrayValue'}
 def type_macro(t):
     """Backend macro spelling a type term."""
     if t in LEGACY_MACROS:return LEGACY_MACROS[t]
@@ -68,8 +70,13 @@ def version_3_features(nodes):
     return {n['kind'] for n in nodes if n['kind'] in V3_KINDS}
 
 
+def version_4_features(nodes):
+    return {n['kind'] for n in nodes if n['kind'] in V4_KINDS}
+
+
 def minimum_version(program):
-    return 3 if version_3_features(program['nodes']) else 2 if version_2_features(program['nodes']) else 1
+    nodes=program['nodes']
+    return 4 if version_4_features(nodes) else 3 if version_3_features(nodes) else 2 if version_2_features(nodes) else 1
 
 
 def validate(program, backend=None):
@@ -80,6 +87,8 @@ def validate(program, backend=None):
         raise ValueError('IR version 1 cannot use: '+', '.join(sorted(version_2_features(program['nodes'])))+'; declare version 2')
     if program['version']<3 and version_3_features(program['nodes']):
         raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_3_features(program['nodes'])))+'; declare version 3')
+    if program['version']<4 and version_4_features(program['nodes']):
+        raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_4_features(program['nodes'])))+'; declare version 4')
     nodes={n['id']:n for n in program['nodes']}
     if len(nodes)!=len(program['nodes']):raise ValueError('Duplicate IR node id')
     required={'integer_buffers','grid_1d'}
@@ -98,7 +107,7 @@ def validate(program, backend=None):
         if n['kind']=='Math':required.add('math_exact' if n['attributes']['function'] in EXACT_MATH else 'math_bounded')
         if n['kind'] in TYPE_KINDS|{'Cast','Constant'}:
             used=term(n) if n['kind'] in TYPE_KINDS else n['attributes'].get('to') or n['attributes'].get('scalar')
-            item=element(used) if is_buffer(used) else used
+            item=element(used) if is_buffer(used) else array_element(used) if is_array(used) else used
             if item in ('u8','i8','u16','i16') and n['kind'] not in LEGACY:required.add('int8_16')
             if item in ('u64','i64'):required.add('int64')
             if item=='bf16':required.add('bfloat16_storage')
@@ -235,6 +244,7 @@ class Lowering:
                 return '('+a['operator']+'('+type_macro(t)+')('+operand+'))'
             return '('+a['operator']+operand+')'
         if k=='Index':return e('base')+'['+e('index')+']'
+        if k=='ArrayValue':return '{'+joined('elements',', ')+'}'
         if k=='Member':return e('base')+'.'+a['member']
         if k=='Call':return self.link(n,'function')['attributes']['name']+'('+joined('arguments',', ')+')'
         if k in ('Minimum','Maximum'):
@@ -251,6 +261,9 @@ class Lowering:
             if not hasattr(self,'read_names'):
                 self.read_names={x['links']['declaration'] for x in self.nodes.values() if x['kind']=='Name'}
             unused='QPEL_UNUSED ' if n['id'] not in self.read_names else ''  # never read, e.g. after folded branches
+            declared=term(self.child(n,'type'))
+            if is_array(declared):  # T name[N] = {...}: the same in CUDA C++ and Metal (thread address space)
+                return unused+type_macro(array_element(declared))+' '+a['name']+'['+str(array_length(declared))+'] = '+e('value')+';\n'
             return unused+e('type')+' '+a['name']+(' = '+e('value') if self.children(n,'value') else '')+';\n'
         if k=='View':return '(('+type_macro(self.expression_types[n['id']])+')('+e('base')+'))'
         if k=='Assign':return e('target')+' = '+e('value')+';\n'
@@ -296,7 +309,7 @@ class Lowering:
         The build enables the matching support in backends/*.h; see FEATURE_DEFINES in build_backends."""
         nodes=self.nodes.values()
         terms=set(self.expression_types.values())|{term(n) for n in nodes if n['kind'] in TYPE_KINDS}
-        scalars={element(t) if is_buffer(t) else t for t in terms}
+        scalars={element(t) if is_buffer(t) else array_element(t) if is_array(t) else t for t in terms}
         from qpel_types import join
         for n in nodes:  # the type two integer operands are joined to may be neither's (i8 < i16 is in i32)
             if n['kind'] in ('Binary','Minimum','Maximum') and n['children'].get('right'):

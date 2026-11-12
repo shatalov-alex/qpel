@@ -65,8 +65,10 @@ def fixture_test(name):
     return test
 
 
+from frontends.roundtrip import corpus_programs  # noqa: E402
+CORPUS = {program['fixture'] for _, program in corpus_programs()}
 for _name in NAMES:
-    if not _name.startswith('llama_'):
+    if _name not in CORPUS:  # corpus programs: their Metal rows run in test_behaviour_rows
         setattr(AppleGpu, f'test_{_name}', fixture_test(_name))
 
 
