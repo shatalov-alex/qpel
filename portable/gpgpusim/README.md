@@ -13,7 +13,7 @@ python3 -m fuzz --nvidia                    # random programs, also on GPGPU-Sim
 python3 check_all.py --gpu --nvidia         # all of it, with the other checks
 ```
 
-The image (`qpel/gpgpu-sim:dev-4195dd4-qpel5`, from this folder's Dockerfile on the
+The image (`qpel/gpgpu-sim:dev-4195dd4-qpel6`, from this folder's Dockerfile on the
 CUDA 12.6 devel image `nvcc_check.py` uses) is built on first use and takes about a
 minute. It is built and tested natively on arm64 (Apple silicon, Docker Desktop). On
 x86-64 the upstream build flags are kept, but that build is untested. Change the tag in
@@ -64,9 +64,19 @@ fix is reported as such, not as a qpel failure.
 | `mul.hi.u64` / `mul.hi.s64` | unimplemented (assertion) / returns the low half | fuzzing (64-bit division by constants) |
 | `abs.f32/f64`, `neg.f32/f64/f16` | `x < 0 ? -x : x` and `0 - x`: wrong sign of zero | fuzzing |
 
-The patch also drops AccelWattch's x86-only compiler flags on arm64 (Dockerfile). None
-of these are qpel issues, and qpel needed no change for any of them; they are worth
-reporting upstream. The same fuzzing run found one qpel bug, in the importer
+The patch also drops AccelWattch's x86-only compiler flags off x86. None of these are
+qpel issues, and qpel needed no change for any of them.
+
+**Upstream (2026-11-12):** submitted to accel-sim/gpgpu-sim_distribution, which has
+issues disabled, so as pull requests against `dev`. `qpel-fixes.patch` is exactly their
+diff:
+
+- [#154](https://github.com/accel-sim/gpgpu-sim_distribution/pull/154): the PTX fixes
+  above, one commit per bug (abs and neg share one).
+- [#153](https://github.com/accel-sim/gpgpu-sim_distribution/pull/153): the AccelWattch
+  Makefile flags.
+
+Once they are merged, pin `GPGPUSIM_COMMIT` past them and drop the patch. The same fuzzing run found one qpel bug, in the importer
 (`fuzz/regressions/unsigned_to_i32_literal.qpel`).
 
 ## What this does not prove

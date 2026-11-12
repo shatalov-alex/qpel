@@ -36,7 +36,7 @@ sys.path.insert(0, str(HERE))
 from . import matrix  # noqa: E402
 from .simulate import Program  # noqa: E402
 
-IMAGE = 'qpel/gpgpu-sim:dev-4195dd4-qpel5'  # change the tag whenever gpgpusim/ changes
+IMAGE = 'qpel/gpgpu-sim:dev-4195dd4-qpel6'  # change the tag whenever gpgpusim/ changes
 DOCKERFILE = HERE/'gpgpusim'
 CONFIG = 'SM75_RTX2060'
 ARCH = 'compute_75'
