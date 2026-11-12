@@ -136,8 +136,11 @@ class Program:
             text = bytearray(source.read_bytes())
             for start, end in original['host_spans']:  # blank host code, keeping line numbers
                 text[start:end] = bytes(b if b == 10 else 32 for b in text[start:end])
-            device = source.with_name('device_' + source.name)
+            # The copy lives in the work folder (never next to the source: parallel runs and the
+            # repository); its quoted includes resolve through the source's own folder.
+            device = self.work/('device_' + source.name)
             device.write_bytes(bytes(text))
+            include = [source.parent] + include
             source = device
         self.source, self.include = source, include
         self.main = self.work/self.MAIN
