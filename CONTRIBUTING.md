@@ -37,8 +37,9 @@ python3 check_all.py --python .venv/bin/python         # compiler, importers, nv
 python3 check_all.py --gpu --nvidia --python .venv/bin/python   # adds Apple GPU and GPGPU-Sim
 ```
 
-CI runs the unit tests, corpus coverage, CPU behaviour rows and fuzzing on Linux. The
-Apple GPU and GPGPU-Sim rows run locally.
+All checks run locally; `check_all.py` is the reference. The workflow in
+`.github/workflows/ci.yml` (Linux: unit tests, CUDA corpus coverage, CPU behaviour rows,
+fuzzing, nvcc) is kept for when hosted CI is enabled.
 
 ## Changes to numerics or the IR
 

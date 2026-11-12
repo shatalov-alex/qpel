@@ -21,7 +21,8 @@ older programs keep building.
 - **Differential fuzzing** across the CPU simulator, Apple GPUs and GPGPU-Sim.
 - **NVIDIA execution on GPGPU-Sim** in Docker: 720 cases pass. Eleven simulator bugs were
   fixed and submitted upstream (accel-sim/gpgpu-sim_distribution#153, #154).
-- The CUDA importer now works with Linux clang/libstdc++ as well as macOS.
+- The compiler, the CUDA importer and the CPU simulator run on Linux (clang 18 with libstdc++) as well
+  as macOS; without Xcode, the Metal paths are reported as skipped.
 
 ### Changed
 - float32 arithmetic is rounded operation by operation on both backends (f32-strict-v1),

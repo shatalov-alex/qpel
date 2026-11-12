@@ -117,6 +117,11 @@ class Program:
             # replaced by ';' (declarations stay); quoted includes still resolve inside the copy.
             root = Path(os.path.commonpath([source.parent] + [f.parent for f in bodies]))
             tree = self.work/'tree'
+            # Never copy a filesystem root or a tree holding the copy itself: a system header
+            # mistaken for a library header once made this copy itself until the disk was full.
+            if root == Path(root.anchor) or tree.resolve().is_relative_to(root.resolve()):
+                raise RuntimeError(f'{source.name}: refusing to copy {root} for the simulator; its library '
+                                   f'headers are {sorted(str(f) for f in bodies)[:3]}')
             shutil.copytree(root, tree, dirs_exist_ok=True)
             for f, spans in bodies.items():
                 copy = tree/f.relative_to(root)

@@ -5,7 +5,6 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/shatalov-alex/qpel/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/shatalov-alex/qpel/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776ab.svg">
   <img alt="Targets: CUDA and Metal" src="https://img.shields.io/badge/targets-CUDA%20%7C%20Metal-76b900.svg">

@@ -146,10 +146,9 @@ inline int __float2int_rn(float x) { return (int)std::nearbyint(x); }
 inline int __float2int_rz(float x) { return (int)x; }
 inline float __frcp_rn(float x) { volatile float r = 1.0f / x; return r; }
 inline float rsqrtf(float x) { return 1.0f / std::sqrt(x); }
-using std::fabsf; using std::fminf; using std::fmaxf; using std::floorf; using std::ceilf; using std::truncf;
-using std::roundf; using std::copysignf; using std::sqrtf; using std::expf; using std::exp2f; using std::logf;
-using std::log2f; using std::sinf; using std::cosf; using std::tanhf; using std::erff; using std::expm1f;
-using std::log1pf; using std::powf; using std::ldexpf; using std::fmodf;
+// CUDA's float math functions (sinf, powf, ...) by their global C names: libstdc++ 13 has no
+// std::sinf, while both C++ libraries declare ::sinf through <math.h>.
+#include <math.h>
 inline long long atomicAdd(long long* a, long long v) { long long o = *a; *a = (long long)((unsigned long long)o + (unsigned long long)v); return o; }
 inline unsigned long long atomicAdd(unsigned long long* a, unsigned long long v) { unsigned long long o = *a; *a = o + v; return o; }
 inline int atomicCAS(int* a, int c, int v) { int o = *a; if (o == c) *a = v; return o; }

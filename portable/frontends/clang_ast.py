@@ -6,6 +6,7 @@ generates code; the AST is only read.
 """
 import functools
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -60,8 +61,11 @@ LINE = re.compile(r'"line": (\d+)')
 INCLUDED_FROM = re.compile(r'"includedFrom": \{[^{}]*\}')
 
 
+@functools.lru_cache(maxsize=4096)
 def is_system(file):
-    return file is not None and file.startswith(SYSTEM)
+    # Linux clang names libstdc++ headers '/usr/bin/../lib/gcc/.../../../../include/c++/13/new':
+    # normalise before comparing prefixes.
+    return file is not None and (file.startswith(SYSTEM) or ('..' in file and os.path.normpath(file).startswith(SYSTEM)))
 
 
 def last_location(text, state):
