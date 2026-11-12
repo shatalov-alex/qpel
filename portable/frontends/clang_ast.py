@@ -34,7 +34,7 @@ def command(path, dialect, include=()):
     extra = [arg for folder in include for arg in ('-I', str(folder))]
     if dialect == 'cuda':
         return ['clang', '-std=c++17', '-x', 'cuda', '--cuda-host-only', '-nocudainc', '-nocudalib',
-                '-I', str(INCLUDE), *extra,
+                '-I', str(INCLUDE), '-I', str(INCLUDE/'libraries'), *extra,
                 # clang's cuda_wrappers/new uses ::malloc/::free, which -nocudainc no longer declares;
                 # libc++'s <new> happens to (macOS), libstdc++'s does not (Linux).
                 '-include', 'stdlib.h',

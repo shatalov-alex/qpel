@@ -30,7 +30,7 @@ sys.path.insert(0, str(HERE.parent))
 from qpel_types import NUMPY_DTYPES, element, is_buffer, is_struct, normalize_plan, pack_struct, term  # noqa: E402
 
 INCLUDE = HERE/'include'
-IMPORT_INCLUDE = HERE.parent/'frontends/include'
+IMPORT_INCLUDE = HERE.parent/'frontends/include/libraries'  # PyTorch, cuBLAS; CUDA is the simulator's own
 
 
 class _Types(dict):
@@ -154,8 +154,7 @@ class Program:
         build = subprocess.run(['clang++', '-std=c++17', '-O1', '-ffp-contract=off', '-fsanitize=undefined',
                                 '-fno-sanitize-recover=all', '-w', '-I', str(INCLUDE),
                                 *[arg for folder in self.include for arg in ('-I', str(folder))],
-                                # The importer's stand-ins (PyTorch, ATen, cooperative groups) for what the
-                                # simulator's own runtime does not define; its headers above come first.
+                                # The importer's library stand-ins (PyTorch, ATen, c10, pybind11, cuBLAS).
                                 '-I', str(IMPORT_INCLUDE),
                                 str(self.main), '-o', str(self.binary)], capture_output=True, text=True, timeout=180)
         if build.returncode:

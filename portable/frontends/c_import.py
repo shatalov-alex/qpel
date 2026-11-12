@@ -199,6 +199,16 @@ def grid_axis(node):
     return None
 
 
+FIXED_WIDTH = {'unsigned long long': 'uint64_t', 'unsigned long': 'uint64_t', 'long long': 'int64_t', 'long': 'int64_t'}
+
+
+def portable_spelling(arguments):
+    """Template arguments for calling an original: 64-bit types as uint64_t/int64_t. clang on macOS
+    desugars uint64_t to unsigned long long, which is another type on Linux (unsigned long), so
+    an overload on uint64_t would no longer match there."""
+    return ', '.join(FIXED_WIDTH.get(a.strip(), a.strip()) for a in arguments.split(','))
+
+
 def is_position_vector(param):
     """A Metal [[thread_position_in_grid]] of type uint2 or uint3."""
     return ' '.join(words(param['type']['qualType'])) in ('uint2', 'uint3')
@@ -547,7 +557,7 @@ class Importer:
             if len(uses) == 1 and not self.host_name(uses[0]):
                 arguments = ', '.join(self.template_arguments(uses[0]))
                 self.adaptations.append(f'template {node["name"]} is used only with <{arguments}> and was imported for it')
-                self.qualified[node['name']] = f'{self.namespace}{node["name"]}<{arguments}>'
+                self.qualified[node['name']] = f'{self.namespace}{node["name"]}<{portable_spelling(arguments)}>'
                 return self.top_level(uses[0], qualified=False)
             # Each instantiation is its own function: qpel has no templates.
             out = []
@@ -562,7 +572,7 @@ class Importer:
                 instance = dict(use, name=name)
                 imported = self.attempt(lambda: self.top_level(instance, qualified=False), [])
                 if imported:
-                    self.qualified[name] = self.host_name(use) or f'{self.namespace}{node["name"]}<{", ".join(arguments)}>'
+                    self.qualified[name] = self.host_name(use) or f'{self.namespace}{node["name"]}<{portable_spelling(", ".join(arguments))}>'
                 out.extend(imported)
             self.adaptations.append(f'template {node["name"]} became {len(uses)} functions, one per instantiation: '
                                     + ', '.join(self.instances[u['id']] for u in uses))

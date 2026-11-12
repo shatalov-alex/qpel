@@ -78,6 +78,12 @@ class GpuProgram(Program):
     def build(self):
         args = [] if self.fmad else ['-fmad=false']
         args += [arg for folder in self.include for arg in ('-I', str(folder))]
+        # The importer's library stand-ins (PyTorch, ATen, c10, pybind11, cuBLAS), for extensions;
+        # they hold no CUDA runtime headers, so NVIDIA's own stay in force.
+        args += ['-I', str(HERE/'frontends/include/libraries')]
+        # PyTorch's extension builder (torch.utils.cpp_extension) always passes it: extensions
+        # call constexpr host functions such as std::numeric_limits<K>::max() in device code.
+        args += ['--expt-relaxed-constexpr']
         (self.work/'nvcc.args').write_text(' '.join(args) + '\n')
 
     def upload(self, data):
