@@ -73,6 +73,18 @@ python3 portable/nvcc_check.py            # --arch sm_86 to override, --keep DIR
 
 The first run pulls a multi-GB image. Passing proves NVIDIA's compiler accepts the code; it does not execute it. NVRTC (the CuPy host's runtime compile path) is not exercised.
 
+### NVIDIA hardware run
+
+`differential/hardware.py` runs the GPGPU-Sim rows' programs (`gpgpusim/README.md`) on a real NVIDIA GPU, plus `gpgpusim/selftest.cu` and the generated CuPy host's fixture tests (`gpu_tests/run_gpu_tests.py --device cuda`). Everything except execution happens on this machine: the references (CPU simulator, Apple GPU), and nvcc for x86-64 Linux in the amd64 `nvidia/cuda:12.6.3-devel-ubuntu22.04` image (SASS for sm_75/80/89 plus compute_75 PTX). The GPU machine gets a ~9 MB bundle of ready programs, case inputs and `libcudart`, and needs only an NVIDIA driver (PyTorch and CuPy for the host tests):
+
+```sh
+python3 -m differential.hardware --kaggle               # bundle, run on a Kaggle T4, compare
+python3 -m differential.hardware --kaggle --cupy-only   # only the self-test and the CuPy host
+python3 -m differential.hardware --bundle-only OUT      # OUT/bundle.tar.gz; run `bash run.sh` on any NVIDIA box
+```
+
+`--kaggle` needs the Kaggle CLI signed in. It uploads the bundle as a private dataset and runs a private script kernel on one T4 with a time limit (`--timeout`, default 1500 s). On 2026-11-12, on a Tesla T4 (sm_75, driver 580.178.04): all 720 behaviour-row cases, the self-test and 20/20 CuPy host fixtures passed. The rows took 170 s on the GPU and the host tests 12 s.
+
 ### Metal compile check
 
 `metal_check.py` builds the same fixtures and compiles each generated `.metal`, plus the checked-in `generated/components.metal`, with `xcrun metal -std=metal3.0 -Werror`. It needs Xcode's Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`) but no GPU:

@@ -1,11 +1,14 @@
-"""Run every IR fixture on the Apple GPU against an independent CPU oracle.
+"""Run every IR fixture on a GPU against an independent CPU oracle.
 
 Each fixture is built fresh with the offline compiler, so this tests the current
-compiler output rather than frozen artifacts. Requires macOS with Metal, PyTorch
-(MPS) and NumPy; run from an ordinary Terminal (sandboxed shells may hide the GPU).
+compiler output rather than frozen artifacts. By default the generated Metal host
+runs on the Apple GPU: macOS with Metal, PyTorch (MPS) and NumPy; run from an ordinary
+Terminal (sandboxed shells may hide the GPU). With --device cuda the generated CuPy
+host runs the same tests on an NVIDIA GPU (PyTorch with CUDA, CuPy, NumPy).
 
     python3 portable/gpu_tests/run_gpu_tests.py            # all fixtures
     python3 portable/gpu_tests/run_gpu_tests.py half fma32 # selected fixtures
+    python3 portable/gpu_tests/run_gpu_tests.py --device cuda --skip-corpus
 """
 import os
 os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '0'  # A CPU fallback would hide GPU failures.
@@ -24,6 +27,9 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fixture_builds import FIXTURES, build_fixture
+from qpel_types import element, is_buffer, normalize_plan
+
+DEVICE = 'mps'  # set by main(): 'mps' runs metal_host.py, 'cuda' runs cuda_host.py
 
 
 def f32(x): return struct.unpack('<f', struct.pack('<f', x))[0]
@@ -32,17 +38,56 @@ def f16(x): return struct.unpack('<e', struct.pack('<e', x))[0]
 
 def load_host(name, work):
     generated = build_fixture(name, work/name)
-    spec = importlib.util.spec_from_file_location(f'{name}_metal_host', generated/'metal_host.py')
+    kind = 'metal_host' if DEVICE == 'mps' else 'cuda_host'
+    spec = importlib.util.spec_from_file_location(f'{name}_{kind}', generated/f'{kind}.py')
     host = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(host)
-    return host, json.loads((generated/'pipeline.json').read_text())
+    plan = json.loads((generated/'pipeline.json').read_text())
+    return (host if DEVICE == 'mps' else CupyHost(host, plan)), plan
+
+
+class CupyHost:
+    """The generated CuPy host behind the Metal host's interface: torch tensors in and out,
+    with the same storage types (u16/u32/u64 as the signed type of their width, bf16 as
+    torch.bfloat16). Tensors cross as zero-copy views, so strided inputs stay strided."""
+
+    def __init__(self, host, plan):
+        import cupy
+        self.host, self.cp = host, cupy
+        self.types = {r['name']: element(r['type']) for r in normalize_plan(plan)['resources']
+                      if r['kind'] in ('input', 'output') and is_buffer(r['type'])}
+
+    def _library(self):
+        return self.host._library(0)
+
+    def run(self, inputs, shapes, values=None):
+        cp = self.cp
+        arrays = {}
+        for name, tensor in inputs.items():
+            if tensor.dtype == torch.bfloat16:
+                tensor = tensor.view(torch.int16)
+            array = cp.asarray(tensor)
+            wanted = cp.dtype(self.host_dtype(name))
+            arrays[name] = array.view(wanted) if array.dtype.itemsize == wanted.itemsize else array
+        results = self.host.run(arrays, shapes, values)
+        out = {}
+        for name, array in results.items():
+            if self.types.get(name) == 'bf16':
+                out[name] = torch.from_dlpack(array.view(cp.int16)).view(torch.bfloat16)
+            else:
+                out[name] = torch.from_dlpack(array)
+        return out
+
+    def host_dtype(self, name):
+        from generate_cuda_host import CUPY_BUFFERS
+        return CUPY_BUFFERS[self.types[name]]
 
 
 def strided(values, dtype):
     """The same values as a noncontiguous MPS view, to exercise host input handling."""
     expanded = torch.empty(values.numel()*2, dtype=dtype)
     expanded[::2] = values
-    return expanded.to('mps')[::2]
+    return expanded.to(DEVICE)[::2]
 
 
 # --- uint8 pair kernels: all 65536 pairs, boundaries, random batches, transposed inputs ---
@@ -84,14 +129,14 @@ def run_u8_pair(name, host, plan):
     (left, right), shape_name, output, flat, oracle = U8_PAIRS[name]
     cases = u8_pair_cases()
     for index, (a, b) in enumerate(cases):
-        x, y = torch.from_numpy(a).to('mps'), torch.from_numpy(b).to('mps')
+        x, y = torch.from_numpy(a).to(DEVICE), torch.from_numpy(b).to(DEVICE)
         if index % 3 == 0:
             x, y = x.transpose(-1, -2), y.transpose(-1, -2)
             a, b = a.swapaxes(-1, -2), b.swapaxes(-1, -2)
         n, h, w = a.shape
         shape = (w*h*n, 1, 1) if flat else (w, h, n)
         actual = host.run({left: x, right: y}, {shape_name: shape})[output]
-        assert actual.device.type == 'mps'
+        assert actual.device.type == DEVICE
         # u32 buffers come back as int32 tensors; compare their bit patterns.
         np.testing.assert_array_equal(actual.cpu().numpy().view(np.uint32).reshape(a.shape),
                                       oracle(a, b).astype(np.uint32))
@@ -115,7 +160,7 @@ def run_signed_delta(name, host, plan):
     cases = u8_pair_cases()
     for a, b in cases:
         n, h, w = a.shape
-        result = host.run({'a': torch.from_numpy(a).to('mps'), 'b': torch.from_numpy(b).to('mps')}, {'shape': (w, h, n)})
+        result = host.run({'a': torch.from_numpy(a).to(DEVICE), 'b': torch.from_numpy(b).to(DEVICE)}, {'shape': (w, h, n)})
         delta, bits = signed_delta_oracle(a.reshape(-1), b.reshape(-1))
         np.testing.assert_array_equal(result['delta'].cpu().numpy(), delta)
         np.testing.assert_array_equal(result['bits'].cpu().numpy().view(np.uint32), bits)
@@ -130,14 +175,14 @@ def run_scale_offset(name, host, plan):
         x = (np.arange(n, dtype=np.float32) - 17)*np.float32(0.375)
         # Results stay normal: subnormal float32 handling is not pinned (FLOAT32.md).
         for scale, offset in [(0.5, 3), (-1.25, -7), (3.0e38, 2**30), (1e-30, 2**31 - 1), (0, -2**31)]:
-            result = host.run({'x': torch.from_numpy(x).to('mps')}, {'n': (n, 1, 1)}, {'scale': scale, 'offset': offset})
+            result = host.run({'x': torch.from_numpy(x).to(DEVICE)}, {'n': (n, 1, 1)}, {'scale': scale, 'offset': offset})
             np.testing.assert_array_equal(result['y'].cpu().numpy(), x*np.float32(scale))
             z = (np.arange(n, dtype=np.int64)*offset - 7) & 0xffffffff
             np.testing.assert_array_equal(result['z'].cpu().numpy().view(np.uint32), z.astype(np.uint32))
             cases += 1
     for bad in ({'scale': 1.0, 'offset': 2**31}, {'scale': 'x', 'offset': 0}, {'scale': 1.0}):
         try:
-            host.run({'x': torch.zeros(4, device='mps')}, {'n': (4, 1, 1)}, bad)
+            host.run({'x': torch.zeros(4, device=DEVICE)}, {'n': (4, 1, 1)}, bad)
         except ValueError:
             cases += 1
         else:
@@ -160,7 +205,7 @@ def run_box_sum(name, host, plan):
     cases = 0
     for w, h, n in shapes:
         for image in (rng.integers(0, 256, (n, h, w), dtype=np.uint8), np.full((n, h, w), 255, np.uint8)):
-            result = host.run({'image': torch.from_numpy(image).to('mps')}, {'shape': (w, h, n)})['sums']
+            result = host.run({'image': torch.from_numpy(image).to(DEVICE)}, {'shape': (w, h, n)})['sums']
             np.testing.assert_array_equal(result.cpu().numpy().view(np.uint32).reshape(n, h, w), box_sum_oracle(image))
             cases += 1
     return cases
@@ -175,8 +220,8 @@ def run_float32(name, host, plan):
         values = (torch.arange(size, dtype=torch.float32) - size)*0.125
         mask = (torch.arange(size, dtype=torch.int32) % 3).to(torch.uint8)
         for noncontiguous in (False, True):
-            pixels = strided(values, torch.float32) if noncontiguous else values.to('mps')
-            result = host.run({'pixels': pixels, 'mask': mask.to('mps')}, {'count': (width, height, batch)})['output'].cpu()
+            pixels = strided(values, torch.float32) if noncontiguous else values.to(DEVICE)
+            result = host.run({'pixels': pixels, 'mask': mask.to(DEVICE)}, {'count': (width, height, batch)})['output'].cpu()
             torch.testing.assert_close(result, torch.where(mask != 0, values*0.5, torch.zeros_like(values)), rtol=0, atol=0)
             cases += 1
     return cases
@@ -190,8 +235,8 @@ def run_masked_elementwise(host, dtype, xs, ys):
         expected = torch.tensor(ys*batch, dtype=dtype)
         expected[mask == 0] = 0
         for noncontiguous in (False, True):
-            pixels = strided(values, dtype) if noncontiguous else values.to('mps')
-            result = host.run({'pixels': pixels, 'mask': mask.to('mps')}, {'count': (len(xs), 1, batch)})['output'].cpu()
+            pixels = strided(values, dtype) if noncontiguous else values.to(DEVICE)
+            result = host.run({'pixels': pixels, 'mask': mask.to(DEVICE)}, {'count': (len(xs), 1, batch)})['output'].cpu()
             assert result.dtype == dtype
             torch.testing.assert_close(result, expected, rtol=0, atol=0)
             cases += 1
@@ -226,8 +271,8 @@ def run_reduce(name, host, plan):
         mask = (torch.arange(len(xs)) % 3 != 2).to(torch.uint8)
         expected = torch.tensor([ordered(xs[i:i+4]) if mask[i] else 0.0 for i in range(len(xs))], dtype=torch.float32)
         for noncontiguous in (False, True):
-            pixels = strided(values, torch.float32) if noncontiguous else values.to('mps')
-            actual = host.run({'pixels': pixels, 'mask': mask.to('mps')}, {'count': shape})['output'].cpu()
+            pixels = strided(values, torch.float32) if noncontiguous else values.to(DEVICE)
+            actual = host.run({'pixels': pixels, 'mask': mask.to(DEVICE)}, {'count': shape})['output'].cpu()
             torch.testing.assert_close(actual, expected, rtol=0, atol=0)
             if len(xs) > 1: assert actual[0].item() == 1.0  # Summation order is fixed.
             cases += 1
@@ -258,17 +303,19 @@ def run_workgroup(name, host, plan):
     for n in (1, 17, default + 3, default*2 + 1):
         xs = [(i - 9)*0.25 for i in range(n)]
         mask = (torch.arange(n) % 3 != 2).to(torch.uint8)
-        actual = host.run({'pixels': strided(torch.tensor(xs), torch.float32), 'mask': mask.to('mps')}, {'count': (n, 1, 1)})['output'].cpu()
+        actual = host.run({'pixels': strided(torch.tensor(xs), torch.float32), 'mask': mask.to(DEVICE)}, {'count': (n, 1, 1)})['output'].cpu()
         torch.testing.assert_close(actual, expected(xs, mask.tolist(), default), rtol=0, atol=0)
         cases += 1
-    # Direct dispatch with other group sizes against the same shader.
+    if DEVICE != 'mps':
+        return cases  # CUDA's group size is fixed at compile time; the dispatch path covers it
+    # Direct dispatch with other group sizes against the same shader (Metal).
     for width in (1, 3, 4, 31, 64, 128, 256):
         for n in (4, width + 3):
             xs = ([2**26, 2.0, -2**26, 2.0] + [(i - 5)*0.25 for i in range(n)])[:n]
             mask = torch.ones(n, dtype=torch.uint8)
-            output = torch.empty(n, device='mps', dtype=torch.float32)
-            dims = torch.tensor([n, 1, 1, 0], device='mps', dtype=torch.int32)
-            getattr(host._library(), kernel)(torch.tensor(xs, device='mps', dtype=torch.float32), mask.to('mps'), output, dims,
+            output = torch.empty(n, device=DEVICE, dtype=torch.float32)
+            dims = torch.tensor([n, 1, 1, 0], device=DEVICE, dtype=torch.int32)
+            getattr(host._library(), kernel)(torch.tensor(xs, device=DEVICE, dtype=torch.float32), mask.to(DEVICE), output, dims,
                                              threads=n, group_size=width)
             torch.mps.synchronize()
             torch.testing.assert_close(output.cpu(), expected(xs, mask.tolist(), width), rtol=0, atol=0)
@@ -325,7 +372,7 @@ def components_cases():
 def run_components(name, host, plan):
     cases = components_cases()
     for w, h, n, mask in cases:
-        result = host.run({'mask': torch.from_numpy(mask).to('mps')}, {'shape': (w, h, n)})
+        result = host.run({'mask': torch.from_numpy(mask).to(DEVICE)}, {'shape': (w, h, n)})
         labels, areas = components_oracle(mask, w, h, n)
         np.testing.assert_array_equal(result['labels'].cpu().numpy().view(np.uint32), labels)
         np.testing.assert_array_equal(result['output'].cpu().numpy().view(np.uint32), areas)
@@ -348,7 +395,7 @@ def run_window_sum(name, host, plan):
             for k in range(min(4, size - i)):
                 total = np.float32(total + pixels[i + k])  # in order, rounded at every step
             expected[i] = total if mask[i] else np.float32(0)
-        result = host.run({'pixels': torch.from_numpy(pixels).to('mps'), 'mask': torch.from_numpy(mask).to('mps')},
+        result = host.run({'pixels': torch.from_numpy(pixels).to(DEVICE), 'mask': torch.from_numpy(mask).to(DEVICE)},
                           {'count': (w, h, n)})['output'].cpu().numpy()
         np.testing.assert_array_equal(result.view(np.uint32), expected.view(np.uint32))
         cases += 1
@@ -367,11 +414,11 @@ def run_int_widths(name, host, plan):
         tensors = {}
         for n, values in inputs.items():
             if n == 'h':
-                tensors[n] = torch.from_numpy(values.view(np.int16).copy()).view(torch.bfloat16).to('mps')
+                tensors[n] = torch.from_numpy(values.view(np.int16).copy()).view(torch.bfloat16).to(DEVICE)
             elif values.dtype.type in torch_types:
-                tensors[n] = torch.from_numpy(values.view(values.dtype.str.replace('u', 'i')).copy()).to('mps')
+                tensors[n] = torch.from_numpy(values.view(values.dtype.str.replace('u', 'i')).copy()).to(DEVICE)
             else:
-                tensors[n] = torch.from_numpy(values.copy()).to('mps')
+                tensors[n] = torch.from_numpy(values.copy()).to(DEVICE)
         result = host.run(tensors, {'count': shape}, {'k': k})
         actual = {}
         for n, t in result.items():
@@ -394,7 +441,7 @@ def run_grid_stride(name, host, plan):
         for count in sorted({0, 1, size // 2, size}):
             x = (rng.standard_normal(size)*np.exp2(rng.integers(-8, 9, size))).astype(np.float32)
             scale, bias = float(np.float32(rng.uniform(-4, 4))), float(np.float32(rng.uniform(-4, 4)))
-            out = host.run({'x': torch.from_numpy(x).to('mps')}, {'size': (w, h, n)},
+            out = host.run({'x': torch.from_numpy(x).to(DEVICE)}, {'size': (w, h, n)},
                            {'scale': scale, 'bias': bias, 'n': count})['y'].cpu().numpy()
             expected = (np.float32(scale)*x[:count]).astype(np.float32) + np.float32(bias)
             np.testing.assert_array_equal(out[:count].view(np.uint32), expected.astype(np.float32).view(np.uint32))
@@ -413,7 +460,7 @@ def run_math_ops(name, host, plan):
     for size in (1, 7, 64, 1000, 4099):
         v = (rng.standard_normal(size)*np.exp2(rng.integers(-6, 12, size))).astype(np.float32)
         v[:min(size, 6)] = np.float32([0.5, -0.5, 2.5, -1e-3, 1e6, -0.0])[:min(size, 6)]
-        out = host.run({'x': torch.from_numpy(v).to('mps')}, {'n': (size, 1, 1)})
+        out = host.run({'x': torch.from_numpy(v).to(DEVICE)}, {'n': (size, 1, 1)})
         f = np.float32
         x = v.astype(np.float64)
         rounded = np.where(np.abs(x - np.trunc(x)) >= 0.5, np.trunc(x) + np.sign(x), np.trunc(x))  # half away from zero
@@ -506,7 +553,7 @@ def sam2_cases():
 def run_sam2_cc(name, host, plan):
     cases = sam2_cases()
     for w, h, mask in cases:
-        result = host.run({'img': torch.from_numpy(mask).to('mps')}, {'shape': (w, h, 1)})
+        result = host.run({'img': torch.from_numpy(mask).to(DEVICE)}, {'shape': (w, h, 1)})
         labels, areas = sam2_oracle(mask, w, h)
         np.testing.assert_array_equal(result['label'].cpu().numpy(), labels, err_msg=f'labels {w}x{h}')
         np.testing.assert_array_equal(result['count_final'].cpu().numpy(), areas, err_msg=f'areas {w}x{h}')
@@ -524,7 +571,13 @@ def main(argv=None):
     parser.add_argument('fixtures', nargs='*', help='Fixture names (default: all)')
     parser.add_argument('--skip-corpus', action='store_true',
                         help='leave out corpus programs, whose Metal rows the behaviour rows already run')
+    parser.add_argument('--device', choices=('mps', 'cuda'), default='mps',
+                        help='mps: the Metal host on the Apple GPU (default); cuda: the CuPy host on NVIDIA')
     args = parser.parse_args(argv)
+    global DEVICE
+    DEVICE = args.device
+    if DEVICE == 'cuda':
+        args.skip_corpus = True  # corpus rows compare against Metal and the CPU simulator; see differential/
     names = args.fixtures or sorted(p.name for p in FIXTURES.iterdir() if p.is_dir())
     if args.skip_corpus:
         names = [n for n in names if n not in corpus_fixtures()]
@@ -532,9 +585,12 @@ def main(argv=None):
     missing = [n for n in names if n not in TESTS and n not in corpus]
     if missing:
         sys.exit('No GPU test for: ' + ', '.join(missing))
-    if not torch.backends.mps.is_available():
+    if DEVICE == 'mps' and not torch.backends.mps.is_available():
         sys.exit('Apple GPU unavailable; run from an ordinary macOS Terminal')
-    print(f'torch {torch.__version__}, device mps')
+    if DEVICE == 'cuda' and not torch.cuda.is_available():
+        sys.exit('no CUDA device visible to PyTorch')
+    gpu = 'Apple GPU' if DEVICE == 'mps' else torch.cuda.get_device_name(0)
+    print(f'torch {torch.__version__}, device {DEVICE} ({gpu})')
     failed = []
     with tempfile.TemporaryDirectory(prefix='qpel-gpu-') as temp:
         for name in names:
@@ -548,7 +604,7 @@ def main(argv=None):
                 failed.append(name)
                 print(f'FAIL {name}')
                 traceback.print_exc()
-    print(f'{len(names) - len(failed)}/{len(names)} fixtures passed on the Apple GPU')
+    print(f'{len(names) - len(failed)}/{len(names)} fixtures passed on {gpu}')
     return 1 if failed else 0
 
 

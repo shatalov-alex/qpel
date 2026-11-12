@@ -8,7 +8,7 @@
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776ab.svg">
   <img alt="Targets: CUDA and Metal" src="https://img.shields.io/badge/targets-CUDA%20%7C%20Metal-76b900.svg">
-  <img alt="Status: Phase 2" src="https://img.shields.io/badge/status-phase%202-orange.svg">
+  <img alt="Status: Phase 3" src="https://img.shields.io/badge/status-phase%203-orange.svg">
 </p>
 
 ---
@@ -35,7 +35,8 @@ Metal source ──┘    typed, validated    └──▶ Metal (Apple GPUs)
   are in [`NUMERICS.md`](portable/NUMERICS.md).
 - **Checked by execution, not only by compilation.** Every original and every translation
   runs on a CPU CUDA simulator, on Apple GPUs, and on [GPGPU-Sim](portable/gpgpusim/README.md),
-  a simulated NVIDIA GPU (720 cases). Differential fuzzing keeps comparing all of these.
+  a simulated NVIDIA GPU (720 cases), and the same 720 pass on a real NVIDIA Tesla T4.
+  Differential fuzzing keeps comparing all of these.
 - **Platform bugs found and handled.** These include an Apple Metal compiler miscompilation,
   sign-of-zero and subnormal differences, and eleven GPGPU-Sim bugs, submitted upstream as
   [accel-sim/gpgpu-sim_distribution#154](https://github.com/accel-sim/gpgpu-sim_distribution/pull/154).
@@ -81,13 +82,13 @@ module saxpy {
 
 ## Status
 
-qpel is in active development, at **Phase 2** of the [roadmap](portable/ROADMAP.md).
+qpel is in active development. Phase 2 of the [roadmap](portable/ROADMAP.md) is complete; Phase 3 is next.
 
 | Phase | Scope | State |
 |---|---|---|
 | 0 | Consolidation: one compiler, IR as the source of truth | done |
 | 1 | Offline Clang-based CUDA and Metal importers, round-trip matrix | done |
-| 2 | IR v3, real-world corpus (llama.cpp), text syntax, fuzzing, NVIDIA gate | GPGPU-Sim gate passed; one real-card run left |
+| 2 | IR v3, real-world corpus (llama.cpp), text syntax, fuzzing, NVIDIA gate | done |
 | 3 | Shared memory, barriers, warp/simdgroup ops, matrix tiles, benchmarks | next |
 | 4 | Host API and library mapping (cuBLAS/CUB → MPS/Accelerate), Triton frontend | planned |
 

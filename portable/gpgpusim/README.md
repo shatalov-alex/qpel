@@ -85,4 +85,6 @@ GPGPU-Sim executes PTX. The SASS that `ptxas` makes from it for a real architect
 compiled (with warnings as errors, for sm_75–sm_90) by `nvcc_check.py`, but nothing
 here executes it. Hardware behaviour outside the PTX specification, such as scheduling
 or races, is out of scope too: qpel's kernels have none. The second half of the gate
-is one run on a real NVIDIA card.
+ran the same programs, compiled to SASS, on a real NVIDIA GPU (Tesla T4, 2026-11-12):
+every case and `selftest.cu` pass there too (`python3 -m differential.hardware`, see
+`../README.md`).

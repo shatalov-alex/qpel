@@ -4,7 +4,9 @@ Notable changes to qpel, by milestone. Dates are when the milestone was reached 
 The IR has its own version (currently 3), recorded in every program and launch plan;
 older programs keep building.
 
-## [Unreleased] — Phase 2
+## [Unreleased]
+
+## [0.3.0] — 2026-11-12 — Phase 2
 
 ### Added
 - **IR version 3:** types as terms (`u8` … `i64`, `f16`, `bf16`, `f32`,
@@ -21,6 +23,10 @@ older programs keep building.
 - **Differential fuzzing** across the CPU simulator, Apple GPUs and GPGPU-Sim.
 - **NVIDIA execution on GPGPU-Sim** in Docker: 720 cases pass. Eleven simulator bugs were
   fixed and submitted upstream (accel-sim/gpgpu-sim_distribution#153, #154).
+- **NVIDIA hardware run** (`differential/hardware.py`): the same 720 cases, the simulator
+  self-test and the generated CuPy host's fixture tests pass on a Tesla T4. Programs are
+  built here for x86-64; the GPU machine only runs them (`--kaggle`, or `--bundle-only`).
+- `gpu_tests/run_gpu_tests.py --device cuda` runs the fixture tests through the CuPy host.
 - The compiler, the CUDA importer and the CPU simulator run on Linux (clang 18 with libstdc++) as well
   as macOS; without Xcode, the Metal paths are reported as skipped.
 
@@ -55,6 +61,7 @@ older programs keep building.
   lowering, generated Python hosts (PyTorch/Metal, CuPy/CUDA).
 - `check_all.py`, the nvcc compile check in Docker, and GPU tests that run in place.
 
-[Unreleased]: https://github.com/shatalov-alex/qpel/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/shatalov-alex/qpel/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/shatalov-alex/qpel/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/shatalov-alex/qpel/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/shatalov-alex/qpel/releases/tag/v0.1.0

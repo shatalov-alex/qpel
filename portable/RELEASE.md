@@ -8,7 +8,7 @@ A public alpha can expose the documented qpel subset (IR v3, [CORE.md](CORE.md),
 
 ## Blocking work for a supported release
 
-1. **NVIDIA execution.** GPGPU-Sim passes every behaviour row (2026-11-12). One run on a real NVIDIA card is left, including the CuPy host ([CUDA_HOST.md](CUDA_HOST.md)).
+1. **NVIDIA execution.** Done 2026-11-12: every behaviour row passes on GPGPU-Sim and on a Tesla T4, and so does the CuPy host ([CUDA_HOST.md](CUDA_HOST.md)). Open: newer architectures (sm_80+) and a hosted rerun per release.
 2. **Reproducible distribution.** Done: git repository, Apache-2.0 license, NOTICE for third-party code, pinned corpus with checksums, `requirements.txt`. Open: package the compiler (and optionally the MPS language), declare supported dependency versions, and verify installation on a clean machine.
 3. **One semantic contract.** Done: MPS only exports IR, Python is the single emitter, and NUMERICS.md specifies overflow, rounding and contraction, f16/bf16, subnormals and math accuracy. Open: freeze the IR/ABI versions with explicit migration tests, and document aliasing, layout and memory ordering.
 4. **Diagnostics.** The importers report every unsupported construct with a position and a reason. Open: map compiler diagnostics back to `.qpel` text positions and MPS editor concepts.

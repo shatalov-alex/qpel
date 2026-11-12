@@ -157,12 +157,6 @@ def run_all(root, mounts, config=CONFIG, functional=True):
 
 def rows(names=None, gpu=None, config=CONFIG, functional=True, keep=False):
     """Yield (row, case label, error or None) for every original, like matrix.rows."""
-    if gpu is None:
-        try:
-            from . import metal
-            gpu = metal.available()
-        except ImportError:
-            gpu = False
     if not image_ready():
         yield 'nvidia', 'GPGPU-Sim', 'skipped: no Docker or GPGPU-Sim image'
         return
@@ -170,25 +164,39 @@ def rows(names=None, gpu=None, config=CONFIG, functional=True, keep=False):
     yield 'nvidia: simulator self-test', 'selftest.cu', problem
     if problem:
         return
-    root = Path(tempfile.mkdtemp(prefix='qpel-gpgpusim-')).resolve()
+    yield from prepared_rows(names, gpu, lambda root: run_all(root, [root, HERE], config, functional), keep,
+                             'qpel-gpgpusim-')
+
+
+def prepared_rows(names, gpu, execute, keep=False, prefix='qpel-nvidia-', device='nvidia'):
+    """Write a CUDA host program and its cases for every original (GpuProgram), call
+    execute(root) to compile and run them all, then compare each case with its reference.
+    Program folders are root/s*/p_*/ (main.cu, nvcc.args), cases their c*/ subfolders."""
+    if gpu is None:
+        try:
+            from . import metal
+            gpu = metal.available()
+        except ImportError:
+            gpu = False
+    root = Path(tempfile.mkdtemp(prefix=prefix)).resolve()
     pending = []  # (row, label, prepared, program, case, folder, expected)
     try:
         for index, (name, path, dialect, plan, include, grids, options) in enumerate(matrix.sources()):
             if names and name not in names:
                 continue
             if dialect == 'metal' and not matrix.metal_available():
-                yield 'nvidia: metal original', path.name, 'skipped: no Metal toolchain (Xcode) to import it'
+                yield f'{device}: metal original', path.name, 'skipped: no Metal toolchain (Xcode) to import it'
                 continue
             work = root/f's{index:03}'
             (work/'sim_original').mkdir(parents=True)
             try:
                 p = matrix.Prepared(name, path, dialect, plan, include, options, work)
-                targets = [(f'nvidia: {dialect} -> qpel -> cuda', GpuProgram(p.cuda, plan, work/'p_qpel'))]
+                targets = [(f'{device}: {dialect} -> qpel -> cuda', GpuProgram(p.cuda, plan, work/'p_qpel'))]
                 reference = None
                 if dialect == 'cuda':
                     reference = Program(path, plan, work/'sim_original', original=p.report, include=include,
                                         grids=grids)
-                    targets.append(('nvidia: cuda original',
+                    targets.append((f'{device}: cuda original',
                                     GpuProgram(path, plan, work/'p_original', fmad=False, original=p.report,
                                                include=include, grids=grids)))
                 for number, case in enumerate(p.cases()):
@@ -198,7 +206,7 @@ def rows(names=None, gpu=None, config=CONFIG, functional=True, keep=False):
                     elif gpu:
                         expected = p.run_metal_original(case)
                     else:
-                        yield f'nvidia: {dialect} original', label, 'skipped: no Apple GPU for the reference'
+                        yield f'{device}: {dialect} original', label, 'skipped: no Apple GPU for the reference'
                         continue
                     for row, program in targets:
                         folder = program.work/f'c{number:03}'
@@ -206,9 +214,9 @@ def rows(names=None, gpu=None, config=CONFIG, functional=True, keep=False):
                         program.write_case(case, folder)
                         pending.append((row, label, p, program, case, folder, expected))
             except (ValueError, RuntimeError) as error:
-                yield f'nvidia: {dialect} -> qpel', path.name, str(error)
+                yield f'{device}: {dialect} -> qpel', path.name, str(error)
         if pending:
-            run_all(root, [root, HERE], config, functional)
+            execute(root)
         for row, label, p, program, case, folder, expected in pending:
             actual, error = program.outcome(folder)
             yield row, label, error or p.compare(expected, actual, case)

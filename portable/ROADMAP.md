@@ -8,7 +8,7 @@ qpel is a neutral intermediate language between NVIDIA CUDA and Apple Metal: ker
 |---|---|---|
 | 0 | Consolidation: one compiler, IR as the source of truth | done 2026-10-19 |
 | 1 | Offline Clang-based CUDA and Metal importers, round-trip matrix | done 2026-11-11 |
-| 2 | IR v3, real-world corpus (llama.cpp), text syntax, fuzzing, NVIDIA gate | all steps done; GPGPU-Sim half of the gate passed; one real-card run left |
+| 2 | IR v3, real-world corpus (llama.cpp), text syntax, fuzzing, NVIDIA gate | done 2026-11-12 (GPGPU-Sim and a Tesla T4) |
 | 3 | Shared memory, barriers, warp/simdgroup ops, matrix tiles, benchmarks, test enrichment | next |
 | 4 | Host API and library mapping, Triton frontend | planned |
 
@@ -36,7 +36,7 @@ The first version generated Metal and CUDA from MPS-authored programs, and SAM 2
 | Gap | Closed by |
 |---|---|
 | Not bidirectional: no Metal importer, and the CUDA importer accepted one fixed kernel shape | Phase 1: Clang-based CUDA and Metal importers |
-| CUDA output never compiled with nvcc or executed | Phase 0 `nvcc_check.py`; Phase 2 GPGPU-Sim gate (real card pending) |
+| CUDA output never compiled with nvcc or executed | Phase 0 `nvcc_check.py`; Phase 2 NVIDIA gate (GPGPU-Sim, Tesla T4) |
 | MPS TextGen and the Python lowering produced different code | Phase 0: MPS exports IR only |
 | IR shaped after MPS concepts, with a fixed set of combined types | Phase 2: IR v3 type terms (`buffer<T, access>`, `u8 … i64`, `bf16`) |
 | Narrow language: 1D grid, no `else`/`for`, no signed or 64-bit integers | Phase 1 (IR v2, 2D/3D) and Phase 2 (IR v3, `Groups` geometry) |
@@ -128,7 +128,8 @@ The nvcc check compiles every fixture (sm_75–sm_90), the Metal check compiles 
 - Grow the corpus to real code: llama.cpp `ggml-cuda` and `ggml-metal` element-wise and reduction kernels, and PyTorch MPS custom kernels. Publish a **coverage metric** (% importable, % round-trip-clean) per corpus and direction.
 - Add differential fuzzing across backends to the round-trip matrix.
 - **Milestone gate:** at the end of this phase, run the deferred NVIDIA execution tests (GPGPU-Sim, then one real card).
-  **GPGPU-Sim half done 2026-11-12** (gpgpusim/README.md): every behaviour-matrix source runs as real CUDA on a simulated Turing GPU in Docker (`python3 -m differential.gpgpusim`, `check_all.py --nvidia`). 720 cases pass: the unmodified CUDA originals, and qpel's CUDA from both CUDA and Metal originals, against the CPU-simulator and Apple-GPU references. Fuzzing runs there too (`fuzz --nvidia`). Getting there fixed eleven GPGPU-Sim bugs (`gpgpusim/qpel-fixes.patch`, checked by `selftest.cu`), among them f16 tie rounding, 64-bit immediates, `bfi.b64`/`mad.wide` (CUDA's `sinf` for large arguments returned 0), signed byte loads and the sign of zero in `abs`/`neg`. It also found one qpel importer bug (unsigned literals converted to `int`). qpel's generated code needed no change. Remaining: one run on a real NVIDIA card.
+  **GPGPU-Sim half done 2026-11-12** (gpgpusim/README.md): every behaviour-matrix source runs as real CUDA on a simulated Turing GPU in Docker (`python3 -m differential.gpgpusim`, `check_all.py --nvidia`). 720 cases pass: the unmodified CUDA originals, and qpel's CUDA from both CUDA and Metal originals, against the CPU-simulator and Apple-GPU references. Fuzzing runs there too (`fuzz --nvidia`). Getting there fixed eleven GPGPU-Sim bugs (`gpgpusim/qpel-fixes.patch`, checked by `selftest.cu`), among them f16 tie rounding, 64-bit immediates, `bfi.b64`/`mad.wide` (CUDA's `sinf` for large arguments returned 0), signed byte loads and the sign of zero in `abs`/`neg`. It also found one qpel importer bug (unsigned literals converted to `int`). qpel's generated code needed no change.
+  **Real-card half done 2026-11-12; Phase 2 closed.** `differential/hardware.py` builds the same programs for x86-64 here and runs them on a Kaggle Tesla T4 (sm_75): all 720 cases and `gpgpusim/selftest.cu` pass, and the generated CuPy host passes all 20 fixture tests (`gpu_tests/run_gpu_tests.py --device cuda`). No qpel change was needed.
 
 ### Phase 3: performance-capable core (4–8 weeks)
 - Shared-memory tiling, warp/simdgroup ops (`shuffle`, `ballot`, `simd_sum`), and subgroup size as a queried capability.
