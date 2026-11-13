@@ -61,20 +61,26 @@ __global__ void asm_checks(unsigned long long* o, const unsigned* in) {
   asm("neg.f32 %0, %1;" : "=f"(z) : "f"(0.0f)); o[6] = fbits(z);
   o[7] = fbits(sinf(__uint_as_float(in[3])));  // 200000.0f: the large-argument path
 }
-// bar.red.popc (__syncthreads_count): parsed, delivered and counted per barrier, in every block.
+// bar.red (__syncthreads_count/and/or): parsed, delivered and reset per barrier, in every block;
+// .and/.or results written as predicates. Each block's results: 10, 3, 5 + 6 + 7, 2 (and), 2 (or).
 __global__ void barrier_counts(int* out) {
   int t = threadIdx.x, a = __syncthreads_count(t < 10), b = __syncthreads_count(t < 3), c = 0;
   for (int r = 0; r < 3; r++) c += __syncthreads_count(t < 5 + r);
-  if (t == 0) { out[blockIdx.x * 3] = a; out[blockIdx.x * 3 + 1] = b; out[blockIdx.x * 3 + 2] = c; }
+  int all = __syncthreads_and(t < blockDim.x) ? 2 : 0, some = __syncthreads_and(t < 10) ? 1 : 0;
+  int one = __syncthreads_or(t == 5) ? 2 : 0, none = __syncthreads_or(t > 1000) ? 1 : 0;
+  int* o = out + blockIdx.x * 5;
+  if (t == 0) { o[0] = a; o[1] = b; o[2] = c; o[3] = all + some; o[4] = one + none; }
 }
 int main() {
   int failures = 0;
-  { // barrier counts: 10, 3 and 5 + 6 + 7 in each of 4 blocks
-    int h[12], *d; cudaMalloc(&d, sizeof h); barrier_counts<<<4, 64>>>(d); cudaDeviceSynchronize();
+  { // barrier reductions, in each of 4 blocks
+    const int want[5] = {10, 3, 18, 2, 2};
+    const char* names[5] = {"bar.red.popc", "bar.red.popc (second)", "bar.red.popc (loop)", "bar.red.and", "bar.red.or"};
+    int h[20], *d; cudaMalloc(&d, sizeof h); barrier_counts<<<4, 64>>>(d); cudaDeviceSynchronize();
     cudaMemcpy(h, d, sizeof h, cudaMemcpyDeviceToHost);
-    for (int i = 0; i < 12; ++i) if (h[i] != (i % 3 == 0 ? 10 : i % 3 == 1 ? 3 : 18)) {
-      printf("SELFTEST FAIL bar.red.popc: block %d count %d is %d, want %d\n", i / 3, i % 3, h[i], i % 3 == 0 ? 10 : i % 3 == 1 ? 3 : 18);
-      ++failures; break;
+    for (int i = 0; i < 20; ++i) if (h[i] != want[i % 5]) {
+      printf("SELFTEST FAIL %s: block %d gives %d, want %d\n", names[i % 5], i / 5, h[i], want[i % 5]);
+      ++failures;
     }
   }
   { // asm checks

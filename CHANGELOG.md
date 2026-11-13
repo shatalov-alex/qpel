@@ -27,9 +27,10 @@ older programs keep building.
 - **Shared memory and barriers (IR v4):** `shared<T, N>`, `qpel.barrier()`, `qpel.barrier_count(c)`
   in Groups kernels, with a static check that every thread of a group reaches each barrier.
   The CPU simulator runs a block's threads together for sources with barriers.
-- **GPGPU-Sim `bar.red` (`__syncthreads_count`):** three simulator bugs fixed in
+- **GPGPU-Sim `bar.red` (`__syncthreads_count/and/or`):** four simulator bugs fixed in
   `qpel-fixes.patch` and checked by its self-test (parse assertion; counts never reset; never
-  delivered in functional mode). Every TRELLIS.2 program passes the NVIDIA rows except `render`,
+  delivered in functional mode; `and`/`or` predicates inverted), submitted upstream as
+  accel-sim/gpgpu-sim_distribution#155. Every TRELLIS.2 program passes the NVIDIA rows except `render`,
   which GPGPU-Sim still gets wrong for the original too (skipped; for the T4 run).
 - **TRELLIS.2 pilot ported:** `render` passes the rows, so every o-voxel kernel but the two
   64-bit-key inserts runs from qpel on CUDA and Metal.

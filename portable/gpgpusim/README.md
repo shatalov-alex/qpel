@@ -13,7 +13,7 @@ python3 -m fuzz --nvidia                    # random programs, also on GPGPU-Sim
 python3 check_all.py --gpu --nvidia         # all of it, with the other checks
 ```
 
-The image (`qpel/gpgpu-sim:dev-4195dd4-qpel10`, from this folder's Dockerfile on the
+The image (`qpel/gpgpu-sim:dev-4195dd4-qpel11`, from this folder's Dockerfile on the
 CUDA 12.6 devel image `nvcc_check.py` uses) is built on first use and takes about a
 minute. It is built and tested natively on arm64 (Apple silicon, Docker Desktop). On
 x86-64 the upstream build flags are kept, but that build is untested. Change the tag in
@@ -66,22 +66,23 @@ fix is reported as such, not as a qpel failure.
 | `bar.red.popc` (`__syncthreads_count`) | the parser asserts on the `.popc` option | TRELLIS.2 `render` |
 | `bar.red`, timing model | counts are never reset: each barrier adds to every earlier one in the same CTA slot | same (10, 13, 73 for 10, 3, 18) |
 | `bar.red`, functional mode | the result is never delivered to the destination register (always 0) | same |
+| `bar.red.and`, `bar.red.or` (`__syncthreads_and/or`) | the predicate result is written as a plain 0/1 (inverted, since predicate registers hold a zero flag); `.and` accumulates into storage that starts at 0 | testing the `bar.red` fixes |
 
 The patch also drops AccelWattch's x86-only compiler flags off x86. None of these are
 qpel issues, and qpel needed no change for any of them.
 
 **Upstream (2026-11-12):** submitted to accel-sim/gpgpu-sim_distribution, which has
-issues disabled, so as pull requests against `dev`. `qpel-fixes.patch` is exactly their
+issues disabled, so as pull requests against `dev` (all three merge cleanly together). `qpel-fixes.patch` is exactly their
 diff:
 
 - [#154](https://github.com/accel-sim/gpgpu-sim_distribution/pull/154): the PTX fixes
-  above, one commit per bug (abs and neg share one).
+  above up to `abs`/`neg`, one commit per bug (abs and neg share one).
 - [#153](https://github.com/accel-sim/gpgpu-sim_distribution/pull/153): the AccelWattch
   Makefile flags.
+- [#155](https://github.com/accel-sim/gpgpu-sim_distribution/pull/155) (2026-11-13): the four
+  `bar.red` fixes above, one commit each.
 
-The three `bar.red` fixes (2026-11-13: `ptx_ir.cc`, `shader.cc`, `abstract_hardware_model.h`,
-`cuda-sim.cc`/`.h`) are in the patch, and `selftest.cu` checks them, but they are not
-submitted yet. Once the pull requests are merged, pin `GPGPUSIM_COMMIT` past them and drop the patch.
+Once the pull requests are merged, pin `GPGPUSIM_COMMIT` past them and drop the patch.
 
 **Open (2026-11-13):** with the fixes, TRELLIS.2's `render` still finds no voxel on
 GPGPU-Sim, for the original and qpel's CUDA alike (the CPU simulator and the Apple GPU

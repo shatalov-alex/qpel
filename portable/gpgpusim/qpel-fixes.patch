@@ -1,3 +1,147 @@
+diff --git a/src/abstract_hardware_model.h b/src/abstract_hardware_model.h
+index 7dd20058..6b74aa29 100644
+--- a/src/abstract_hardware_model.h
++++ b/src/abstract_hardware_model.h
+@@ -1867,8 +1867,10 @@ class core_t {
+   kernel_info_t *get_kernel_info() { return m_kernel; }
+   class ptx_thread_info **get_thread_info() { return m_thread; }
+   unsigned get_warp_size() const { return m_warp_size; }
++  // Every reduction starts at 0, so .and counts the threads that vote false:
++  // the result is true when there are none.
+   void and_reduction(unsigned ctaid, unsigned barid, bool value) {
+-    reduction_storage[ctaid][barid] &= value;
++    reduction_storage[ctaid][barid] += !value;
+   }
+   void or_reduction(unsigned ctaid, unsigned barid, bool value) {
+     reduction_storage[ctaid][barid] |= value;
+@@ -1879,6 +1881,10 @@ class core_t {
+   unsigned get_reduction_value(unsigned ctaid, unsigned barid) {
+     return reduction_storage[ctaid][barid];
+   }
++  // A barrier reduction (bar.red) covers one barrier: the next starts at 0.
++  void reset_reduction(unsigned ctaid, unsigned barid) {
++    reduction_storage[ctaid][barid] = 0;
++  }
+ 
+  protected:
+   class gpgpu_sim *m_gpu;
+diff --git a/src/accelwattch/mcpat.mk b/src/accelwattch/mcpat.mk
+index ad2d6c29..c36a6228 100644
+--- a/src/accelwattch/mcpat.mk
++++ b/src/accelwattch/mcpat.mk
+@@ -16,20 +16,30 @@ INCS = -lm
+ CC=
+ CXX=
+ 
+-ifeq ($(shell getconf LONG_BIT),64) 
++# -m64/-m32 and the SSE flags below are x86 options; aarch64 and ppc64le
++# compilers reject them (the CMake build guards them the same way).
++X86 := $(filter x86_64 i386 i486 i586 i686,$(shell uname -m))
++
++ifeq ($(X86),)
++	CXX = g++
++	CC  = gcc
++	SSE =
++else ifeq ($(shell getconf LONG_BIT),64)
+ 	CXX = g++ -m64
+ 	CC  = gcc -m64
+-else 
++	SSE = -msse2 -mfpmath=sse
++else
+ 	CXX = g++ -m32
+ 	CC  = gcc -m32
+-endif 
++	SSE = -msse2 -mfpmath=sse
++endif
+ 
+ ifeq ($(TAG),dbg)
+   DBG = -Wall 
+   OPT = -ggdb -fPIC -g -O0 -DNTHREADS=1 -Icacti -lz
+ else
+   DBG = 
+-  OPT = -O3 -fPIC -msse2 -mfpmath=sse -DNTHREADS=$(NTHREADS) -Icacti -lz
++  OPT = -O3 -fPIC $(SSE) -DNTHREADS=$(NTHREADS) -Icacti -lz
+   #OPT = -O0 -DNTHREADS=$(NTHREADS)
+ endif
+ 
+diff --git a/src/cuda-sim/cuda-sim.cc b/src/cuda-sim/cuda-sim.cc
+index 69d1eb74..f979a983 100644
+--- a/src/cuda-sim/cuda-sim.cc
++++ b/src/cuda-sim/cuda-sim.cc
+@@ -2688,6 +2688,7 @@ void functionalCoreSim::execute(int inst_count, unsigned ctaid_cp) {
+     }
+     if (!someOneLive) break;
+     if (allAtBarrier) {
++      release_barrier_reductions();
+       for (unsigned i = 0; i < m_warp_count; i++) m_warpAtBarrier[i] = false;
+     }
+   }
+@@ -2742,6 +2743,10 @@ void functionalCoreSim::executeWarp(unsigned i, bool &allAtBarrier,
+     if (inst.isatomic()) inst.do_atomic(true);
+     if (inst.op == BARRIER_OP || inst.op == MEMORY_BARRIER_OP)
+       m_warpAtBarrier[i] = true;
++    if (inst.op == BARRIER_OP && inst.bar_type == RED) {
++      delete m_reductionInst[i];
++      m_reductionInst[i] = new warp_inst_t(inst);
++    }
+     updateSIMTStack(i, &inst);
+   }
+   if (m_liveThreadCount[i] > 0) someOneLive = true;
+@@ -2930,3 +2935,25 @@ void functionalCoreSim::warp_exit(unsigned warp_id) {
+     }
+   }
+ }
++
++// Functional simulation releases a barrier when every live warp has reached it.
++// A bar.red then gives each waiting thread the CTA's result, as the timing
++// model's broadcast_barrier_reduction does, and the next reduction starts at 0.
++void functionalCoreSim::release_barrier_reductions() {
++  unsigned bar_id = (unsigned)-1;
++  for (unsigned i = 0; i < m_warp_count; i++) {
++    if (!m_reductionInst[i]) continue;
++    m_reductionInst[i]->broadcast_barrier_reduction(
++        m_reductionInst[i]->get_active_mask());
++    bar_id = m_reductionInst[i]->bar_id;
++    delete m_reductionInst[i];
++    m_reductionInst[i] = nullptr;
++  }
++  if (bar_id == (unsigned)-1) return;
++  for (unsigned t = 0; t < m_warp_count * m_warp_size; t++) {
++    if (m_thread[t]) {
++      reset_reduction(m_thread[t]->get_cta_uid(), bar_id);
++      return;
++    }
++  }
++}
+diff --git a/src/cuda-sim/cuda-sim.h b/src/cuda-sim/cuda-sim.h
+index 21e1ca05..d65be4c5 100644
+--- a/src/cuda-sim/cuda-sim.h
++++ b/src/cuda-sim/cuda-sim.h
+@@ -69,11 +69,13 @@ class functionalCoreSim : public core_t {
+       : core_t(g, kernel, warp_size, kernel->threads_per_cta()) {
+     m_warpAtBarrier = new bool[m_warp_count];
+     m_liveThreadCount = new unsigned[m_warp_count];
++    m_reductionInst.assign(m_warp_count, nullptr);
+   }
+   virtual ~functionalCoreSim() {
+     warp_exit(0);
+     delete[] m_liveThreadCount;
+     delete[] m_warpAtBarrier;
++    for (warp_inst_t *inst : m_reductionInst) delete inst;
+   }
+   //! executes all warps till completion
+   void execute(int inst_count, unsigned ctaid_cp);
+@@ -99,6 +101,10 @@ class functionalCoreSim : public core_t {
+   // each warp live thread count and barrier indicator
+   unsigned *m_liveThreadCount;
+   bool *m_warpAtBarrier;
++  // each warp's bar.red waiting at the barrier: its result is delivered
++  // when every warp has arrived
++  std::vector<warp_inst_t *> m_reductionInst;
++  void release_barrier_reductions();
+ };
+ 
+ #define RECONVERGE_RETURN_PC ((address_type)-2)
 diff --git a/src/cuda-sim/half.h b/src/cuda-sim/half.h
 index fab1a229..9a9bf367 100644
 --- a/src/cuda-sim/half.h
@@ -43,7 +187,7 @@ index 8f1a8ebe..a556a0e2 100644
  
  /// Value signaling overflow.
 diff --git a/src/cuda-sim/instructions.cc b/src/cuda-sim/instructions.cc
-index f6324fbf..f21b7427 100644
+index f6324fbf..2ec37093 100644
 --- a/src/cuda-sim/instructions.cc
 +++ b/src/cuda-sim/instructions.cc
 @@ -871,11 +871,11 @@ void abs_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -60,7 +204,32 @@ index f6324fbf..f21b7427 100644
        break;
      default:
        printf("Execution error: type mismatch with instruction\n");
-@@ -1711,8 +1711,13 @@ void bfi_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+@@ -1141,8 +1141,22 @@ void bar_callback(const inst_t *inst, ptx_thread_info *thread) {
+   const ptx_instruction *pI = dynamic_cast<const ptx_instruction *>(inst);
+   const operand_info &dst = pI->dst();
+   ptx_reg_t data;
+-  data.u32 = value;
+-  thread->set_operand_value(dst, value, U32_TYPE, thread, pI);
++  switch (pI->get_atomic()) {
++    case ATOMIC_AND:  // value counts the threads that voted false
++      value = value == 0;
++      break;
++    case ATOMIC_OR:
++      value = value != 0;
++      break;
++  }
++  if (pI->get_type() == PRED_TYPE) {
++    // predicate registers hold a zero flag: 1 means false (see setp_impl)
++    data.pred = value == 0;
++    thread->set_operand_value(dst, data, PRED_TYPE, thread, pI);
++  } else {
++    data.u32 = value;
++    thread->set_operand_value(dst, data, U32_TYPE, thread, pI);
++  }
+ }
+ 
+ void atom_callback(const inst_t *inst, ptx_thread_info *thread) {
+@@ -1711,8 +1725,13 @@ void bfi_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
    unsigned pos = src3_data.u32 & 0xFF;
    unsigned len = src4_data.u32 & 0xFF;
    for (i = 0; i < len && pos + i < max; i++) {
@@ -76,7 +245,7 @@ index f6324fbf..f21b7427 100644
    }
    thread->set_operand_value(dst, data, i_type, thread, pI);
  }
-@@ -2447,6 +2452,35 @@ ptx_reg_t f2x(ptx_reg_t x, unsigned from_width, unsigned to_width, int to_sign,
+@@ -2447,6 +2466,35 @@ ptx_reg_t f2x(ptx_reg_t x, unsigned from_width, unsigned to_width, int to_sign,
    }
  
    ptx_reg_t y;
@@ -112,7 +281,7 @@ index f6324fbf..f21b7427 100644
    if (to_sign == 1) {  // convert to 64-bit number first?
      int tmp = cuda_math::float2int(x.f32, mode);
      if ((x.u32 & 0x7f800000) == 0) tmp = 0;  // round denorm. FP to 0
-@@ -2640,6 +2674,7 @@ ptx_reg_t s2f(ptx_reg_t x, unsigned from_width, unsigned to_width, int to_sign,
+@@ -2640,6 +2688,7 @@ ptx_reg_t s2f(ptx_reg_t x, unsigned from_width, unsigned to_width, int to_sign,
          break;
      }
    } else {
@@ -120,7 +289,7 @@ index f6324fbf..f21b7427 100644
      switch (to_width) {
        case 16:
          assert(0);
-@@ -2712,6 +2747,7 @@ ptx_reg_t u2f(ptx_reg_t x, unsigned from_width, unsigned to_width, int to_sign,
+@@ -2712,6 +2761,7 @@ ptx_reg_t u2f(ptx_reg_t x, unsigned from_width, unsigned to_width, int to_sign,
          break;
      }
    } else {
@@ -128,7 +297,7 @@ index f6324fbf..f21b7427 100644
      switch (to_width) {
        case 16:
          assert(0);
-@@ -3392,21 +3428,34 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
+@@ -3392,21 +3442,34 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
    type_info_key::type_decode(type, size, t);
    if (!vector_spec) {
      mem->read(addr, size / 8, &data.s64);
@@ -166,7 +335,7 @@ index f6324fbf..f21b7427 100644
    }
    thread->m_last_effective_address = addr;
    thread->m_last_memory_space = space;
-@@ -3862,7 +3911,15 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
+@@ -3862,7 +3925,15 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
    unsigned i_type = pI->get_type();
    ptx_reg_t a = thread->get_operand_value(src1, dst, i_type, thread, 1);
    ptx_reg_t b = thread->get_operand_value(src2, dst, i_type, thread, 1);
@@ -183,7 +352,7 @@ index f6324fbf..f21b7427 100644
  
    // take the carry bit, it should be the 4th operand
    ptx_reg_t carry_bit;
-@@ -3891,7 +3948,7 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
+@@ -3891,7 +3962,7 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
            ((long long int)(t.s32 + c.s32 + carry_bit.pred) & 0x100000000) >> 32;
        break;
      case S32_TYPE:
@@ -192,7 +361,7 @@ index f6324fbf..f21b7427 100644
        if (pI->is_wide())
          d.s64 = t.s64 + c.s64 + carry_bit.pred;
        else if (pI->is_hi())
-@@ -3926,7 +3983,7 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
+@@ -3926,7 +3997,7 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
                32;
        break;
      case U32_TYPE:
@@ -201,7 +370,7 @@ index f6324fbf..f21b7427 100644
        if (pI->is_wide())
          d.u64 = t.u64 + c.u64 + carry_bit.pred;
        else if (pI->is_hi())
-@@ -4325,10 +4382,13 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+@@ -4325,10 +4396,13 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
          assert(0);
        break;
      case S64_TYPE:
@@ -218,7 +387,7 @@ index f6324fbf..f21b7427 100644
        break;
      case U16_TYPE:
        t.u32 = ((unsigned)a.u16) * ((unsigned)b.u16);
-@@ -4355,8 +4415,9 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+@@ -4355,8 +4429,9 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
      case U64_TYPE:
        t.u64 = a.u64 * b.u64;
        assert(!pI->is_wide());
@@ -230,7 +399,7 @@ index f6324fbf..f21b7427 100644
          d.u64 = t.u64;
        else
          assert(0);
-@@ -4465,14 +4526,14 @@ void neg_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+@@ -4465,14 +4540,14 @@ void neg_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
        assert(0);
        break;
      case F16_TYPE:
@@ -249,7 +418,7 @@ index f6324fbf..f21b7427 100644
        break;
      default:
        assert(0);
-@@ -5503,7 +5564,7 @@ void shl_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+@@ -5503,7 +5578,7 @@ void shl_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
        if (b.u32 >= 64)
          d.u64 = 0;
        else
@@ -258,7 +427,7 @@ index f6324fbf..f21b7427 100644
        break;
      default:
        printf("Execution error: type mismatch with instruction\n");
-@@ -5542,7 +5603,7 @@ void shr_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+@@ -5542,7 +5617,7 @@ void shr_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
      case U64_TYPE:
      case B64_TYPE:
        if (b.u32 < 64)
@@ -267,7 +436,7 @@ index f6324fbf..f21b7427 100644
        else
          d.u64 = 0;
        break;
-@@ -5569,8 +5630,8 @@ void shr_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+@@ -5569,8 +5644,8 @@ void shr_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
        }
        break;
      case S64_TYPE:
@@ -308,6 +477,18 @@ index 5e1a51c4..dfc47bb0 100644
    char * string_value;
    void * ptr_value;
  }
+diff --git a/src/cuda-sim/ptx_ir.cc b/src/cuda-sim/ptx_ir.cc
+index 4e500ccb..e74c5c42 100644
+--- a/src/cuda-sim/ptx_ir.cc
++++ b/src/cuda-sim/ptx_ir.cc
+@@ -1374,6 +1374,7 @@ ptx_instruction::ptx_instruction(
+       case ATOMIC_DEC:
+       case ATOMIC_MIN:
+       case ATOMIC_MAX:
++      case ATOMIC_POPC:  // bar.red.popc (__syncthreads_count)
+         m_atomic_spec = last_ptx_inst_option;
+         break;
+       case APPROX_OPTION:
 diff --git a/src/cuda-sim/ptx_ir.h b/src/cuda-sim/ptx_ir.h
 index 4a7d39b6..c01886cc 100644
 --- a/src/cuda-sim/ptx_ir.h
@@ -357,79 +538,16 @@ index 96eadf6d..e5a1bb76 100644
    void add_literal_float(float value);
    void add_literal_double(double value);
    void add_address_operand(const char *identifier, int offset);
-diff --git a/src/accelwattch/mcpat.mk b/src/accelwattch/mcpat.mk
-index ad2d6c29..c36a6228 100644
---- a/src/accelwattch/mcpat.mk
-+++ b/src/accelwattch/mcpat.mk
-@@ -16,20 +16,30 @@ INCS = -lm
- CC=
- CXX=
- 
--ifeq ($(shell getconf LONG_BIT),64) 
-+# -m64/-m32 and the SSE flags below are x86 options; aarch64 and ppc64le
-+# compilers reject them (the CMake build guards them the same way).
-+X86 := $(filter x86_64 i386 i486 i586 i686,$(shell uname -m))
-+
-+ifeq ($(X86),)
-+	CXX = g++
-+	CC  = gcc
-+	SSE =
-+else ifeq ($(shell getconf LONG_BIT),64)
- 	CXX = g++ -m64
- 	CC  = gcc -m64
--else 
-+	SSE = -msse2 -mfpmath=sse
-+else
- 	CXX = g++ -m32
- 	CC  = gcc -m32
--endif 
-+	SSE = -msse2 -mfpmath=sse
-+endif
- 
- ifeq ($(TAG),dbg)
-   DBG = -Wall 
-   OPT = -ggdb -fPIC -g -O0 -DNTHREADS=1 -Icacti -lz
- else
-   DBG = 
--  OPT = -O3 -fPIC -msse2 -mfpmath=sse -DNTHREADS=$(NTHREADS) -Icacti -lz
-+  OPT = -O3 -fPIC $(SSE) -DNTHREADS=$(NTHREADS) -Icacti -lz
-   #OPT = -O0 -DNTHREADS=$(NTHREADS)
- endif
- 
-diff --git a/src/cuda-sim/ptx_ir.cc b/src/cuda-sim/ptx_ir.cc
-index 4e500ccb..e74c5c42 100644
---- a/src/cuda-sim/ptx_ir.cc
-+++ b/src/cuda-sim/ptx_ir.cc
-@@ -1374,6 +1374,7 @@ ptx_instruction::ptx_instruction(
-       case ATOMIC_DEC:
-       case ATOMIC_MIN:
-       case ATOMIC_MAX:
-+      case ATOMIC_POPC:  // bar.red.popc (__syncthreads_count)
-         m_atomic_spec = last_ptx_inst_option;
-         break;
-       case APPROX_OPTION:
-diff --git a/src/abstract_hardware_model.h b/src/abstract_hardware_model.h
-index 7dd20058..ca0f01c0 100644
---- a/src/abstract_hardware_model.h
-+++ b/src/abstract_hardware_model.h
-@@ -1879,6 +1879,8 @@ class core_t {
-   unsigned get_reduction_value(unsigned ctaid, unsigned barid) {
-     return reduction_storage[ctaid][barid];
-   }
-+  // A barrier reduction (bar.red, __syncthreads_count) counts one barrier: start the next at 0.
-+  void reset_reduction(unsigned ctaid, unsigned barid) { reduction_storage[ctaid][barid] = 0; }
- 
-  protected:
-   class gpgpu_sim *m_gpu;
 diff --git a/src/gpgpu-sim/shader.cc b/src/gpgpu-sim/shader.cc
-index 96656943..e77d6c32 100644
+index 96656943..5d30be10 100644
 --- a/src/gpgpu-sim/shader.cc
 +++ b/src/gpgpu-sim/shader.cc
-@@ -4941,6 +4941,17 @@ void shader_core_ctx::broadcast_barrier_reduction(unsigned cta_id,
+@@ -4941,6 +4941,18 @@ void shader_core_ctx::broadcast_barrier_reduction(unsigned cta_id,
            inst->get_active_mask());
      }
    }
-+  // Every waiting thread has read the result; the next reduction on this barrier starts at 0.
++  // Every waiting thread has its result: the next reduction on this barrier
++  // starts at 0.
 +  for (unsigned i = 0; i < m_config->max_warps_per_shader; i++) {
 +    if (!warps.test(i)) continue;
 +    for (unsigned lane = 0; lane < m_warp_size; lane++) {
@@ -443,79 +561,3 @@ index 96656943..e77d6c32 100644
  }
  
  bool shader_core_ctx::fetch_unit_response_buffer_full() const { return false; }
-diff --git a/src/cuda-sim/cuda-sim.cc b/src/cuda-sim/cuda-sim.cc
-index 69d1eb74..1d891133 100644
---- a/src/cuda-sim/cuda-sim.cc
-+++ b/src/cuda-sim/cuda-sim.cc
-@@ -2688,6 +2688,7 @@ void functionalCoreSim::execute(int inst_count, unsigned ctaid_cp) {
-     }
-     if (!someOneLive) break;
-     if (allAtBarrier) {
-+      release_barrier_reductions();
-       for (unsigned i = 0; i < m_warp_count; i++) m_warpAtBarrier[i] = false;
-     }
-   }
-@@ -2742,6 +2743,10 @@ void functionalCoreSim::executeWarp(unsigned i, bool &allAtBarrier,
-     if (inst.isatomic()) inst.do_atomic(true);
-     if (inst.op == BARRIER_OP || inst.op == MEMORY_BARRIER_OP)
-       m_warpAtBarrier[i] = true;
-+    if (inst.op == BARRIER_OP && inst.bar_type == RED) {
-+      delete m_reductionInst[i];
-+      m_reductionInst[i] = new warp_inst_t(inst);
-+    }
-     updateSIMTStack(i, &inst);
-   }
-   if (m_liveThreadCount[i] > 0) someOneLive = true;
-@@ -2930,3 +2935,24 @@ void functionalCoreSim::warp_exit(unsigned warp_id) {
-     }
-   }
- }
-+
-+// Functional mode releases a barrier when every live warp has reached it. A bar.red
-+// (__syncthreads_count/and/or) then gives each waiting thread the group's result, as the
-+// timing model's broadcast_barrier_reduction does, and the next reduction starts at 0.
-+void functionalCoreSim::release_barrier_reductions() {
-+  unsigned bar_id = (unsigned)-1;
-+  for (unsigned i = 0; i < m_warp_count; i++) {
-+    if (!m_reductionInst[i]) continue;
-+    m_reductionInst[i]->broadcast_barrier_reduction(m_reductionInst[i]->get_active_mask());
-+    bar_id = m_reductionInst[i]->bar_id;
-+    delete m_reductionInst[i];
-+    m_reductionInst[i] = nullptr;
-+  }
-+  if (bar_id == (unsigned)-1) return;
-+  for (unsigned t = 0; t < m_warp_count * m_warp_size; t++) {
-+    if (m_thread[t]) {
-+      reset_reduction(m_thread[t]->get_cta_uid(), bar_id);
-+      return;
-+    }
-+  }
-+}
-diff --git a/src/cuda-sim/cuda-sim.h b/src/cuda-sim/cuda-sim.h
-index 21e1ca05..5e6dc36d 100644
---- a/src/cuda-sim/cuda-sim.h
-+++ b/src/cuda-sim/cuda-sim.h
-@@ -69,11 +69,13 @@ class functionalCoreSim : public core_t {
-       : core_t(g, kernel, warp_size, kernel->threads_per_cta()) {
-     m_warpAtBarrier = new bool[m_warp_count];
-     m_liveThreadCount = new unsigned[m_warp_count];
-+    m_reductionInst.assign(m_warp_count, nullptr);
-   }
-   virtual ~functionalCoreSim() {
-     warp_exit(0);
-     delete[] m_liveThreadCount;
-     delete[] m_warpAtBarrier;
-+    for (warp_inst_t *inst : m_reductionInst) delete inst;
-   }
-   //! executes all warps till completion
-   void execute(int inst_count, unsigned ctaid_cp);
-@@ -99,6 +101,9 @@ class functionalCoreSim : public core_t {
-   // each warp live thread count and barrier indicator
-   unsigned *m_liveThreadCount;
-   bool *m_warpAtBarrier;
-+  // each warp's bar.red waiting for the group: its result is delivered when all arrive
-+  std::vector<warp_inst_t *> m_reductionInst;
-+  void release_barrier_reductions();
- };
- 
- #define RECONVERGE_RETURN_PC ((address_type)-2)
