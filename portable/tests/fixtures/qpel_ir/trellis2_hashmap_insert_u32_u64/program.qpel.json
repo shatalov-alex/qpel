@@ -4,7 +4,7 @@
   "semantics": "qpel-portable-core-v4",
   "roots": {
     "module": "n0",
-    "pipeline": "n150"
+    "pipeline": "n158"
   },
   "nodes": [
     {
@@ -1209,7 +1209,7 @@
           "n115"
         ],
         "domain": [
-          "n149"
+          "n157"
         ]
       },
       "links": {}
@@ -1231,10 +1231,8 @@
     },
     {
       "id": "n103",
-      "kind": "ScalarType",
-      "attributes": {
-        "scalar": "u64"
-      },
+      "kind": "Shape3DType",
+      "attributes": {},
       "children": {},
       "links": {}
     },
@@ -1749,6 +1747,64 @@
     },
     {
       "id": "n148",
+      "kind": "Cast",
+      "attributes": {
+        "to": "u64"
+      },
+      "children": {
+        "operand": [
+          "n149"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n149",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n150"
+        ],
+        "right": [
+          "n155"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n150",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n151"
+        ],
+        "right": [
+          "n153"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n151",
+      "kind": "Member",
+      "attributes": {
+        "member": "x"
+      },
+      "children": {
+        "base": [
+          "n152"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n152",
       "kind": "Name",
       "attributes": {},
       "children": {},
@@ -1757,67 +1813,13 @@
       }
     },
     {
-      "id": "n149",
-      "kind": "Grid1D",
-      "attributes": {},
-      "children": {},
-      "links": {}
-    },
-    {
-      "id": "n150",
-      "kind": "Pipeline",
-      "attributes": {
-        "name": "trellis2_hashmap_insert_u32_u64_launch"
-      },
-      "children": {
-        "resources": [
-          "n151",
-          "n153",
-          "n155",
-          "n157",
-          "n159",
-          "n161"
-        ],
-        "stages": [
-          "n163"
-        ]
-      },
-      "links": {
-        "module": "n0"
-      }
-    },
-    {
-      "id": "n151",
-      "kind": "Resource",
-      "attributes": {
-        "name": "N",
-        "kind": "value"
-      },
-      "children": {
-        "type": [
-          "n152"
-        ]
-      },
-      "links": {}
-    },
-    {
-      "id": "n152",
-      "kind": "ScalarType",
-      "attributes": {
-        "scalar": "u64"
-      },
-      "children": {},
-      "links": {}
-    },
-    {
       "id": "n153",
-      "kind": "Resource",
+      "kind": "Member",
       "attributes": {
-        "name": "M",
-        "kind": "shape"
+        "member": "y"
       },
       "children": {
-        "type": [
+        "base": [
           "n154"
         ]
       },
@@ -1825,13 +1827,109 @@
     },
     {
       "id": "n154",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n102"
+      }
+    },
+    {
+      "id": "n155",
+      "kind": "Member",
+      "attributes": {
+        "member": "z"
+      },
+      "children": {
+        "base": [
+          "n156"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n156",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n102"
+      }
+    },
+    {
+      "id": "n157",
+      "kind": "Grid1D",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n158",
+      "kind": "Pipeline",
+      "attributes": {
+        "name": "trellis2_hashmap_insert_u32_u64_launch"
+      },
+      "children": {
+        "resources": [
+          "n159",
+          "n161",
+          "n163",
+          "n165",
+          "n167",
+          "n169"
+        ],
+        "stages": [
+          "n171"
+        ]
+      },
+      "links": {
+        "module": "n0"
+      }
+    },
+    {
+      "id": "n159",
+      "kind": "Resource",
+      "attributes": {
+        "name": "N",
+        "kind": "shape"
+      },
+      "children": {
+        "type": [
+          "n160"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n160",
       "kind": "Shape3DType",
       "attributes": {},
       "children": {},
       "links": {}
     },
     {
-      "id": "n155",
+      "id": "n161",
+      "kind": "Resource",
+      "attributes": {
+        "name": "M",
+        "kind": "shape"
+      },
+      "children": {
+        "type": [
+          "n162"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n162",
+      "kind": "Shape3DType",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n163",
       "kind": "Resource",
       "attributes": {
         "name": "hashmap_keys",
@@ -1839,22 +1937,22 @@
       },
       "children": {
         "type": [
-          "n156"
+          "n164"
         ]
       },
       "links": {
-        "extent": "n153"
+        "extent": "n159"
       }
     },
     {
-      "id": "n156",
+      "id": "n164",
       "kind": "AtomicU32BufferType",
       "attributes": {},
       "children": {},
       "links": {}
     },
     {
-      "id": "n157",
+      "id": "n165",
       "kind": "Resource",
       "attributes": {
         "name": "hashmap_values",
@@ -1862,15 +1960,15 @@
       },
       "children": {
         "type": [
-          "n158"
+          "n166"
         ]
       },
       "links": {
-        "extent": "n153"
+        "extent": "n159"
       }
     },
     {
-      "id": "n158",
+      "id": "n166",
       "kind": "BufferType",
       "attributes": {
         "element": "u64",
@@ -1880,7 +1978,7 @@
       "links": {}
     },
     {
-      "id": "n159",
+      "id": "n167",
       "kind": "Resource",
       "attributes": {
         "name": "keys",
@@ -1888,15 +1986,15 @@
       },
       "children": {
         "type": [
-          "n160"
+          "n168"
         ]
       },
       "links": {
-        "extent": "n153"
+        "extent": "n161"
       }
     },
     {
-      "id": "n160",
+      "id": "n168",
       "kind": "BufferType",
       "attributes": {
         "element": "u32",
@@ -1906,7 +2004,7 @@
       "links": {}
     },
     {
-      "id": "n161",
+      "id": "n169",
       "kind": "Resource",
       "attributes": {
         "name": "values",
@@ -1914,15 +2012,15 @@
       },
       "children": {
         "type": [
-          "n162"
+          "n170"
         ]
       },
       "links": {
-        "extent": "n153"
+        "extent": "n161"
       }
     },
     {
-      "id": "n162",
+      "id": "n170",
       "kind": "BufferType",
       "attributes": {
         "element": "u64",
@@ -1932,7 +2030,7 @@
       "links": {}
     },
     {
-      "id": "n163",
+      "id": "n171",
       "kind": "Dispatch",
       "attributes": {
         "blockSize": 64,
@@ -1940,77 +2038,77 @@
       },
       "children": {
         "bindings": [
-          "n164",
-          "n165",
-          "n166",
-          "n167",
-          "n168",
-          "n169"
+          "n172",
+          "n173",
+          "n174",
+          "n175",
+          "n176",
+          "n177"
         ]
       },
       "links": {
         "kernel": "n101",
-        "grid": "n153"
+        "grid": "n161"
       }
     },
     {
-      "id": "n164",
+      "id": "n172",
       "kind": "Binding",
       "attributes": {},
       "children": {},
       "links": {
         "parameter": "n102",
-        "resource": "n151"
+        "resource": "n159"
       }
     },
     {
-      "id": "n165",
+      "id": "n173",
       "kind": "Binding",
       "attributes": {},
       "children": {},
       "links": {
         "parameter": "n104",
-        "resource": "n153"
+        "resource": "n161"
       }
     },
     {
-      "id": "n166",
+      "id": "n174",
       "kind": "Binding",
       "attributes": {},
       "children": {},
       "links": {
         "parameter": "n106",
-        "resource": "n155"
+        "resource": "n163"
       }
     },
     {
-      "id": "n167",
+      "id": "n175",
       "kind": "Binding",
       "attributes": {},
       "children": {},
       "links": {
         "parameter": "n108",
-        "resource": "n157"
+        "resource": "n165"
       }
     },
     {
-      "id": "n168",
+      "id": "n176",
       "kind": "Binding",
       "attributes": {},
       "children": {},
       "links": {
         "parameter": "n110",
-        "resource": "n159"
+        "resource": "n167"
       }
     },
     {
-      "id": "n169",
+      "id": "n177",
       "kind": "Binding",
       "attributes": {},
       "children": {},
       "links": {
         "parameter": "n112",
-        "resource": "n161"
+        "resource": "n169"
       }
     }
   ]

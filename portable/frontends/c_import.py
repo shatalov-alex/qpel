@@ -234,6 +234,58 @@ def body_of(decl):
     return next((c for c in decl.get('inner', ()) if c['kind'] == 'CompoundStmt'), None)
 
 
+
+LOOSE = {'ImplicitCastExpr', 'ParenExpr', 'CStyleCastExpr', 'CXXStaticCastExpr', 'CXXFunctionalCastExpr',
+         'MaterializeTemporaryExpr', 'CXXBindTemporaryExpr', 'ExprWithCleanups'}
+
+
+def launch_tensor(node):
+    """('size', name) for a launch argument `t.size(0)` or `t.numel()`, ('data', name) for
+    `t.data_ptr<T>()` (PyTorch's way of passing a tensor's length and its storage), or None."""
+    while node.get('kind') in LOOSE and node.get('inner'):
+        node = node['inner'][0]
+    if node.get('kind') not in ('CXXMemberCallExpr', 'CallExpr') or not node.get('inner'):
+        return None
+    callee = node['inner'][0]
+    if callee.get('kind') not in ('MemberExpr', 'UnresolvedMemberExpr', 'CXXDependentScopeMemberExpr') or not callee.get('inner'):
+        return None
+    base = callee['inner'][0]
+    while base.get('kind') in LOOSE and base.get('inner'):
+        base = base['inner'][0]
+    if base.get('kind') != 'DeclRefExpr':
+        return None
+    tensor = base['referencedDecl'].get('name')
+    method = callee.get('name') or callee.get('member')
+    arguments = node['inner'][1:]
+    if method == 'numel' and not arguments:
+        return ('size', tensor)
+    if method == 'size' and len(arguments) == 1:
+        index = arguments[0]
+        while index.get('kind') in LOOSE and index.get('inner'):
+            index = index['inner'][0]
+        if index.get('kind') == 'IntegerLiteral' and index.get('value') == '0':
+            return ('size', tensor)
+    if method in ('data_ptr', 'data') and not arguments:
+        return ('data', tensor)
+    return None
+
+
+def launch_sites(unit):
+    """{kernel name as written at the call: [argument lists]} for every `kernel<<<...>>>(...)`."""
+    found = {}
+    for node in walk(unit):
+        if node.get('kind') != 'CUDAKernelCallExpr' or not node.get('inner'):
+            continue
+        callee = node['inner'][0]
+        while callee.get('kind') in LOOSE and callee.get('inner'):
+            callee = callee['inner'][0]
+        name = callee.get('name') if callee.get('kind') == 'UnresolvedLookupExpr' else \
+            callee.get('referencedDecl', {}).get('name') if callee.get('kind') == 'DeclRefExpr' else None
+        if name:
+            found.setdefault(name, []).append(node['inner'][2:])
+    return found
+
+
 def params_of(decl):
     return [c for c in decl.get('inner', ()) if c['kind'] == 'ParmVarDecl']
 
@@ -392,6 +444,10 @@ class Graph:
 class Importer:
     def __init__(self, unit, source, path, dialect, module, survey=False):
         self.dialect = DIALECT[dialect]
+        self.unit = unit
+        self.sites = None  # launch sites of the original's host code, read when first needed
+        self.extents = {}  # kernel -> {buffer parameter: shape parameter that sizes it}
+        self.grid_params = {}  # kernel -> its shape parameter that is the dispatch grid
         # In a survey every blocker is recorded as (function, error) and the rest of the
         # source is still read; otherwise the first one is raised.
         self.issues = [] if survey else None
@@ -853,6 +909,8 @@ class Importer:
         self.groups = kernel and self.uses_groups(decl)
         self.grid3d = kernel and not self.groups and self.uses_grid3d(decl)
         count = self.attempt(lambda: self.element_count(decl, types)) if kernel and not self.grid3d and not self.groups else None
+        sizes = self.launch_sizes(decl, types) if count is not None else {}
+        sized = {p['id']: p for p in params_of(decl) if p['name'] in sizes and p['id'] != count['id']}
         for i, p in enumerate(params_of(decl)):
             builtin = self.dialect.builtin(p) if kernel else None
             if builtin in GROUP_NODES and self.groups:
@@ -878,7 +936,7 @@ class Importer:
                 attrs.update(binding=self.dialect.binding(p, position), isBuffer=True)
                 if kind == 'shape3':
                     shape_param = p
-                elif count is not None and p['id'] == count['id']:
+                elif count is not None and p['id'] == count['id'] or p['id'] in sized:
                     kind = 'shape3'
                 elif not type_is_buffer(kind) and kind not in VALUE_TERMS and not is_struct(kind):
                     self.attempt(lambda: self.reject(Unsupported(
@@ -900,6 +958,15 @@ class Importer:
                 index = next(i for i, p in enumerate(params_of(decl)) if p['id'] == count['id'])
                 self.scope[count['id']] = ('count', entry[1], types[(name, index)])
                 self.adaptations.append(f'{name}: count {count["name"]} became a shape (count, 1, 1)')
+                self.grid_params[name] = self.safe_name(count['name'])
+                for p in sized.values():
+                    entry = self.scope[p['id']]
+                    index = next(i for i, q in enumerate(params_of(decl)) if q['id'] == p['id'])
+                    self.scope[p['id']] = ('count', entry[1], types[(name, index)])
+                    self.adaptations.append(f'{name}: {p["name"]}, the length of {", ".join(sorted(sizes[p["name"]]))} at the '
+                                            f'launch, became a shape ({p["name"]}, 1, 1) that sizes {"it" if len(sizes[p["name"]]) == 1 else "them"}')
+                self.extents[name] = {self.safe_name(b): self.safe_name(scalar) for scalar, buffers in sizes.items()
+                                      for b in buffers}
             elif shape_param is None:
                 self.attempt(lambda: self.reject(Unsupported(
                     decl, 'no-extent', 'a 2D/3D kernel needs a uint3 shape argument' if self.grid3d else
@@ -920,6 +987,39 @@ class Importer:
             children['domain'] = self.graph.add('Groups' if self.groups else 'Grid3D' if self.grid3d else 'Grid1D')
             self.domains[name] = 'groups' if self.groups else 'grid3d' if self.grid3d else 'grid1d'
         return self.graph.put(ident, 'Function', attrs, children)
+
+    def launch_sizes(self, decl, types):
+        """{integer parameter: {buffer parameters}} from the original's launch sites: an argument
+        `t.size(0)` (or `t.numel()`) is the length of the buffer passed as `t.data_ptr<T>()` in
+        the same launch. PyTorch extensions pass sizes this way; a buffer sized by no argument
+        is sized later by the buffers it is indexed with (Importer.shared_extents)."""
+        if self.dialect.name != 'cuda':
+            return {}
+        if self.sites is None:
+            self.sites = launch_sites(self.unit)
+        written = re.sub(r'<.*', '', self.qualified.get(decl['name'], decl['name'])).rpartition('::')[2]
+        params = [(i, p) for i, p in enumerate(params_of(decl)) if not self.dialect.builtin(p)]
+        found = {}
+        for arguments in self.sites.get(written, ()):
+            if len(arguments) != len(params):
+                continue
+            tensors = {}
+            for (i, p), argument in zip(params, arguments):
+                use = launch_tensor(argument)
+                if use:
+                    tensors.setdefault(use[1], {})[use[0]] = (i, p['name'])
+            for use in tensors.values():
+                if 'size' in use and 'data' in use and types.get((decl['name'], use['size'][0])) in INTEGER_TERMS \
+                        and type_is_buffer(types.get((decl['name'], use['data'][0])) or ''):
+                    found.setdefault(use['size'][1], set()).add(use['data'][1])
+        owners = {}
+        for scalar, buffers in found.items():
+            for b in buffers:
+                owners.setdefault(b, set()).add(scalar)
+        for b, scalars in owners.items():
+            if len(scalars) > 1:
+                raise Unsupported(decl, 'extent', f'{b} is sized by {" and ".join(sorted(scalars))} at different launches')
+        return found
 
     def argument_map(self, decl):
         """How to call the original kernel with a qpel pipeline's data: one entry per argument."""
@@ -1940,10 +2040,86 @@ class Importer:
         return add('Pipeline', {'name': plan.get('pipeline', self.module + '_launch')},
                    {'resources': [i for _, i in resources], 'stages': stages}, {'module': module})
 
+    def shared_extents(self, kernel):
+        """{buffer parameter: shape parameter} for a kernel with more than one shape. A buffer
+        the launch sized (launch_sizes) keeps that size. Any other buffer takes the size of the
+        buffers it is indexed with by the same local (`keys[slot]`, `values[slot]`), following
+        helper calls; a buffer indexed by the thread index, or by nothing it shares, is sized by
+        the grid. Two different sizes for one buffer are refused."""
+        nodes = self.graph.nodes
+        parent = {}
+
+        def find(x):
+            parent.setdefault(x, x)
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a, b):
+            parent[find(a)] = find(b)
+
+        def parameter(ident):
+            n = nodes[ident]
+            target = nodes.get(n['links'].get('declaration')) if n['kind'] == 'Name' else None
+            return target['id'] if target and target['kind'] == 'Parameter' else None
+
+        def key(ident, function):
+            n = nodes[ident]
+            while n['kind'].endswith('Cast') and n['children'].get('operand'):
+                n = nodes[n['children']['operand'][0]]
+            if n['kind'] == 'GridIndex':
+                return ('grid', function)
+            if n['kind'] == 'Name' and nodes.get(n['links'].get('declaration'), {}).get('kind') == 'Variable':
+                return ('local', n['links']['declaration'])
+            return None
+
+        def visit(ident, function):
+            n = nodes[ident]
+            base = index = None
+            if n['kind'] == 'Index':
+                base, index = n['children']['base'][0], n['children']['index'][0]
+            elif n['kind'].startswith('Atomic') and n['children'].get('address'):
+                address = nodes[n['children']['address'][0]]
+                if address['kind'] == 'Binary' and address['attributes'].get('operator') == '+':
+                    base, index = address['children']['left'][0], address['children']['right'][0]
+            elif n['kind'] == 'Call':
+                callee = nodes[n['links']['function']]
+                for param, argument in zip(callee['children'].get('parameters', []), n['children'].get('arguments', [])):
+                    if parameter(argument):
+                        union(parameter(argument), param)
+            if base and parameter(base) and key(index, function):
+                union(parameter(base), key(index, function))
+            for values in n['children'].values():
+                for child in values:
+                    visit(child, function)
+        for _, ident, _ in self.functions.values():
+            if ident in nodes:
+                visit(ident, ident)
+        params = {nodes[i]['attributes']['name']: i for i in self.kernel_params[kernel].values()}
+        own = self.functions[kernel][1]
+        seeds = {find(('grid', own)): {self.grid_params[kernel]}}
+        for b, shape in self.extents.get(kernel, {}).items():
+            seeds.setdefault(find(params[b]), set()).add(shape)
+        result = {}
+        for name, ident in params.items():
+            if not type_is_buffer(type_term(nodes[nodes[ident]['children']['type'][0]])):
+                continue
+            if name in self.extents.get(kernel, {}):
+                result[name] = self.extents[kernel][name]
+                continue
+            found = seeds.get(find(ident), set())
+            if len(found) > 1:
+                raise Unsupported(None, 'extent', f'{kernel}: {name} is indexed together with buffers of sizes '
+                                                  f'{" and ".join(sorted(found))}; pass a launch plan')
+            result[name] = next(iter(found)) if found else self.grid_params[kernel]
+        return result
+
     def synthesize_plan(self, kernels, block_size):
         """One dispatch per kernel in source order; parameters with one name share a resource."""
         resources = {}
         stages = []
+        extents = {}  # buffer resource -> shape resource
         for kernel in kernels:
             grid = None
             bindings = []
@@ -1954,7 +2130,7 @@ class Importer:
                 previous = resources.setdefault(name, {'name': name, 'kind': role, 'type': kind})
                 if previous['type'] != kind:
                     raise Unsupported(None, 'resource-type', f'{name} has type {previous["type"]} and {kind} in different kernels')
-                if role == 'shape':
+                if role == 'shape' and (grid is None or name == self.grid_params.get(kernel)):
                     grid = name
                 bindings.append({'parameter': name, 'resource': name})
             stage = {'kernel': kernel, 'grid': grid, 'blockSize': block_size, 'completionBarrier': True, 'bindings': bindings}
@@ -1968,6 +2144,12 @@ class Importer:
                 stage.update(blockSize=GROUPS_BLOCK, domain='groups', blockShape=[GROUPS_BLOCK, 1, 1],
                              groups=[f'(W*H*N + {GROUPS_BLOCK - 1})/{GROUPS_BLOCK}', '1', '1'])
             stages.append(stage)
+            if len([b for b in bindings if resources[b['resource']]['kind'] == 'shape']) > 1:
+                if kernel not in self.grid_params:
+                    raise Unsupported(None, 'extent', f'{kernel} takes several shapes; pass a launch plan')
+                for b, shape in self.shared_extents(kernel).items():
+                    if extents.setdefault(b, shape) != shape:
+                        raise Unsupported(None, 'extent', f'{b} is sized by {extents[b]} and {shape} in different kernels')
         shapes = [r['name'] for r in resources.values() if r['kind'] == 'shape']
         if not shapes and all(s['grid'] is None for s in stages):
             # Groups kernels take no shape; a shape resource still sizes the buffers.
@@ -1978,10 +2160,11 @@ class Importer:
                                     'run one thread per element of it in groups of ' + str(GROUPS_BLOCK))
         for s in stages:
             s['grid'] = s['grid'] or (shapes[0] if len(shapes) == 1 else None)
-        if len(shapes) != 1:
+        grids = {s['grid'] for s in stages}
+        if len(grids) != 1 or None in grids:
             raise Unsupported(None, 'extent', 'kernels use different shape parameters; pass a launch plan')
         for r in resources.values():
-            r['extent'] = None if r['kind'] in ('shape', 'value') else shapes[0]
+            r['extent'] = None if r['kind'] in ('shape', 'value') else extents.get(r['name'], next(iter(grids)))
         return {'resources': list(resources.values()), 'stages': stages}
 
 

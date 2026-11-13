@@ -1,12 +1,27 @@
 # Changelog
 
 Notable changes to qpel, by milestone. Dates are when the milestone was reached on `main`.
-The IR has its own version (currently 3), recorded in every program and launch plan;
+The IR has its own version (currently 4), recorded in every program and launch plan;
 older programs keep building.
 
 ## [Unreleased] — Phase 3
 
 ### Added
+- **First pilot, TRELLIS.2 o-voxel** (corpus/trellis2): the Z-order and Hilbert serialisation
+  kernels, the 32-bit-key hash insert and every hash lookup import and pass the behaviour rows
+  (CPU simulator, Apple GPU, GPGPU-Sim). The 64-bit-key insert is refused: Metal has no 64-bit
+  compare-and-swap.
+- **PyTorch extension stand-ins** for the importer (`frontends/include/libraries`): torch,
+  ATen, c10, pybind11, cuBLAS declarations and `cooperative_groups.h`.
+- **IR version 4:** thread-private local arrays (`array<T, N>`), compare-and-swap
+  (`atomic.cas`, feature `atomic_cas`) and `inout` resources (filled by the caller, updated
+  by the kernels, returned).
+- **Buffers of different sizes in one dispatch:** a buffer may be sized by any shape the kernel
+  receives. The importer reads sizes from the original's launch (`t.size(0)` next to
+  `t.data_ptr<T>()`) and from buffers indexed together; the hash tables are now tested larger
+  than their key lists.
+- The CPU simulator ends every buffer at an inaccessible page: an access past a buffer's end
+  stops the run instead of passing unnoticed.
 - **Unit tests for every component** (353, from 168): behaviour rows per original source
   (examples, SAM 2, all 52 llama.cpp programs), fuzz regressions, declared features per
   fixture, the whole-corpus coverage floor and the Apple GPU fixture tests. GPGPU-Sim rows

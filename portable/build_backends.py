@@ -33,11 +33,13 @@ def launch_header(plan):
         if stage['completionBarrier'] is not True: raise ValueError('Stage completion is required')
         if grid not in resources or resources[grid]['kind'] != 'shape': raise ValueError('Invalid grid resource')
         args=[]
+        # buffers are sized by the grid or by a shape the kernel receives (qpel_pipeline GRID_EXTENT)
+        visible={grid}|{b['resource'] for b in stage['bindings'] if resources.get(b['resource'],{}).get('kind')=='shape'}
         for binding in stage['bindings']:
             identifier(binding['parameter']);name=identifier(binding['resource'])
             if name not in resources or name in args: raise ValueError('Unknown/aliased resource')
             resource=resources[name]
-            if resource['kind'] not in ('shape','value') and resource['extent']!=grid: raise ValueError('Grid/extent mismatch')
+            if resource['kind'] not in ('shape','value') and resource['extent'] not in visible: raise ValueError('Grid/extent mismatch')
             args.append(name)
         if stage.get('domain')=='groups':
             counts=['('+g.replace('W','(('+grid+').x)').replace('H','(('+grid+').y)').replace('N','(('+grid+').z)')+')' for g in stage['groups']]

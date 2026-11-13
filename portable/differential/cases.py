@@ -38,9 +38,13 @@ def random_scalar(rng, t):
 def generic(plan, seed, shapes=SHAPES, values=None):
     rng = np.random.default_rng(seed)
     grids = sorted({s['grid'] for s in plan['stages']})
+    # A shape that is no dispatch's grid sizes other buffers (a table, a second tensor): it
+    # gets a size of its own, the next shape in the list, so that sizes differ.
+    others = sorted({r['name'] for r in plan['resources'] if r['kind'] == 'shape'} - set(grids))
     cases = []
-    for shape in shapes:
+    for i, shape in enumerate(shapes):
         sizes = {g: shape for g in grids}
+        sizes.update({o: tuple(shapes[(i + 1 + j) % len(shapes)]) for j, o in enumerate(others)})
         inputs = {r['name']: random_array(rng, DTYPES[r['type']], volume(sizes[r['extent']]))
                   for r in plan['resources'] if r['kind'] in ('input', 'inout')}
         chosen = {}
@@ -110,47 +114,51 @@ def murmur_slot(keys, size, bits):
 
 
 def hashmap_cases(plan, seed):
-    """TRELLIS.2's hash table kernels. The table has as many slots as the dispatch has threads
-    (qpel binds one extent per dispatch), empty slots hold the key type's maximum, and N is
-    the number of slots. Insertion gets distinct keys that hash to distinct slots, so the table
-    it builds is the same in any thread order; lookups get a table built here by inserting
-    keys one at a time (collisions included, one slot always left empty), and look up keys
-    of which about half are in it."""
+    """TRELLIS.2's hash table kernels: a table of N slots (hashmap_keys, hashmap_values) and M
+    keys, one thread per key. Empty slots hold the key type's maximum. Insertion gets distinct
+    keys that hash to distinct slots, so the table it builds is the same in any thread order;
+    lookups get a table built here by inserting keys one at a time (collisions included, one
+    slot always left empty), and look up keys of which about half are in it."""
     rng = np.random.default_rng(seed)
     types = {r['name']: DTYPES[r['type']] for r in plan['resources'] if r['kind'] not in ('shape', 'value')}
     key_type, value_type = types['hashmap_keys'], types['hashmap_values']
     bits = 8 * np.dtype(key_type).itemsize
     empty = np.iinfo(key_type).max
     inserting = any(r['name'] == 'hashmap_keys' and r['kind'] == 'inout' for r in plan['resources'])
+    extents = {r['name']: r['extent'] for r in plan['resources'] if r['kind'] not in ('shape', 'value')}
+    table_shape, keys_shape = extents['hashmap_keys'], extents['keys']
     cases = []
-    for shape in [(1, 1, 1), (2, 1, 1), (5, 1, 1), (64, 1, 1), (257, 1, 1), (1000, 1, 1)]:
-        size = volume(shape)
-        values = rng.integers(0, np.iinfo(value_type).max, size, dtype=value_type, endpoint=True)
+    # (slots, keys): a full table, a table twice the keys (TRELLIS.2 allocates 2x), one with few keys
+    for slots, count in [(1, 1), (2, 2), (11, 5), (64, 64), (515, 257), (2000, 1000), (1000, 7)]:
+        if table_shape == keys_shape and slots != count:
+            continue  # a plan with one size for both
+        values = rng.integers(0, np.iinfo(value_type).max, count, dtype=value_type, endpoint=True)
         if inserting:
-            keys = np.full(size, empty, key_type)
-            free = np.ones(size, bool)
-            while free.any():
-                draw = rng.integers(0, empty, 4 * size + 16, dtype=key_type)  # never the empty marker
-                for key, slot in zip(draw, murmur_slot(draw, size, bits)):
-                    if free[slot] and key not in keys:
-                        keys[slot], free[slot] = key, False
-            order = rng.permutation(size)  # threads insert them in no particular order
-            inputs = {'hashmap_keys': np.full(size, empty, key_type), 'hashmap_values': np.zeros(size, value_type),
-                      'keys': keys[order], 'values': values[order]}
+            chosen, used = [], set()
+            while len(chosen) < count:
+                draw = rng.integers(0, empty, 4 * count + 16, dtype=key_type)  # never the empty marker
+                for key, slot in zip(draw, murmur_slot(draw, slots, bits)):
+                    if len(chosen) < count and int(slot) not in used and key not in chosen:
+                        chosen.append(key)
+                        used.add(int(slot))
+            keys = np.array(chosen, key_type)[rng.permutation(count)]  # threads insert in no particular order
+            inputs = {'hashmap_keys': np.full(slots, empty, key_type), 'hashmap_values': np.zeros(slots, value_type),
+                      'keys': keys, 'values': values}
         else:
-            table = np.full(size, empty, key_type)
-            stored = np.zeros(size, value_type)
-            present = rng.integers(0, empty, max(size - 1, 0), dtype=key_type)
-            for key, value in zip(np.unique(present), values):
-                slot = int(murmur_slot(np.array([key], key_type), size, bits)[0])
+            table = np.full(slots, empty, key_type)
+            stored = np.zeros(slots, value_type)
+            present = rng.integers(0, empty, max(slots - 1, 0), dtype=key_type)
+            for key, value in zip(np.unique(present), rng.integers(0, np.iinfo(value_type).max, slots, dtype=value_type)):
+                slot = int(murmur_slot(np.array([key], key_type), slots, bits)[0])
                 while table[slot] != empty:
-                    slot = (slot + 1) % size
+                    slot = (slot + 1) % slots
                 table[slot], stored[slot] = key, value
-            probes = np.where(rng.random(size) < 0.5, rng.choice(np.append(present, empty - 1), size),
-                              rng.integers(0, empty, size, dtype=key_type)).astype(key_type)
+            probes = np.where(rng.random(count) < 0.5, rng.choice(np.append(present, empty - 1), count),
+                              rng.integers(0, empty, count, dtype=key_type)).astype(key_type)
             probes[probes == empty] = empty - 1
             inputs = {'hashmap_keys': table, 'hashmap_values': stored, 'keys': probes}
-        cases.append(Case({'M': shape}, inputs, {'N': size}, f'{size} slots'))
+        cases.append(Case({table_shape: (slots, 1, 1), keys_shape: (count, 1, 1)}, inputs, {},
+                          f'{slots} slots, {count} keys'))
     return cases
 
 

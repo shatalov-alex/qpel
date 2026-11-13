@@ -126,6 +126,9 @@ class PipelineChecker(TypeChecker):
             params, bindings = self.children(kernel, 'parameters'), self.children(stage, 'bindings')
             self.require(stage, len(params) == len(bindings), 'DISPATCH_ARITY', 'Bind every parameter exactly once')
             effects, seen, written = self.effects(kernel), set(), set()
+            # A buffer is sized by the grid or by a shape the kernel receives in this dispatch,
+            # so the kernel can know the size of everything it indexes.
+            visible = {grid['id']} | {b['links']['resource'] for p, b in zip(params, bindings) if self.declared(p) == 'shape3'}
             for param, binding in zip(params, bindings):
                 self.require(binding, binding['links']['parameter'] == param['id'], 'PARAM_ORDER', 'Bindings must follow parameter declaration order')
                 resource = self.target(binding, 'resource')
@@ -135,11 +138,12 @@ class PipelineChecker(TypeChecker):
                 seen.add(rid)
                 self.require(binding, typ == self.declared(param), 'BIND_TYPE', 'Resource and parameter types must match')
                 if is_buffer(typ):
-                    self.require(binding, resource['links'].get('extent') == grid['id'], 'GRID_EXTENT', 'Buffer extent must match grid')
+                    self.require(binding, resource['links'].get('extent') in visible, 'GRID_EXTENT',
+                                 'Buffer extent must be the grid or a shape bound in the same dispatch')
                 if typ in VALUE_TERMS or is_struct(typ):
                     self.require(binding, resource['attributes']['kind'] == 'value', 'VALUE_BINDING', 'Scalar parameters bind value resources')
                 if typ == 'shape3':
-                    self.require(binding, rid == grid['id'], 'GRID_SHAPE', 'Shape parameter must match grid')
+                    self.require(binding, resource['attributes']['kind'] == 'shape', 'GRID_SHAPE', 'Shape parameters bind shape resources')
                 flags = effects.get(param['id'], 0)
                 self.require(binding, not flags & READ or rid in ready, 'READ_BEFORE_WRITE', 'Read requires input or a write by an earlier stage')
                 if flags & WRITE:

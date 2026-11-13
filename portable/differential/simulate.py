@@ -169,10 +169,20 @@ class Program:
 
     def program(self, source):
         lines = [f'#include {h}' for h in self.HEADERS] + [f'#include "{source}"', '#include <vector>', '#include <string>',
-                 '#include <cstring>', '#include <fstream>',
+                 '#include <cstring>', '#include <fstream>', '#include <sys/mman.h>', '#include <unistd.h>', '#include <cstdlib>',
                  'struct Ptr { void* p; template <class T> operator T*() const { return (T*)p; } };',
                  'static std::vector<char> load(const std::string& path) {',
                  '  std::ifstream f(path, std::ios::binary); return std::vector<char>((std::istreambuf_iterator<char>(f)), {}); }',
+                 # A buffer ends where an inaccessible page begins, so an access past its end stops the
+                 # simulator (SIGSEGV) instead of reading or changing other memory. Its start keeps the
+                 # alignment of its elements: the size is a multiple of the element size.
+                 'struct Guarded { char* p; size_t n; char* data() { return p; } size_t size() const { return n; } };',
+                 'static Guarded guarded(const std::vector<char>& v) {',
+                 '  size_t page = (size_t)sysconf(_SC_PAGESIZE), span = (v.size() + page - 1) / page * page;',
+                 '  char* base = (char*)mmap(nullptr, span + page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);',
+                 '  if (base == (char*)MAP_FAILED) std::abort();',
+                 '  mprotect(base + span, page, PROT_NONE);',
+                 '  char* p = base + span - v.size(); std::memcpy(p, v.data(), v.size()); return Guarded{p, v.size()}; }',
                  'static unsigned int qpel_sim_u32(unsigned int w) { return w; }',
                  'static int qpel_sim_i32(unsigned int w) { int v; std::memcpy(&v, &w, 4); return v; }',
                  'static float qpel_sim_f32(unsigned int w) { float v; std::memcpy(&v, &w, 4); return v; }',
@@ -190,7 +200,7 @@ class Program:
                 lines.append(f'  {r["type"][7:]} qpel_struct_{r["name"]}; {{ std::vector<char> b = load(dir + "/value_{r["name"]}.bin"); '
                              f'std::memcpy(&qpel_struct_{r["name"]}, b.data(), sizeof qpel_struct_{r["name"]}); }}')
         for r in data:
-            lines.append(f'  std::vector<char> b_{r["name"]} = load(dir + "/{r["name"]}.bin");')
+            lines.append(f'  Guarded b_{r["name"]} = guarded(load(dir + "/{r["name"]}.bin"));')
         lines += self.upload(data)
         for s in self.plan['stages']:
             lines += self.stage(s)
@@ -263,6 +273,8 @@ class Program:
             folder = Path(folder)
             self.write_case(case, folder)
             result = subprocess.run([str(self.binary), str(folder)], capture_output=True, text=True, timeout=300)
+            if result.returncode in (-10, -11) or 'DEADLYSIGNAL' in result.stderr:  # SIGBUS/SIGSEGV at a guard page
+                raise RuntimeError(f'simulator failed on {case.label}: an access past the end of a buffer, or another invalid address')
             if result.returncode:
                 raise RuntimeError(f'simulator failed on {case.label}: {result.stderr[-3000:]}')
             return self.read_outputs(folder)

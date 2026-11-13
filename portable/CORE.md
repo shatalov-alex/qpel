@@ -49,7 +49,7 @@ The tests mutate valid saved native models to exercise type errors, read-only wr
 
 ## Shared pipeline validation
 
-The common core now validates resource types/extents, local kernel dispatches, exact binding order/count/type, grid/shape agreement, alias restrictions and completion barriers. Read/write effects propagate through helper calls and buffer pointer offsets; conditional buffer expressions conservatively include both branches. Address computations are traversed for additional reads. Outputs require a producing stage; input resources cannot be written.
+The common core now validates resource types/extents, local kernel dispatches, exact binding order/count/type, grid/shape agreement (a buffer is sized by the dispatch grid or by a shape the kernel receives in the same dispatch, so a kernel can know the length of everything it indexes; buffers of one dispatch may differ in size), alias restrictions and completion barriers. Read/write effects propagate through helper calls and buffer pointer offsets; conditional buffer expressions conservatively include both branches. Address computations are traversed for additional reads. Outputs require a producing stage; input resources cannot be written.
 
 Resources become available only after the preceding stage completes. This deliberately conservative whole-resource model rejects a same-stage read/write of an uninitialized resource, even if a particular kernel orders its local accesses. Conversely, a conditional or partial write still counts as a resource write: the checker is not proof of complete initialization, convergence, bounds or freedom from data races. Runtime size compatibility and numeric lowering need separate work.
 
