@@ -70,6 +70,35 @@ element size and length. In TRELLIS.2's o-voxel, 21 of the 25 imported programs 
 operation (`tests/test_torch_op.py` runs z-order and the hash inserts with them); the four
 rasteriser launches pass host-computed grid sizes and pointers into a shared buffer.
 
+## Installing with pip
+
+`python3 portable/packaging/build_wheel.py` builds `dist/qpel-<version>-py3-none-any.whl` and the
+sdist. It stages the compiler alone as a `qpel` package (`qpel/cli.py` is `qpel.py`; imports are
+rewritten to `qpel.*`; tests, the matrix and the corpus stay here), builds it with `uv build`,
+installs the wheel in a new virtual environment and runs `qpel build` and `qpel translate` there.
+Nothing is uploaded. The compiler needs only the standard library; `pip install "qpel[mps]"` adds
+PyTorch and NumPy for the generated Metal hosts and `torch-op`.
+
+## Benchmarks
+
+`python3 -m differential.bench [--size W H N] [--json out.json] [program ...]` times every Metal
+original in the behaviour matrix against qpel's Metal (Metal -> qpel -> Metal) on the same inputs,
+on the Apple GPU. Each side runs once through its normal runner (which also checks they agree);
+its dispatches are recorded and replayed, timed between GPU synchronisations. Programs sized in
+bytes (llama.cpp rows) are scaled by element size. The two sides alternate batch by batch, so
+neither gets the cold GPU. v0 results on an M4 Pro (macOS 26.5, torch 2.14), 39 programs at
+2048 x 1024 x 4 (8M threads), ratio qpel/original, two runs:
+
+| Run | Geometric mean | Median | Range |
+| --- | --- | --- | --- |
+| 1 | x0.93 | x0.95 | x0.74 to x1.00 |
+| 2 | x0.93 | x0.96 | x0.75 to x1.02 |
+
+No program is slower after translation. The kernels are element-wise and memory-bound; single
+llama.cpp kernels vary by up to 0.15 between runs (their originals' times spread more than
+qpel's), so the claim is no added cost, not a speedup. CUDA timing needs an NVIDIA GPU and is part
+of the release run.
+
 ## Validation
 
 Run everything that needs no NVIDIA hardware with one command:

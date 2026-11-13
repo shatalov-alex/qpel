@@ -68,18 +68,21 @@ def generic(plan, seed, shapes=SHAPES, values=None):
     return cases
 
 
-def scale_offset(plan, seed):
+def scale_offset(plan, seed, shapes=SHAPES):
     rng = np.random.default_rng(seed)
-    return generic(plan, seed, values={'offset': lambda: int(rng.integers(-1000, 1001)),
+    return generic(plan, seed, shapes, values={'offset': lambda: int(rng.integers(-1000, 1001)),
                                        'scale': lambda: float(np.float32(rng.uniform(-8, 8)))})
 
 
-def sam2_cc(plan, seed):
-    """Masks of varied density on even sizes, as SAM 2 requires; one image per call."""
+def sam2_cc(plan, seed, shapes=None):
+    """Masks of varied density on even sizes, as SAM 2 requires; one image per call. Given
+    shapes, one image of each shape's even W x H."""
     rng = np.random.default_rng(seed)
     cases = []
-    sizes = [(2, 2), (4, 6), (16, 16), (34, 8), (64, 48), (130, 66)]
-    for k, (w, h) in enumerate(sizes*3):
+    sizes = [(2, 2), (4, 6), (16, 16), (34, 8), (64, 48), (130, 66)]*3
+    if shapes:
+        sizes = [(max(2, s[0] // 2 * 2), max(2, s[1] // 2 * 2)) for s in shapes]
+    for k, (w, h) in enumerate(sizes):
         density = (k*29) % 101
         values = rng.integers(1, 256, w*h).astype(np.uint8)
         mask = np.where(rng.integers(0, 100, w*h) < density, values, 0).astype(np.uint8)
@@ -87,10 +90,10 @@ def sam2_cc(plan, seed):
     return cases
 
 
-def grid_stride(plan, seed):
+def grid_stride(plan, seed, shapes=SHAPES):
     """n is the number of elements to write, at most the buffers' size."""
     rng = np.random.default_rng(seed)
-    cases = generic(plan, seed)
+    cases = generic(plan, seed, shapes)
     for case in cases:
         size = volume(case.shapes['size'])
         case.values['n'] = int(rng.integers(0, size + 1))
@@ -343,8 +346,8 @@ def for_program(name, plan, seed=20261111, values=None, shapes=None, inputs=None
     elements of the dispatch shape (a count the buffers must hold), an integer is used as is,
     and any other string is an expression of the shape's W, H and N ('W/4', 'W*H').
     'args.ne0' names a field of a struct argument."""
-    if shapes:  # a corpus program's own sizes (for example whole rows of a byte buffer)
-        cases = generic(plan, seed, shapes=[tuple(s) for s in shapes])
+    if shapes:  # a corpus program's own sizes (whole rows of a byte buffer), or the benchmark's
+        cases = SPECIAL.get(name, generic)(plan, seed, shapes=[tuple(s) for s in shapes])
     else:
         family = next((f for prefix, f in PREFIXES.items() if name.startswith(prefix)), None)
         cases = SPECIAL.get(name, family or generic)(plan, seed)

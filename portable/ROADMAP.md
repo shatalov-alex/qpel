@@ -156,8 +156,8 @@ Pilot: Microsoft TRELLIS.2's `o-voxel` extension (13 kernels: Z-order and Hilber
 - Importer: cooperative-groups thread ranks, `atomicCAS` and the other integer atomics at 32 and 64 bits, `size_t` indexing idioms, and whatever else the pilot surfaces.
 - Minimal shared memory: static `__shared__` arrays and `__syncthreads` ↔ `threadgroup` arrays and `threadgroup_barrier`, as far as the rasteriser needs (general rules in Phase 5).
 - **PyTorch op host:** a generated Python function with the extension's signature that runs the Metal kernels on MPS tensors, so a Mac path sits next to the CUDA one.
-- **Benchmark harness v0:** time per kernel; qpel's Metal against the extension's CPU path on the Apple GPU, qpel's CUDA against the original on NVIDIA (`differential/hardware.py`).
-- `pip install qpel` (wheel, `qpel` command).
+- **Benchmark harness v0:** time per kernel. Done for Metal (2026-11-13, `differential/bench.py`): all 39 Metal originals against qpel's Metal at 8M threads, none slower, geometric mean x0.93 in two runs (README, Benchmarks). Still to do: qpel's CUDA against the original on NVIDIA (`differential/hardware.py`, at the release run).
+- `pip install qpel` (wheel, `qpel` command). Done, not published: `packaging/build_wheel.py` builds and checks the wheel; upload is a manual step at the release.
 - **Exit:** the pilot's kernels translated and verified on the CPU simulator, the Apple GPU and NVIDIA hardware, and timed; the port is ready to offer to the maintainers (at the public release, or earlier as standalone code).
 
 ### Phase 4: `qpel verify`, equivalence of any port (≈3 weeks, v0.5.0, public release)

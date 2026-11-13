@@ -7,6 +7,12 @@ older programs keep building.
 ## [Unreleased] — Phase 3
 
 ### Added
+- **Benchmarks v0 (`differential/bench.py`):** every Metal original against qpel's Metal at a
+  8M threads on the Apple GPU, the two sides alternating; all 39 timed, none slower,
+  geometric mean x0.93 in two runs (M4 Pro).
+  Special case generators (`grid_stride`, `sam2_cc`, `scale_offset`) take shapes, so they scale.
+- **pip packaging (not published):** `portable/packaging/build_wheel.py` builds a `qpel` wheel and
+  sdist (0.4.0.dev0, `qpel` command, `[mps]` extra) and checks the wheel in a new environment.
 - **`qpel.py torch-op`:** PyTorch operations from a package and the original extension's
   launch code (`generated/torch_ops.py`), one per `<<<>>>` launch, run on `mps` tensors with
   in-place outputs like the launch. 21 of TRELLIS.2 o-voxel's 25 programs get one.
