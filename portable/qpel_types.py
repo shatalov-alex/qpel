@@ -29,6 +29,11 @@ BUFFER = re.compile(r'buffer<(\w+), (read|write|atomic)>')
 # IR version 4: a fixed-size array of scalars, for thread-private local variables only.
 ARRAY = re.compile(r'array<(\w+), ([1-9][0-9]{0,3})>')
 MAX_ARRAY = 1024
+# IR version 4: a small vector value (CUDA's int4, uint2, float3; Metal's vectors), copied whole,
+# passed to and returned from functions; its elements are read and written as .x .y .z .w.
+VECTOR = re.compile(r'vec<(\w+), ([234])>')
+VECTOR_ELEMENTS = {'i32', 'u32', 'f32'}
+VECTOR_FIELDS = 'xyzw'
 COMPARISONS = {'==', '!=', '<', '>', '<=', '>='}
 # Math functions on float32: name -> arity. EXACT ones give the same bits on every backend;
 # the others are within MATH_ULPS of the exact result (NUMERICS.md, math functions).
@@ -50,6 +55,8 @@ def term(t):
             return buffer(t['attributes']['element'], t['attributes']['access'])
         if t['kind'] == 'ArrayType':
             return array(t['attributes']['element'], t['attributes']['length'])
+        if t['kind'] == 'VectorType':
+            return vector(t['attributes']['element'], t['attributes']['length'])
         return LEGACY.get(t['kind'], t['kind'])
     return LEGACY.get(t, t)
 
@@ -86,6 +93,22 @@ def array_length(t):
     return int(ARRAY.fullmatch(term(t)).group(2))
 
 
+def vector(element, length):
+    return f'vec<{element}, {length}>'
+
+
+def is_vector(t):
+    return VECTOR.fullmatch(term(t)) is not None
+
+
+def vector_element(t):
+    return VECTOR.fullmatch(term(t)).group(1)
+
+
+def vector_length(t):
+    return int(VECTOR.fullmatch(term(t)).group(2))
+
+
 def is_struct(t):
     return term(t).startswith('struct ')
 
@@ -97,6 +120,9 @@ def is_valid(t):
     m = ARRAY.fullmatch(t)
     if m:
         return m.group(1) in SCALAR_TERMS and 1 <= int(m.group(2)) <= MAX_ARRAY
+    m = VECTOR.fullmatch(t)
+    if m:
+        return m.group(1) in VECTOR_ELEMENTS
     m = BUFFER.fullmatch(t)
     return bool(m) and m.group(1) in SCALAR_TERMS - {'bool'} and (m.group(2) != 'atomic' or m.group(1) in ATOMIC_ELEMENTS)
 
@@ -288,9 +314,17 @@ class TypeChecker:
             check(self.order[target['id']] < self.order[function['id']], 'CALL_ORDER', 'Helpers must precede callers; recursion is unsupported')
             args, params = self.children(node, 'arguments'), self.children(target, 'parameters')
             check(len(args) == len(params), 'ARITY', 'Argument count does not match function')
+            referenced = set()
             for arg, param in zip(args, params):
                 actual, expected = self.expr(arg, env, function), self.declared(param)
                 self.require(arg, fits(expected, actual), 'ARG_TYPE', f'Expected {expected}, got {actual}')
+                if param['attributes'].get('reference'):  # the caller's own variable, passed in place
+                    declaration = self.target(arg, 'declaration') if arg['kind'] == 'Name' else None
+                    self.require(arg, declaration is not None and actual == expected and (
+                        declaration['kind'] == 'Variable' or declaration['attributes'].get('reference')), 'REFERENCE_ARGUMENT',
+                        'A reference parameter takes a local variable (or a reference parameter) of its exact type')
+                    self.require(arg, declaration['id'] not in referenced, 'REFERENCE_ALIAS', 'One variable passed by reference twice')
+                    referenced.add(declaration['id'])
             return term(self.child(target, 'resultType'))
         if k == 'Member':
             base = e('base')
@@ -298,7 +332,10 @@ class TypeChecker:
                 fields = self.structs.get(base[len('struct '):], {})
                 check(a['member'] in fields, 'MEMBER', f"{base} has no field {a['member']}")
                 return fields[a['member']]
-            check(base == 'shape3' and a['member'] in ('x', 'y', 'z'), 'MEMBER', 'Members require Shape3D or a struct')
+            if is_vector(base):
+                check(a['member'] in VECTOR_FIELDS[:vector_length(base)], 'MEMBER', f"{base} has no element {a['member']}")
+                return vector_element(base)
+            check(base == 'shape3' and a['member'] in ('x', 'y', 'z'), 'MEMBER', 'Members require Shape3D, a vector or a struct')
             return 'u32'
         if k == 'Index':
             base, index = e('base'), e('index')
@@ -375,6 +412,15 @@ class TypeChecker:
                 self.require(item, fits(array_element(expected), actual), 'ARRAY_VALUE',
                              f'Expected {array_element(expected)}, got {actual}')
             return expected
+        if k == 'VectorValue':
+            expected = vector(a['element'], a['length'])
+            check(is_valid(expected), 'VECTOR_VALUE', f'Invalid vector type {expected}')
+            items = self.children(node, 'elements')
+            check(len(items) == a['length'], 'VECTOR_VALUE', f'{expected} needs {a["length"]} elements, not {len(items)}')
+            for item in items:
+                actual = self.expr(item, env, function)
+                self.require(item, fits(a['element'], actual), 'VECTOR_VALUE', f'Expected {a["element"]}, got {actual}')
+            return expected
         if k == 'Select':
             check(e('condition') in CONDITIONS, 'CONDITION', 'Scalar condition required')
             yes, no = e('yes'), e('no')
@@ -409,15 +455,17 @@ class TypeChecker:
                 e('value')
             elif self.children(node, 'value'):
                 actual = e('value')
-                check((expected in SCALAR_TERMS or pointer) and fits(expected, actual), 'VARIABLE_TYPE', f'Invalid initializer {expected} <- {actual}')
+                check((expected in SCALAR_TERMS or pointer or is_vector(expected)) and fits(expected, actual), 'VARIABLE_TYPE', f'Invalid initializer {expected} <- {actual}')
             else:
                 check(pointer, 'VARIABLE_TYPE', 'Only buffer locals may start without a value')
             env.add(node['id'])
         elif k == 'Assign':
             target = self.child(node, 'target')
             expected, actual = e('target'), e('value')
-            writable = target['kind'] == 'Name' and (expected in SCALAR_TERMS or
+            writable = target['kind'] == 'Name' and (expected in SCALAR_TERMS or is_vector(expected) or
                                                       is_buffer(expected) and self.target(target, 'declaration')['kind'] == 'Variable')
+            if target['kind'] == 'Member' and self.child(target, 'base')['kind'] == 'Name':
+                writable = is_vector(self.expr(self.child(target, 'base'), env, function))  # v.x = ...
             if target['kind'] == 'Index':
                 base = self.expr(self.child(target, 'base'), env, function)
                 writable = is_buffer(base) and access(base) == 'write' or is_array(base)
@@ -491,7 +539,8 @@ class TypeChecker:
             result = term(self.child(function, 'resultType'))
             domain = self.children(function, 'domain')
             params = self.children(function, 'parameters')
-            self.require(function, result in SCALAR_TERMS | {'void'}, 'RESULT_TYPE', 'Result must be scalar or void')
+            self.require(function, result in SCALAR_TERMS | {'void'} or is_vector(result) and is_valid(result), 'RESULT_TYPE',
+                         'Result must be a scalar, a vector or void')
             self.require(function, (result == 'void' and bool(domain) and bool(params)) if kernel else not domain, 'FUNCTION_ABI', 'Kernel needs void result, Grid1D and parameters; helpers cannot have domains')
             names, bindings, env = set(), set(), set()
             for param in params:
@@ -507,6 +556,8 @@ class TypeChecker:
                     bindings.add(binding)
                 else:
                     self.require(param, not a.get('isBuffer', False), 'HELPER_BINDING', 'Helper parameter cannot have kernel binding')
+                self.require(param, not a.get('reference') or not kernel and (t in SCALAR_TERMS or is_vector(t)), 'REFERENCE',
+                             'Only helper parameters of scalar or vector type can be references')
                 env.add(param['id'])
             def descendants(n):
                 yield n
@@ -535,6 +586,10 @@ def node_spec(t):
         return 'BufferType', {'element': element(t), 'access': access(t)}
     if is_struct(t):
         return 'StructType', {'name': t[len('struct '):]}
+    if is_vector(t):
+        return 'VectorType', {'element': vector_element(t), 'length': vector_length(t)}
+    if is_array(t):
+        return 'ArrayType', {'element': array_element(t), 'length': array_length(t)}
     return 'ScalarType', {'scalar': t}
 
 

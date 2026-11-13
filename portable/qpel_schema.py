@@ -6,10 +6,10 @@ import re
 import math
 import struct
 
-from qpel_types import INTEGER_TERMS, INTEGERS_BITS, MATH, SCALAR_TERMS, array, buffer, is_valid
+from qpel_types import INTEGER_TERMS, INTEGERS_BITS, MATH, SCALAR_TERMS, array, buffer, is_valid, vector
 
-TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType StructType ArrayType'.split())
-EXPRESSIONS = set('ArrayValue Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange'.split())
+TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType StructType ArrayType VectorType'.split())
+EXPRESSIONS = set('ArrayValue VectorValue Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange'.split())
 STATEMENTS = set('Block Variable Assign Evaluate If While DoWhile For Break Continue Return'.split())
 
 # Child role -> (allowed concepts, minimum count, maximum count or None).
@@ -42,13 +42,14 @@ CHILDREN = {
     'Variable': {'type': one(TYPE_KINDS), 'value': optional(EXPRESSIONS)},  # only buffer locals may omit it
     'View': {'base': one(EXPRESSIONS)},
     'ArrayValue': {'elements': many(EXPRESSIONS)},  # IR version 4: initializes a local array
+    'VectorValue': {'elements': many(EXPRESSIONS)},  # IR version 4: a vec<T, N> made of N elements
     'Binary': {'left': one(EXPRESSIONS), 'right': one(EXPRESSIONS)},
     'Unary': {'operand': one(EXPRESSIONS)},
     'Index': {'base': one(EXPRESSIONS), 'index': one(EXPRESSIONS)},
     'Member': {'base': one(EXPRESSIONS)},
     'Call': {'arguments': many(EXPRESSIONS)},
     'Select': {'condition': one(EXPRESSIONS), 'yes': one(EXPRESSIONS), 'no': one(EXPRESSIONS)},
-    'Assign': {'target': one('Name Index'), 'value': one(EXPRESSIONS)},
+    'Assign': {'target': one('Name Index Member'), 'value': one(EXPRESSIONS)},
     'Evaluate': {'value': one(EXPRESSIONS)},
     'If': {'condition': one(EXPRESSIONS), 'thenBody': one('Block'), 'elseBody': optional('Block')},
     'While': {'condition': one(EXPRESSIONS), 'body': one('Block')},
@@ -82,7 +83,7 @@ LINKS = {
 }
 ATTRIBUTES = {
     'GpuModule': {'name': str}, 'Function': {'name': str, 'isKernel': bool},
-    'Parameter': {'name': str, 'binding': int, 'isBuffer': bool},
+    'Parameter': {'name': str, 'binding': int, 'isBuffer': bool, 'reference': bool},
     'Variable': {'name': str}, 'Literal': {'value': str}, 'I32Literal': {'value': str}, 'F32Literal': {'value': str},
     'Binary': {'operator': str}, 'Unary': {'operator': str},
     'Member': {'member': str}, 'Pipeline': {'name': str},
@@ -97,14 +98,15 @@ ATTRIBUTES = {
     'GroupIndex': {'axis': str}, 'LocalIndex': {'axis': str}, 'GroupSize': {'axis': str}, 'GroupCount': {'axis': str},
     # IR version 4
     'ArrayType': {'element': str, 'length': int},
+    'VectorType': {'element': str, 'length': int}, 'VectorValue': {'element': str, 'length': int},
 }
 MAX_SCALE = 4096  # elements per element of a buffer's extent: `in M * 4` for an [M, 4] tensor
-DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer'}, 'Resource': {'scale'},
+DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer', 'reference'}, 'Resource': {'scale'},
              'Dispatch': {'blockHeight', 'blockDepth', 'groupsX', 'groupsY', 'groupsZ'}}
 # Every qpel name is emitted verbatim into both CUDA C++ and Metal Shading Language, so it
 # must avoid qpel keywords, C++ keywords, CUDA built-ins and Metal keywords and type names.
 QPEL_KEYWORDS = set('void bool uint int float return if while for true false kernel device min max'.split()) | \
-    set('let fn module pipeline dispatch cast view math atomic qpel'.split())  # the text syntax (TEXT.md)
+    set('let fn module pipeline dispatch cast view math atomic qpel vec ref'.split())  # the text syntax (TEXT.md)
 CPP_KEYWORDS = set('''alignas alignof and and_eq asm auto bitand bitor bool break case catch char char8_t char16_t
     char32_t class compl concept const consteval constexpr constinit const_cast continue co_await co_return
     co_yield decltype default delete do double dynamic_cast else enum explicit export extern false float for
@@ -254,6 +256,8 @@ def validate_structure(nodes):
             fail(f"Invalid buffer type buffer<{a['element']}, {a['access']}>")
         if kind == 'ArrayType' and not is_valid(array(a['element'], a['length'])):
             fail(f"Invalid array type array<{a['element']}, {a['length']}>: a scalar element and 1 to 1024 of them")
+        if kind in ('VectorType', 'VectorValue') and not is_valid(vector(a['element'], a['length'])):
+            fail(f"Invalid vector type vec<{a['element']}, {a['length']}>: i32, u32 or f32 and 2 to 4 of them")
         if kind == 'Math' and a['function'] not in MATH:
             fail('Unknown math function ' + a['function'])
         if kind == 'Cast' and a['to'] not in SCALAR_TERMS - {'bool'}:

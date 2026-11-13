@@ -64,7 +64,7 @@ class Printer:
         params = []
         for p in self.children(f, 'parameters'):
             pa = p['attributes']
-            text = f'{pa["name"]}: {self.type(self.child(p, "type"))}'
+            text = ('ref ' if pa.get('reference') else '') + f'{pa["name"]}: {self.type(self.child(p, "type"))}'
             if pa.get('isBuffer'):
                 text += f' @{pa.get("binding", 0)}'
             params.append(text)
@@ -128,6 +128,8 @@ class Printer:
             return self.link(n, 'declaration')['attributes']['name']
         if k == 'ArrayValue':
             return '[' + args('elements') + ']'
+        if k == 'VectorValue':
+            return f'vec<{a["element"]}, {a["length"]}>(' + args('elements') + ')'
         if k == 'Literal':
             return a['value'] if a['value'] in ('true', 'false') else str(int(a['value'].rstrip('uU'))) + 'u'
         if k == 'I32Literal':
@@ -314,6 +316,13 @@ class Parser:
             return f'buffer<{element}, {access}>'
         if name == 'struct':
             return 'struct ' + self.take(kind='name')
+        if name == 'vec':
+            self.take('<')
+            element = self.take(kind='name')
+            self.take(',')
+            length = self.take(kind='number')
+            self.take('>')
+            return f'vec<{element}, {length}>'
         if name == 'array':
             self.take('<')
             element = self.take(kind='name')
@@ -333,6 +342,11 @@ class Parser:
             return self.add('BufferType', {'element': element, 'access': access})
         if t.startswith('struct '):
             return self.add('StructType', {'name': t[len('struct '):]})
+        if t.startswith('vec<'):
+            element, length = t[len('vec<'):-1].split(', ')
+            if not length.isdigit():
+                self.fail('a vector length is 2, 3 or 4')
+            return self.add('VectorType', {'element': element, 'length': int(length)})
         if t.startswith('array<'):
             element, length = t[len('array<'):-1].split(', ')
             if not length.isdigit():
@@ -349,10 +363,13 @@ class Parser:
         self.take('(')
         params = []
         while not self.accept(')'):
+            reference = self.peek()[1] == 'ref' and self.peek(1)[0] == 'name'
+            if reference:
+                self.take('ref')
             pname = self.take(kind='name')
             self.take(':')
             ptype = self.type()
-            attrs = {'name': pname}
+            attrs = {'name': pname} | ({'reference': True} if reference else {})
             if self.accept('@'):
                 attrs.update(binding=int(self.take(kind='number')), isBuffer=True)
             params.append(self.add('Parameter', attrs, {'type': ptype}))
@@ -532,6 +549,16 @@ class Parser:
         self.take()
         if value in ('true', 'false'):
             return self.add('Literal', {'value': value})
+        if value == 'vec':  # vec<f32, 3>(a, b, c)
+            self.take('<')
+            element = self.take(kind='name')
+            self.take(',')
+            length = self.take(kind='number')
+            self.take('>')
+            if not length.isdigit():
+                self.fail('a vector length is 2, 3 or 4')
+            return self.add('VectorValue', {'element': element, 'length': int(length)},
+                            {'elements': self.arguments()})
         if value in ('cast', 'view', 'const'):
             self.take('<')
             target = self.take(kind='name')

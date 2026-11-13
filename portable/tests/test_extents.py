@@ -120,7 +120,7 @@ void insert_host(torch::Tensor& table_keys, torch::Tensor& table_values, const t
         with self.assertRaisesRegex(Unsupported, 'indexed together with buffers of sizes M and N'):
             self.import_text(text)
 
-    def test_a_vector_local_becomes_a_local_array(self):
+    def test_a_vector_read_from_a_buffer_scales_it(self):
         from qpel_text import print_program
         program, report = self.import_text('''
 #include <torch/extension.h>
@@ -137,10 +137,9 @@ void host(const torch::Tensor& coords, torch::Tensor& out) {
   sum4<<<1, 64>>>(coords.size(0), coords.data_ptr<int32_t>(), out.data_ptr<int>());
 }''')
         text = print_program(program)
-        self.assertIn('let c: array<i32, 4> = [coords[(cast<i32>(qpel.index) * 4) + 0], coords[(cast<i32>(qpel.index) * 4) + 1]', text)
-        self.assertIn('d[3] = c[0];', text)
+        self.assertIn('let c: vec<i32, 4> = vec<i32, 4>(coords[(cast<i32>(qpel.index) * 4) + 0], coords[(cast<i32>(qpel.index) * 4) + 1]', text)
+        self.assertIn('d.w = c.x;', text)
         self.assertIn('input coords: buffer<i32, read> in M * 4;', text)
-        self.assertTrue(any('vector local c became array<i32, 4>' in a for a in report['adaptations']))
 
     def test_without_a_launch_site_one_size_remains(self):
         text = self.HOST[:self.HOST.index('void insert_host')]

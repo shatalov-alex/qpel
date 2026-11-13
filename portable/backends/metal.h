@@ -20,6 +20,27 @@ using namespace metal;
 #define QPEL_MIN(address, value) atomic_fetch_min_explicit((address), (value), memory_order_relaxed)
 
 #define QPEL_F32 float
+// IR version 4 reference parameters: the caller's local, read and written in place.
+#define QPEL_REF(T) thread T&
+// IR version 4 vectors: vec<T, N> is the platform vector type, built by its constructor.
+#define QPEL_VEC2_I32 int2
+#define QPEL_MAKE_VEC2_I32 int2
+#define QPEL_VEC3_I32 int3
+#define QPEL_MAKE_VEC3_I32 int3
+#define QPEL_VEC4_I32 int4
+#define QPEL_MAKE_VEC4_I32 int4
+#define QPEL_VEC2_U32 uint2
+#define QPEL_MAKE_VEC2_U32 uint2
+#define QPEL_VEC3_U32 uint3
+#define QPEL_MAKE_VEC3_U32 uint3
+#define QPEL_VEC4_U32 uint4
+#define QPEL_MAKE_VEC4_U32 uint4
+#define QPEL_VEC2_F32 float2
+#define QPEL_MAKE_VEC2_F32 float2
+#define QPEL_VEC3_F32 float3
+#define QPEL_MAKE_VEC3_F32 float3
+#define QPEL_VEC4_F32 float4
+#define QPEL_MAKE_VEC4_F32 float4
 #define QPEL_READ_F32 device const float*
 #define QPEL_WRITE_F32 device float*
 

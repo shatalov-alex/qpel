@@ -20,7 +20,11 @@ older programs keep building.
   receives. The importer reads sizes from the original's launch (`t.size(0)` next to
   `t.data_ptr<T>()`) and from buffers indexed together; the hash tables are now tested larger
   than their key lists.
-- **Vector locals and scaled buffers:** CUDA `int4`-style locals import as local arrays, and a
+- **Vectors and reference parameters (IR v4):** `vec<T, N>` values (i32, u32, f32; 2 to 4), copied,
+  passed and returned, with `.x .y .z .w`; CUDA's `int4`/`float3`/`make_float3` and Metal's vectors
+  import to them and print back. Helper parameters may be `ref` (CUDA `T&`, Metal `thread T&`); a
+  non-const C++ reference was previously read as a copy.
+- **Scaled buffers:** a
   buffer may hold k elements per element of its extent (`in M * 4`). The eight 3D hash kernels
   of TRELLIS.2 pass the behaviour rows (coverage 111 to 119 of 719 kernels).
 - **Compare-and-swap under contention:** up to 50,000 threads inserting colliding and repeated

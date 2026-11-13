@@ -5,7 +5,7 @@ and whole-resource pipeline effects, not numerical lowering, bounds or races.
 """
 import json
 from qpel_schema import validate_envelope, validate_structure
-from qpel_types import EXACT_MATH, validate_types, TypeChecker, LEGACY, term, is_buffer, element, access, is_signed, bits, unsigned_of, arithmetic, INTEGER_TERMS, is_array, array_element, array_length
+from qpel_types import is_vector, vector_element, vector_length, EXACT_MATH, validate_types, TypeChecker, LEGACY, term, is_buffer, element, access, is_signed, bits, unsigned_of, arithmetic, INTEGER_TERMS, is_array, array_element, array_length
 from qpel_pipeline import validate_pipeline
 from qpel_bounds import validate_static_bounds
 
@@ -15,8 +15,8 @@ LEGACY_MACROS={'void':'void','bool':'bool','u8':'QPEL_U8','u32':'QPEL_U32','i32'
        'buffer<u32, atomic>':'QPEL_ATOMIC_U32','buffer<i32, atomic>':'QPEL_ATOMIC_I32','buffer<i32, read>':'QPEL_READ_I32',
        'buffer<i32, write>':'QPEL_WRITE_I32','buffer<f32, read>':'QPEL_READ_F32','buffer<f32, write>':'QPEL_WRITE_F32',
        'buffer<f16, read>':'QPEL_READ_F16','buffer<f16, write>':'QPEL_WRITE_F16'}
-TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType','StructType','ArrayType'}
-KINDS=TYPE_KINDS|set('ArrayValue View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange Pipeline Resource Dispatch Binding'.split())
+TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType','StructType','ArrayType','VectorType'}
+KINDS=TYPE_KINDS|set('ArrayValue VectorValue View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange Pipeline Resource Dispatch Binding'.split())
 COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage','groups','math_exact','math_bounded'}
 PROFILES={'metal':COMMON_FEATURES,'cuda':COMMON_FEATURES}
 SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3',4:'qpel-portable-core-v4'}
@@ -28,12 +28,13 @@ V2_KINDS={'Grid3D','ThreadIndex','For','DoWhile','Break','Continue','I32Type','R
 V3_KINDS={'ScalarType','BufferType','Cast','Constant','Math','View','StructDecl','Field','StructType','Groups','GroupIndex','LocalIndex','GroupSize','GroupCount'}
 # Version 4 adds thread-private local arrays (array<T, N>, ArrayValue), compare-and-swap and
 # inout resources (filled by the caller, updated by the kernels, returned).
-V4_KINDS={'ArrayType','ArrayValue','AtomicCompareExchange'}
+V4_KINDS={'ArrayType','ArrayValue','AtomicCompareExchange','VectorType','VectorValue'}
 def type_macro(t):
     """Backend macro spelling a type term."""
     if t in LEGACY_MACROS:return LEGACY_MACROS[t]
     if t.startswith('struct '):return t[len('struct '):]
     if is_buffer(t):return ('QPEL_READ(' if access(t)=='read' else 'QPEL_WRITE(')+type_macro(element(t))+')'
+    if is_vector(t):return f'QPEL_VEC{vector_length(t)}_{vector_element(t).upper()}'  # int4, float3, ... (backends/*.h)
     return 'QPEL_'+t.upper()
 
 
@@ -75,6 +76,7 @@ def version_4_features(nodes):
     used={n['kind'] for n in nodes if n['kind'] in V4_KINDS}
     if any(n['kind']=='Resource' and n['attributes'].get('kind')=='inout' for n in nodes):used.add('inout')
     if any(n['kind']=='Resource' and 'scale' in n['attributes'] for n in nodes):used.add('buffer scale')
+    if any(n['kind']=='Parameter' and n['attributes'].get('reference') for n in nodes):used.add('reference parameter')
     return used
 
 
@@ -111,7 +113,7 @@ def validate(program, backend=None):
         if n['kind']=='Math':required.add('math_exact' if n['attributes']['function'] in EXACT_MATH else 'math_bounded')
         if n['kind'] in TYPE_KINDS|{'Cast','Constant'}:
             used=term(n) if n['kind'] in TYPE_KINDS else n['attributes'].get('to') or n['attributes'].get('scalar')
-            item=element(used) if is_buffer(used) else array_element(used) if is_array(used) else used
+            item=element(used) if is_buffer(used) else array_element(used) if is_array(used) else vector_element(used) if is_vector(used) else used
             if item in ('u8','i8','u16','i16') and n['kind'] not in LEGACY:required.add('int8_16')
             if item in ('u64','i64'):required.add('int64')
             if item=='bf16':required.add('bfloat16_storage')
@@ -176,6 +178,7 @@ class Lowering:
                 return 'QPEL_KERNEL '+e('resultType')+' '+a['name']+'('+args+' QPEL_GROUPS_PARAM) {\n'+e('body')+'\n}\n'
             return ('QPEL_KERNEL ' if kernel else 'QPEL_DEVICE ')+e('resultType')+' '+a['name']+'('+args+(' QPEL_GRID_PARAM(qpel_index)' if kernel else '')+') {\n'+('QPEL_GRID_LOCAL(qpel_index)\n' if kernel else '')+e('body')+'\n}\n'
         if k=='Parameter':
+            if a.get('reference'):return 'QPEL_REF('+e('type')+') '+a['name']  # T& (CUDA), thread T& (Metal)
             if not a.get('isBuffer',False):return e('type')+' '+a['name']
             declared=term(self.child(n,'type'))
             macro='QPEL_PARAM(' if is_buffer(declared) or declared=='shape3' else 'QPEL_VALUE('  # structs travel as values
@@ -249,6 +252,7 @@ class Lowering:
             return '('+a['operator']+operand+')'
         if k=='Index':return e('base')+'['+e('index')+']'
         if k=='ArrayValue':return '{'+joined('elements',', ')+'}'
+        if k=='VectorValue':return f"QPEL_MAKE_VEC{a['length']}_{a['element'].upper()}("+joined('elements',', ')+')'
         if k=='Member':return e('base')+'.'+a['member']
         if k=='Call':return self.link(n,'function')['attributes']['name']+'('+joined('arguments',', ')+')'
         if k in ('Minimum','Maximum'):
@@ -314,7 +318,7 @@ class Lowering:
         The build enables the matching support in backends/*.h; see FEATURE_DEFINES in build_backends."""
         nodes=self.nodes.values()
         terms=set(self.expression_types.values())|{term(n) for n in nodes if n['kind'] in TYPE_KINDS}
-        scalars={element(t) if is_buffer(t) else array_element(t) if is_array(t) else t for t in terms}
+        scalars={element(t) if is_buffer(t) else array_element(t) if is_array(t) else vector_element(t) if is_vector(t) else t for t in terms}
         from qpel_types import join
         for n in nodes:  # the type two integer operands are joined to may be neither's (i8 < i16 is in i32)
             if n['kind'] in ('Binary','Minimum','Maximum') and n['children'].get('right'):
