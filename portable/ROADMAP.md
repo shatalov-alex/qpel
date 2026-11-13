@@ -9,8 +9,8 @@ qpel is a neutral intermediate language between NVIDIA CUDA and Apple Metal: ker
 | 0 | Consolidation: one compiler, IR as the source of truth | done 2026-10-19 |
 | 1 | Offline Clang-based CUDA and Metal importers, round-trip matrix | done 2026-11-11 |
 | 2 | IR v3, real-world corpus (llama.cpp), text syntax, fuzzing, NVIDIA gate | done 2026-11-12 (GPGPU-Sim and a Tesla T4) |
-| 3 | First real port: PyTorch extensions (TRELLIS.2 pilot), header stubs, PyTorch op host, benchmarks v0 | in progress (test enrichment done) |
-| 4 | `qpel verify` for any port; public release | planned |
+| 3 | First real port: PyTorch extensions (TRELLIS.2 pilot), header stubs, PyTorch op host, benchmarks v0 | done 2026-11-14 (Apple GPU, CPU simulator, Tesla T4) |
+| 4 | `qpel verify` for any port; public release | in progress (verify v0 done) |
 | 5 | Breadth: shared memory, atomics, warp/simdgroup ops, block scans | planned |
 | 6 | Performance: matrix tiles, benchmarks | planned |
 | 7 | Libraries, Triton | later |
@@ -156,7 +156,7 @@ Pilot: Microsoft TRELLIS.2's `o-voxel` extension (13 kernels: Z-order and Hilber
 - Importer: cooperative-groups thread ranks, `atomicCAS` and the other integer atomics at 32 and 64 bits, `size_t` indexing idioms, and whatever else the pilot surfaces.
 - Minimal shared memory: static `__shared__` arrays and `__syncthreads` ↔ `threadgroup` arrays and `threadgroup_barrier`, as far as the rasteriser needs (general rules in Phase 5).
 - **PyTorch op host:** a generated Python function with the extension's signature that runs the Metal kernels on MPS tensors, so a Mac path sits next to the CUDA one.
-- **Benchmark harness v0:** time per kernel. Done for Metal (2026-11-13, `differential/bench.py`): all 39 Metal originals against qpel's Metal at 8M threads, none slower, geometric mean x0.93 in two runs (README, Benchmarks). Still to do: qpel's CUDA against the original on NVIDIA (`differential/hardware.py`, at the release run).
+- **Benchmark harness v0:** time per kernel. Done for Metal (2026-11-13, `differential/bench.py`): all 39 Metal originals against qpel's Metal at 8M threads, none slower, geometric mean x0.93 in two runs (README, Benchmarks). On NVIDIA (2026-11-14, Tesla T4, `differential/bench_cuda.py`): all 65 CUDA originals against qpel's CUDA, same outputs, geometric mean x1.00, range x0.78 to x1.97. Open for Phase 6: TRELLIS.2 render x1.97 and five kernels between x1.12 and x1.47 (README, Benchmarks).
 - `pip install qpel` (wheel, `qpel` command). Done, not published: `packaging/build_wheel.py` builds and checks the wheel; upload is a manual step at the release.
 - **Exit:** the pilot's kernels translated and verified on the CPU simulator, the Apple GPU and NVIDIA hardware, and timed; the port is ready to offer to the maintainers (at the public release, or earlier as standalone code).
 
@@ -166,6 +166,8 @@ Pilot: Microsoft TRELLIS.2's `o-voxel` extension (13 kernels: Z-order and Hilber
 - A machine-readable report, and an entry point an AI porting agent can call inside its loop.
 - Public release: final review of the docs, private vulnerability reporting, repository public; the Phase 3 port offered upstream.
 - **Exit:** a third-party hand port and an AI-generated port verified, with the results published.
+
+**Progress (2026-11-14):** verify v0 (`differential/verify.py`, `qpel verify`). The port is read only for its signatures; edge-value cases (NaN, ±inf, ±0, limits, subnormals where no Metal runs); first difference per case; JSON report; exit 0/1/2; in the wheel. All 14 example pairs agree both ways. Still to do: the NVIDIA side (a CUDA port on GPGPU-Sim or the T4), ports whose arguments differ in order or packing (a Metal args struct for CUDA scalars, as in llama.cpp), an MCP entry for agents, the third-party and AI-generated ports, and the release work.
 
 ### Phase 5: breadth for kernel libraries (≈6–8 weeks, v0.6.0)
 - Shared memory in general (static and dynamic) and barriers, with the uniformity checks generalised.

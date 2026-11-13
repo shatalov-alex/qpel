@@ -376,3 +376,210 @@ def for_program(name, plan, seed=20261111, values=None, shapes=None, inputs=None
             else:
                 raise ValueError(f'unknown value rule {rule!r} for {rule_name}')
     return cases
+
+
+# --- Benchmark-size cases for TRELLIS.2's families (vectorised: millions of keys) ---
+
+def distinct_slots(rng, draw, slots, bits, count):
+    """`count` of the drawn keys that hash to distinct slots (so distinct keys), in random order."""
+    _, first = np.unique(murmur_slot(draw, slots, bits), return_index=True)
+    chosen = draw[first]
+    if len(chosen) < count:
+        raise ValueError(f'only {len(chosen)} keys with distinct slots for {count}')
+    return chosen[rng.permutation(len(chosen))[:count]]
+
+
+def hashmap_bench(plan, seed, count):
+    """hashmap_cases at `count` keys in 2 x count slots (TRELLIS.2 allocates twice the keys)."""
+    rng = np.random.default_rng(seed)
+    types = {r['name']: DTYPES[r['type']] for r in plan['resources'] if r['kind'] not in ('shape', 'value')}
+    key_type, value_type = types['hashmap_keys'], types['hashmap_values']
+    bits, empty = 8 * np.dtype(key_type).itemsize, np.iinfo(key_type).max
+    extents = {r['name']: r['extent'] for r in plan['resources'] if r['kind'] not in ('shape', 'value')}
+    table_shape, keys_shape = extents['hashmap_keys'], extents['keys']
+    slots = count if table_shape == keys_shape else 2 * count
+    inserting = any(r['name'] == 'hashmap_keys' and r['kind'] == 'inout' for r in plan['resources'])
+    draw = rng.integers(0, empty, 4 * count, dtype=key_type)
+    if inserting:
+        keys = distinct_slots(rng, draw, slots, bits, count)
+        inputs = {'hashmap_keys': np.full(slots, empty, key_type), 'hashmap_values': np.zeros(slots, value_type),
+                  'keys': keys, 'values': rng.integers(0, np.iinfo(value_type).max, count, dtype=value_type, endpoint=True)}
+    else:
+        present = distinct_slots(rng, draw, slots, bits, slots // 2)
+        table, stored = np.full(slots, empty, key_type), np.zeros(slots, value_type)
+        where = murmur_slot(present, slots, bits).astype(np.int64)
+        table[where] = present
+        stored[where] = rng.integers(0, np.iinfo(value_type).max, len(present), dtype=value_type)
+        probes = np.where(rng.random(count) < 0.5, rng.choice(present, count),
+                          rng.integers(0, empty, count, dtype=key_type)).astype(key_type)
+        inputs = {'hashmap_keys': table, 'hashmap_values': stored, 'keys': probes}
+    return Case({table_shape: (slots, 1, 1), keys_shape: (count, 1, 1)}, inputs, {}, f'{slots} slots, {count} keys')
+
+
+def hash3d_bench(plan, seed, count):
+    """hash3d_cases at `count` coordinates (batch 0-2 in 256 x 256 x 128) in 2 x count slots."""
+    rng = np.random.default_rng(seed)
+    resources = {r['name']: r for r in plan['resources']}
+    keys_name = 'hashmap_keys' if 'hashmap_keys' in resources else 'hashmap'
+    values_name = 'hashmap_values' if 'hashmap_values' in resources else 'values'
+    key_type, value_type = DTYPES[resources[keys_name]['type']], DTYPES[resources[values_name]['type']]
+    bits, empty = 8 * np.dtype(key_type).itemsize, np.iinfo(key_type).max
+    table_shape, coords_shape = resources[keys_name]['extent'], resources['coords']['extent']
+    slots, (w, h, d) = 2 * count, (256, 256, 128)
+
+    def coordinates(n):
+        return np.column_stack([rng.integers(0, 3, n), rng.integers(0, w, n), rng.integers(0, h, n),
+                                rng.integers(0, d, n)]).astype(np.int32)
+
+    def keys(c):
+        k = (c[:, 0].astype(np.int64) * w * h * d + c[:, 1].astype(np.int64) * h * d + c[:, 2].astype(np.int64) * d
+             + c[:, 3])  # below 2**25: the same in 32 and 64 bits
+        return k.astype(key_type)
+    values = {'W': w, 'H': h, 'D': d}
+    if resources[keys_name]['kind'] == 'inout':
+        drawn = coordinates(4 * count)
+        _, first = np.unique(murmur_slot(keys(drawn), slots, bits), return_index=True)
+        coords = drawn[first][rng.permutation(len(first))[:count]]
+        inputs = {keys_name: np.full(slots, empty, key_type), values_name: np.zeros(slots, value_type),
+                  'coords': coords.reshape(-1)}
+        if 'values' in resources and values_name != 'values':
+            inputs['values'] = rng.integers(0, np.iinfo(value_type).max, count, dtype=value_type, endpoint=True)
+    else:
+        drawn = coordinates(2 * slots)
+        _, first = np.unique(murmur_slot(keys(drawn), slots, bits), return_index=True)
+        present = drawn[first][: slots // 2]
+        table, stored = np.full(slots, empty, key_type), np.zeros(slots, value_type)
+        where = murmur_slot(keys(present), slots, bits).astype(np.int64)
+        table[where] = keys(present)
+        stored[where] = rng.integers(0, np.iinfo(value_type).max, len(present), dtype=value_type)
+        probes = np.where((rng.random(count) < 0.5)[:, None], present[rng.integers(0, len(present), count)],
+                          coordinates(count))
+        outside = rng.random(count) < 0.1  # outside the volume on one axis
+        axis = rng.integers(1, 4, count)
+        probes[outside, axis[outside]] = -1
+        inputs = {keys_name: table, values_name: stored, 'coords': probes.astype(np.int32).reshape(-1)}
+    return Case({table_shape: (slots, 1, 1), coords_shape: (count, 1, 1)}, inputs, values,
+                f'{slots} slots, {count} coordinates')
+
+
+def raster_bench(plan, seed, size):
+    """raster_cases at an image of size[0] x size[1] with size volume / 8 voxels."""
+    rng = np.random.default_rng(seed)
+    names = {r['name'] for r in plan['resources']}
+    w, h = size[0], size[1]
+    count = max(volume(size) // 8, 1)
+    grid = (-(-w // TILE), -(-h // TILE), 1)
+    tiles = grid[0] * grid[1]
+    if 'positions' in names and 'point_list' not in names:  # preprocess
+        view, proj = camera(rng)
+        depth = rng.uniform(-0.5, 6.0, count)
+        spread = rng.uniform(-1.2, 1.2, (count, 2)) * np.maximum(depth, 0.3)[:, None]
+        inputs = {'positions': np.column_stack([spread, depth]).astype(np.float32).reshape(-1), 'viewmatrix': view,
+                  'projmatrix': proj, 'bboxes': np.zeros(4 * count, np.int32), 'depths': np.zeros(count, np.float32),
+                  'tiles_touched': np.zeros(count, np.uint32)}
+        values = {'voxel_size': float(np.float32(rng.uniform(0.002, 0.01))), 'width': w, 'height': h}
+        return Case({'num_nodes': (count, 1, 1), 'grid': grid}, inputs, values, f'{count} voxels, {w}x{h}')
+    if 'offsets' in names:  # duplicateWithKeys: boxes up to 32 pixels, 80% non-empty
+        x0, y0 = rng.integers(0, w, count), rng.integers(0, h, count)
+        x1 = np.minimum(x0 + rng.integers(1, 33, count), w)
+        y1 = np.minimum(y0 + rng.integers(1, 33, count), h)
+        lx, ly = np.minimum(grid[0], x0 // TILE), np.minimum(grid[1], y0 // TILE)
+        hx, hy = np.minimum(grid[0], (x1 + TILE - 1) // TILE), np.minimum(grid[1], (y1 + TILE - 1) // TILE)
+        keep = rng.random(count) < 0.8
+        boxes = np.where(keep[:, None], np.column_stack([x0, y0, x1, y1]), 0).astype(np.int32)
+        touched = np.where(keep, (hx - lx) * (hy - ly), 0)
+        offsets = np.cumsum(touched).astype(np.int64)
+        rendered = int(offsets[-1])
+        inputs = {'depths': rng.uniform(0.2, 9.0, count).astype(np.float32), 'offsets': offsets,
+                  'bboxes': boxes.reshape(-1), 'keys_unsorted': np.zeros(rendered, np.int64),
+                  'values_unsorted': np.zeros(rendered, np.uint32)}
+        return Case({'P': (count, 1, 1), 'grid': grid, 'rendered': (rendered, 1, 1)}, inputs, {},
+                    f'{count} voxels, {rendered} tile instances, {w}x{h}')
+    if 'point_list' in names:  # render: up to 70 voxels per tile, 85% of tiles
+        view, _ = camera(rng)
+        channels, voxels = 3, max(count // 4, 1)
+        depth = rng.uniform(1.5, 5.0, voxels)
+        spread = rng.uniform(-0.6, 0.6, (voxels, 2)) * depth[:, None]
+        lengths = np.where(rng.random(tiles) < 0.85, rng.integers(0, 71, tiles), 0)
+        ends = np.cumsum(lengths)
+        ranges = np.column_stack([ends - lengths, ends]).astype(np.uint32).reshape(-1)
+        point_list = rng.integers(0, voxels, max(int(ends[-1]), 1)).astype(np.uint32)
+        inputs = {'ranges': ranges, 'point_list': point_list, 'cam_pos': rng.uniform(-0.1, 0.1, 3).astype(np.float32),
+                  'viewmatrix': view, 'positions': np.column_stack([spread, depth]).astype(np.float32).reshape(-1),
+                  'attrs': rng.uniform(0, 1, voxels * channels).astype(np.float32),
+                  'out_color': np.zeros(channels * w * h, np.float32), 'out_depth': np.zeros(w * h, np.float32),
+                  'out_alpha': np.zeros(w * h, np.float32)}
+        values = {'C': channels, 'W': w, 'H': h, 'tan_fovx': 0.5, 'tan_fovy': 0.5, 'voxel_size': 0.01}
+        return Case({'image': (w, h, 1), 'color': (w, h, channels), 'tiles': (tiles, 1, 1),
+                     'rendered': (len(point_list), 1, 1), 'voxels': (voxels, 1, 1),
+                     'attributes': (voxels * channels, 1, 1)}, inputs, values,
+                    f'{voxels} voxels, {len(point_list)} in tiles, {w}x{h}x{channels}', defined={'out_depth': 'out_alpha'})
+    tile = np.sort(rng.integers(0, tiles, count)).astype(np.int64)  # identifyTileRanges
+    depth_bits = rng.uniform(0.2, 9.0, count).astype(np.float32).view(np.uint32).astype(np.int64)
+    inputs = {'point_list_keys': np.sort((tile << 32) | depth_bits), 'ranges': np.zeros(2 * tiles, np.uint32)}
+    return Case({'L': (count, 1, 1), 'tiles': (tiles, 1, 1)}, inputs, {}, f'{count} keys, {tiles} tiles')
+
+
+BENCH_FAMILIES = {'trellis2_hashmap_': lambda plan, seed, size: hashmap_bench(plan, seed, max(volume(size) // 8, 1)),
+                  'trellis2_hash3d_': lambda plan, seed, size: hash3d_bench(plan, seed, max(volume(size) // 8, 1)),
+                  'trellis2_raster_': raster_bench}
+
+
+def scaled_case(name, plan, options, size):
+    """One case at the dispatch shape `size`, with the program's own value rules (benchmarks).
+    A program sized in bytes (llama.cpp rows: its shape's W counts bytes of a typed byte buffer)
+    gets W elements. TRELLIS.2's hash tables and rasteriser get their benchmark generators
+    (BENCH_FAMILIES); None for other families, and for programs that size themselves without
+    byte rows."""
+    for prefix, family in BENCH_FAMILIES.items():
+        if name.startswith(prefix):
+            return family(plan, 20261111, tuple(size))
+    if any(name.startswith(prefix) for prefix in PREFIXES):
+        return None
+    typed = {**(options.get('inputs') or {}), **(options.get('outputs') or {})}
+    if options.get('shapes'):
+        if not typed:
+            return None
+        element = max(np.dtype(DTYPES[t]).itemsize for t in typed.values())
+        size = (size[0] * element,) + tuple(size[1:])
+    return for_program(name, plan, values=options.get('values'), shapes=[tuple(size)],
+                       inputs=options.get('inputs'))[0]
+
+
+def edge_values(dtype, subnormals=True):
+    """The values most likely to separate two implementations of one kernel, per element type.
+    subnormals=False leaves them out: Apple GPUs flush them to zero (NUMERICS.md), so a kernel
+    given one gives different results on Metal and on CUDA whatever the port does."""
+    dtype = np.dtype(dtype)
+    if dtype.kind == 'f':
+        info = np.finfo(dtype)
+        tiny, sub = float(info.tiny), float(info.tiny) / 4  # smallest normal; a subnormal
+        values = [np.nan, np.inf, -np.inf, 0.0, -0.0, 1.0, -1.0, 0.5, -0.5, float(info.max), -float(info.max),
+                  tiny, -tiny, float(info.eps), 1 + float(info.eps), 2.0**11 + 1, -(2.0**11 + 1)]
+        return np.array(values + ([sub, -sub] if subnormals else []), dtype)
+    info = np.iinfo(dtype)
+    values = [0, 1, info.max, info.max - 1, info.min, info.min + 1, info.max // 2, info.max // 2 + 1]
+    if info.min < 0:
+        values += [-1, -2]
+    return np.array(values, dtype)
+
+
+def with_edges(cases, plan, seed, subnormals=True):
+    """Copies of the cases with at least 17 elements per buffer whose input buffers mix edge
+    values (edge_values) into their random ones: about one element in three, at random places."""
+    rng = np.random.default_rng(seed + 2)
+    resources = {r['name']: r for r in plan['resources']}
+    out = []
+    for case in cases:
+        buffers = {name: a for name, a in case.inputs.items() if resources.get(name, {}).get('kind') in ('input', 'inout')}
+        if not buffers or min(np.asarray(a).size for a in buffers.values()) < 17:
+            continue
+        inputs = dict(case.inputs)
+        for name, array in buffers.items():
+            array = np.array(array, copy=True)
+            pool = edge_values(array.dtype, subnormals)
+            where = rng.random(array.size) < 1 / 3
+            array.reshape(-1)[where] = rng.choice(pool, int(where.sum()))
+            inputs[name] = array
+        out.append(Case(case.shapes, inputs, dict(case.values), f'{case.label} edge values', case.defined))
+    return out

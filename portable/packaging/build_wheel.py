@@ -33,14 +33,17 @@ VERSION = '0.4.0.dev0'
 MODULES = ['qpel_bounds', 'qpel_ir', 'qpel_pipeline', 'qpel_schema', 'qpel_text', 'qpel_types', 'qpel_uniform',
            'build_backends', 'generate_cuda_host', 'generate_metal_host']
 FRONTENDS = ['__init__', 'c_import', 'clang_ast', 'torch_op']  # roundtrip and corpus need the repository's corpus
+DIFFERENTIAL = ['__init__', 'cases', 'compare', 'metal', 'simulate', 'verify']  # what `qpel verify` runs
 FLAT = '|'.join(MODULES)
 IMPORTS = [
     (re.compile(rf'^(\s*)from ({FLAT}) import ', re.M), r'\1from qpel.\2 import '),
     (re.compile(rf'^(\s*)import ({FLAT})$', re.M), r'\1from qpel import \2'),
     (re.compile(r'^(\s*)from frontends(\.\w+)? import ', re.M), r'\1from qpel.frontends\2 import '),
+    (re.compile(r'^(\s*)from differential(\.\w+)? import ', re.M), r'\1from qpel.differential\2 import '),
     (re.compile(r'^(\s*)from qpel import ', re.M), r'\1from qpel.cli import '),
 ]
 LEFT_BEHIND = re.compile(rf'^\s*(from|import) ({FLAT}|frontends|qpel_test_support|differential|fuzz)\b', re.M)
+LEFT_BEHIND_RELATIVE = re.compile(r'^\s*from \.(matrix|roundtrip|gpgpusim|hardware|bench\w*) import', re.M)
 
 PYPROJECT = f'''[build-system]
 requires = ["setuptools>=69"]
@@ -64,17 +67,19 @@ classifiers = [
 
 [project.optional-dependencies]
 mps = ["torch>=2.6", "numpy>=2.0"]
+verify = ["numpy>=2.0"]  # qpel verify; running Metal sides also needs the mps extra
 
 [project.scripts]
 qpel = "qpel.cli:main"
 
 [tool.setuptools]
-packages = ["qpel", "qpel.backends", "qpel.frontends"]
+packages = ["qpel", "qpel.backends", "qpel.frontends", "qpel.differential"]
 include-package-data = true
 
 [tool.setuptools.package-data]
 "qpel.backends" = ["*.h"]
 "qpel.frontends" = ["include/**/*"]
+"qpel.differential" = ["include/**/*"]
 '''
 
 README = '''# qpel
@@ -88,6 +93,8 @@ pip install "qpel[mps]"          # PyTorch and NumPy, to run the generated Metal
 qpel build program.qpel --out build/
 qpel translate kernels.cu --out translated/      # needs clang on the PATH
 qpel torch-op translated/ --launches extension_api.cu
+pip install "qpel[verify]"       # NumPy, for checking ports
+qpel verify original.cu port.metal               # a port against its original, on the same cases
 ```
 
 Importing CUDA needs clang (Xcode's or LLVM's); importing Metal needs Xcode's Metal toolchain.
@@ -99,7 +106,7 @@ Apache-2.0.
 def rewrite(text, name):
     for pattern, replacement in IMPORTS:
         text = pattern.sub(replacement, text)
-    left = LEFT_BEHIND.findall(text)
+    left = LEFT_BEHIND.findall(text) + LEFT_BEHIND_RELATIVE.findall(text)
     if left:
         raise SystemExit(f'{name}: imports outside the package remain: {left}')
     return text
@@ -121,6 +128,12 @@ def stage(folder):
     for name in FRONTENDS:
         (package/'frontends'/f'{name}.py').write_text(rewrite((PORTABLE/'frontends'/f'{name}.py').read_text(), name))
     shutil.copytree(PORTABLE/'frontends/include', package/'frontends/include')
+    (package/'differential').mkdir()
+    for name in DIFFERENTIAL:
+        (package/'differential'/f'{name}.py').write_text(
+            rewrite((PORTABLE/'differential'/f'{name}.py').read_text(), 'differential/' + name))
+    shutil.copytree(PORTABLE/'differential/include', package/'differential/include',
+                    ignore=shutil.ignore_patterns('__pycache__'))
     for name in ('LICENSE', 'NOTICE', 'TRADEMARKS.md'):
         shutil.copy(ROOT/name, folder)
     (folder/'README.md').write_text(README)
@@ -145,6 +158,12 @@ def smoke_test(wheel, work):
              'assert "frontends" not in sys.modules and "qpel_ir" not in sys.modules; '
              'assert qpel.cli.__file__.startswith(sys.prefix), qpel.cli.__file__; print(qpel.__version__)')
     version = subprocess.run([str(python), '-I', '-c', check], check=True, cwd=work, capture_output=True, text=True)
+    if shutil.which('clang'):  # qpel verify from the installed package: CUDA against itself, CPU simulator
+        subprocess.run(['uv', 'pip', 'install', '-q', '--python', str(python), 'numpy'], check=True)
+        source = str(PORTABLE/'cuda_examples/scale_offset.cu')
+        result = subprocess.run([str(venv/'bin/qpel'), 'verify', source, source], cwd=work, capture_output=True, text=True)
+        if result.returncode or 'cases agree' not in result.stdout:
+            raise SystemExit('smoke test: qpel verify failed:\n' + result.stdout[-1500:] + result.stderr[-1500:])
     if shutil.which('clang'):  # import a CUDA source through the installed package (clang stub headers)
         result = subprocess.run([str(venv/'bin/qpel'), 'translate', str(PORTABLE/'cuda_examples/scale_offset.cu'),
                                  '--out', str(work/'translated')], cwd=work, capture_output=True, text=True)

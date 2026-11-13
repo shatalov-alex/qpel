@@ -88,8 +88,9 @@ Once the pull requests are merged, pin `GPGPUSIM_COMMIT` past them and drop the 
 GPGPU-Sim, for the original and qpel's CUDA alike (the CPU simulator and the Apple GPU
 agree with each other). Tracing one pixel shows a bool (`inside`) changing between its
 definition and its use; the instructions involved (16-bit bool registers, predicates
-across scoped `bar.red` blocks) each behave correctly in isolation. `render` is checked on
-real NVIDIA hardware (Kaggle T4) at the next release instead. The same fuzzing run found one qpel bug, in the importer
+across scoped `bar.red` blocks) each behave correctly in isolation. On real NVIDIA hardware
+(Tesla T4, 2026-11-14) `render` passes all 24 cases for the original and for qpel's CUDA, so
+this is a simulator problem; the GPGPU-Sim row stays skipped. The same fuzzing run found one qpel bug, in the importer
 (`fuzz/regressions/unsigned_to_i32_literal.qpel`).
 
 ## What this does not prove

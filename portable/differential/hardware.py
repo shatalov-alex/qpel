@@ -65,6 +65,12 @@ run() {
 export -f run
 find "$B" -mindepth 3 -maxdepth 3 -type d -name 'c[0-9]*' | xargs -P 4 -I{} bash -c 'run {}'
 echo "rows: $(( $(date +%s) - start ))s" > timing.txt
+if [ -f bench.json ] && [ -d portable ]; then
+  start=$(date +%s)
+  (cd portable && timeout 1200 python3 -m differential.bench_cuda run "$B") > bench.log 2>&1
+  echo $? > bench.status
+  echo "benchmarks: $(( $(date +%s) - start ))s" >> timing.txt
+fi
 if [ -d portable ] && [ "${QPEL_SKIP_CUPY:-0}" != 1 ]; then
   start=$(date +%s)
   (cd portable && timeout 900 python3 gpu_tests/run_gpu_tests.py --device cuda) > cupy_host.log 2>&1
@@ -90,7 +96,8 @@ def build(root):
 
 
 def bundle(root, out, cupy=True):
-    """out/bundle.tar.gz: what the GPU machine needs, and nothing else."""
+    """cupy: also the compiler sources, which the CuPy host tests and the benchmarks need."""
+    # out/bundle.tar.gz: what the GPU machine needs, and nothing else.
     out.mkdir(parents=True, exist_ok=True)
     (root/'run.sh').write_text(RUN_SCRIPT)
     path = out/'bundle.tar.gz'
@@ -148,7 +155,8 @@ except ImportError:
     mark('cupy installed')
 subprocess.run(['bash', work + '/run.sh'], env=env)
 mark('run.sh done')
-for name in ('results.tar.gz', 'gpu.txt', 'timing.txt', 'selftest.log', 'cupy_host.log'):
+for name in ('results.tar.gz', 'gpu.txt', 'timing.txt', 'selftest.log', 'cupy_host.log', 'bench.log',
+             'bench_cuda.json'):
     if os.path.exists(f'{work}/{name}'):
         shutil.copy(f'{work}/{name}', '/kaggle/working/')
 '''
@@ -229,6 +237,9 @@ def main(argv=None):
     parser.add_argument('--kaggle-cli', default=shutil.which('kaggle') or 'kaggle')
     parser.add_argument('--timeout', type=int, default=1500, help='Kaggle run time limit in seconds')
     parser.add_argument('--no-cupy', action='store_true', help='leave out the CuPy host fixture tests')
+    parser.add_argument('--bench-size', type=int, nargs=3, default=(2048, 1024, 4), metavar=('W', 'H', 'N'),
+                        help='benchmark size of every CUDA original and its translation (differential/bench_cuda.py)')
+    parser.add_argument('--no-bench', action='store_true', help='leave out the CUDA benchmarks')
     parser.add_argument('--out', type=Path, help='keep the bundle and the downloaded results here')
     args = parser.parse_args(argv)
     out = (args.bundle_only or args.out or Path(tempfile.mkdtemp(prefix='qpel-hardware-'))).resolve()
@@ -238,6 +249,8 @@ def main(argv=None):
     def execute(root):
         started = time.time()
         build(root)
+        if args.no_cupy and (root/'bench.json').exists():
+            (root/'bench.json').unlink()  # the benchmarks run from the compiler sources the CuPy step ships
         path = bundle(root, out, cupy=not args.no_cupy)
         print(f'built and bundled in {time.time() - started:.0f}s: {path} ({path.stat().st_size >> 10} KiB)',
               flush=True)
@@ -247,7 +260,8 @@ def main(argv=None):
         print(f'uploaded {dataset}; running on Kaggle', flush=True)
         results = remote.run(dataset, out/'kaggle')
         unpack_results(root, results)
-        for name in ('gpu.txt', 'timing.txt', 'selftest.log', 'selftest.status', 'cupy_host.log', 'cupy_host.status'):
+        for name in ('gpu.txt', 'timing.txt', 'selftest.log', 'selftest.status', 'cupy_host.log', 'cupy_host.status',
+                     'bench.log', 'bench.status', 'bench_cuda.json'):
             for folder in (root, out/'kaggle'):
                 if (folder/name).exists():
                     details[name] = (folder/name).read_text(errors='replace').strip()
@@ -263,7 +277,8 @@ def main(argv=None):
         found = []
     else:
         found = gpgpusim.prepared_rows(args.programs or None, None, execute, keep=False,
-                                       prefix='qpel-hardware-', device='nvidia hw')
+                                       prefix='qpel-hardware-', device='nvidia hw',
+                                       bench_size=None if args.no_bench else tuple(args.bench_size))
     for row, label, error in found:
         if error and error.startswith('skipped'):
             print(f'SKIP {row:34} {label}: {error}')
@@ -283,6 +298,13 @@ def main(argv=None):
     cupy = details.get('cupy_host.log', '').splitlines()
     print('CuPy host:', cupy[-1] if cupy else 'not run', f'(exit {details.get("cupy_host.status", "?")})')
     print('remote time:', details.get('timing.txt', '?').replace('\n', ', '))
+    if 'bench_cuda.json' in details:
+        from . import bench_cuda
+        (out/'bench_cuda.json').write_text(details['bench_cuda.json'] + '\n')
+        print(f'\n=== CUDA benchmarks ({out/"bench_cuda.json"})')
+        bench_cuda.report(json.loads(details['bench_cuda.json']))
+    elif not args.no_bench and not args.cupy_only:
+        print('CUDA benchmarks: no results', details.get('bench.log', '')[-1500:])
     print(('all NVIDIA hardware rows passed' if not failures else f'{failures} cases failed'))
     selftest_ok = details.get('selftest.status') == '0'
     cupy_ok = args.no_cupy or details.get('cupy_host.status') == '0'

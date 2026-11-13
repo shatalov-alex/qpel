@@ -24,6 +24,7 @@ then every case runs in parallel, each in its own folder.
     python3 -m differential.gpgpusim box_sum llama_arange_f32
 """
 import argparse
+import json
 import os
 from pathlib import Path
 import shutil
@@ -42,7 +43,7 @@ DOCKERFILE = HERE/'gpgpusim'
 # the CPU simulator and the Apple GPU agree (gpgpusim/README.md, Open). Real NVIDIA hardware
 # (differential/hardware.py) runs them.
 SIMULATOR_ISSUES = {'trellis2_raster_render': 'skipped: GPGPU-Sim finds no voxel for the original either '
-                                              '(gpgpusim/README.md, Open); to check on real NVIDIA hardware (Kaggle T4)'}
+                                              '(gpgpusim/README.md, Open); it passes on a Tesla T4 (differential/hardware.py)'}
 CONFIG = 'SM75_RTX2060'
 ARCH = 'compute_75'
 
@@ -73,7 +74,7 @@ class GpuProgram(Program):
     container (run_all). Same inputs, launch geometry and argument mapping as the simulator."""
 
     MAIN = 'main.cu'
-    HEADERS = ('<cuda_runtime.h>', '<cuda_fp16.h>', '<cuda_bf16.h>', '<cstdio>')
+    HEADERS = ('<cuda_runtime.h>', '<cuda_fp16.h>', '<cuda_bf16.h>', '<cstdio>', '<algorithm>')
 
     def __init__(self, source, plan, work, fmad=True, **options):
         Path(work).mkdir(parents=True, exist_ok=True)
@@ -103,7 +104,55 @@ class GpuProgram(Program):
     def buffer(self, name):
         return f'Ptr{{d_{name}}}'
 
+    timing = False  # while the timed launches are written: no synchronisation between stages
+
+    def program(self, source):
+        """The behaviour program, plus a timed loop when the case folder holds `time` (benchmarks).
+
+        Before each repetition the loop restores the inout buffers and clears the outputs
+        (untimed); it then times every stage's launch between two CUDA events. After two untimed
+        repetitions it repeats for at least 0.3 s (5 to 200 times) and writes the median
+        milliseconds and the count to time.txt."""
+        text = super().program(source)
+        self.timing = True
+        try:
+            launches = [line for s in self.plan['stages'] for line in self.stage(s)]
+        finally:
+            self.timing = False
+        data = [r for r in self.plan['resources'] if r['kind'] not in ('shape', 'value')]
+        restore = []
+        for r in data:
+            name = r['name']
+            if r['kind'] == 'inout':
+                restore.append(f'      cudaMemcpy(d_{name}, t_{name}.data(), t_{name}.size(), cudaMemcpyHostToDevice);')
+            elif r['kind'] == 'output':
+                restore.append(f'      cudaMemset(d_{name}, 0, b_{name}.size());')
+        block = ['  if (std::ifstream(dir + "/time")) {',
+                 *[f'    std::vector<char> t_{r["name"]} = load(dir + "/{r["name"]}.bin");' for r in data if r['kind'] == 'inout'],
+                 '    cudaEvent_t start, stop; cudaEventCreate(&start); cudaEventCreate(&stop);',
+                 '    for (int warm = 0; warm < 2; ++warm) {',
+                 *['  ' + line for line in restore + launches],
+                 '    }',
+                 '    std::vector<float> times; float total = 0;',
+                 '    while (times.size() < 200 && (total < 300 || times.size() < 5)) {',
+                 *restore,
+                 '      cudaDeviceSynchronize(); cudaEventRecord(start);',
+                 *['  ' + line for line in launches],
+                 '      cudaEventRecord(stop); cudaEventSynchronize(stop);',
+                 '      float ms = 0; cudaEventElapsedTime(&ms, start, stop); times.push_back(ms); total += ms;',
+                 '    }',
+                 '    std::sort(times.begin(), times.end());',
+                 '    std::ofstream(dir + "/time.txt") << times[times.size() / 2] << " " << times.size() << "\\n";',
+                 '  }']
+        tail = '  return 0;\n}\n'
+        assert text.endswith(tail)
+        return text[:-len(tail)] + '\n'.join(block) + '\n' + tail
+
     def launch(self, kernel, callee, args, g, b):
+        if self.timing:
+            return [f'  {{ dim3 g({", ".join(g)}), b({", ".join(b)});',
+                    f'    {callee}<<<g, b>>>({", ".join(args)});',
+                    f'    if (cudaGetLastError() != cudaSuccess) {{ std::fprintf(stderr, "{kernel}: launch failed\\n"); return 3; }} }}']
         return [f'  {{ dim3 g({", ".join(g)}), b({", ".join(b)});',
                 f'    {callee}<<<g, b>>>({", ".join(args)});',
                 '    cudaError_t e = cudaGetLastError(); if (e == cudaSuccess) e = cudaDeviceSynchronize();',
@@ -179,10 +228,13 @@ def rows(names=None, gpu=None, config=CONFIG, functional=True, keep=False):
                              'qpel-gpgpusim-', skip=SIMULATOR_ISSUES)
 
 
-def prepared_rows(names, gpu, execute, keep=False, prefix='qpel-nvidia-', device='nvidia', skip=None):
+def prepared_rows(names, gpu, execute, keep=False, prefix='qpel-nvidia-', device='nvidia', skip=None,
+                  bench_size=None):
     """Write a CUDA host program and its cases for every original (GpuProgram), call
     execute(root) to compile and run them all, then compare each case with its reference.
-    Program folders are root/s*/p_*/ (main.cu, nvcc.args), cases their c*/ subfolders."""
+    Program folders are root/s*/p_*/ (main.cu, nvcc.args), cases their c*/ subfolders.
+    With bench_size, root/bench.json also lists every CUDA original and its qpel translation
+    for differential/bench_cuda.py, which times both at that size on the GPU machine."""
     if gpu is None:
         try:
             from . import metal
@@ -191,6 +243,7 @@ def prepared_rows(names, gpu, execute, keep=False, prefix='qpel-nvidia-', device
             gpu = False
     root = Path(tempfile.mkdtemp(prefix=prefix)).resolve()
     pending = []  # (row, label, prepared, program, case, folder, expected)
+    benchmarks = []
     try:
         for index, (name, path, dialect, plan, include, grids, options) in enumerate(matrix.sources()):
             if names and name not in names:
@@ -213,6 +266,13 @@ def prepared_rows(names, gpu, execute, keep=False, prefix='qpel-nvidia-', device
                     targets.append((f'{device}: cuda original',
                                     GpuProgram(path, plan, work/'p_original', fmad=False, original=p.report,
                                                include=include, grids=grids)))
+                if bench_size and dialect == 'cuda':
+                    benchmarks.append({'name': name, 'source': path.name, 'size': list(bench_size),
+                                       'plan': targets[0][1].plan, 'options': p.options, 'outputs': p.outputs,
+                                       'programs': {side: {'dir': str(program.work.relative_to(root)),
+                                                           'scalars': program.scalars, 'grids': program.grids,
+                                                           'original': bool(program.original)}
+                                                    for side, (_, program) in zip(('qpel', 'original'), targets)}})
                 for number, case in enumerate(p.cases()):
                     label = f'{path.name} {case.label} [{name}]'
                     if reference:
@@ -229,6 +289,8 @@ def prepared_rows(names, gpu, execute, keep=False, prefix='qpel-nvidia-', device
                         pending.append((row, label, p, program, case, folder, expected))
             except (ValueError, RuntimeError) as error:
                 yield f'{device}: {dialect} -> qpel', path.name, str(error)
+        if benchmarks:
+            (root/'bench.json').write_text(json.dumps(benchmarks))
         if pending:
             execute(root)
         for row, label, p, program, case, folder, expected in pending:

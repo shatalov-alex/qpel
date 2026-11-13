@@ -4,10 +4,27 @@ Notable changes to qpel, by milestone. Dates are when the milestone was reached 
 The IR has its own version (currently 4), recorded in every program and launch plan;
 older programs keep building.
 
-## [Unreleased] — Phase 3
+## [Unreleased] — Phase 4
 
 ### Added
-- **Benchmarks v0 (`differential/bench.py`):** every Metal original against qpel's Metal at a
+- **`qpel verify original port`:** a port (CUDA or Metal, hand-written or AI-generated) against
+  its original on the same cases. The port is read only for its kernel signatures, so it need
+  not import to qpel. The cases include edge values (NaN, infinities, signed zeros, limits;
+  subnormals where neither side is Metal). It reports the first difference per case, writes a
+  JSON report, and exits 0, 1 or 2. Ships in the wheel (`qpel[verify]`).
+  `differential/compare.py` holds the comparison shared with the behaviour rows.
+
+## Phase 3 — 2026-11-14
+
+### Added
+- **CUDA benchmarks v0 (`differential/bench_cuda.py`):** on the Kaggle T4, every CUDA original
+  against qpel's CUDA. Inputs are generated on the GPU machine and launches timed with CUDA
+  events. All 65 give the same outputs; geometric mean x1.00, range x0.78 to x1.97 (TRELLIS.2
+  render, open). TRELLIS.2's hash tables and rasteriser get vectorised benchmark-size cases.
+- **NVIDIA hardware run (2026-11-14):** 998/998 behaviour-row cases, the self-test and 21/21
+  CuPy host fixtures on a Tesla T4. TRELLIS.2's render passes there, so its GPGPU-Sim failure is
+  the simulator's.
+- **Benchmarks v0 (`differential/bench.py`):** every Metal original against qpel's Metal at
   8M threads on the Apple GPU, the two sides alternating; all 39 timed, none slower,
   geometric mean x0.93 in two runs (M4 Pro).
   Special case generators (`grid_stride`, `sam2_cc`, `scale_offset`) take shapes, so they scale.

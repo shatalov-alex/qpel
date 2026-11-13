@@ -1,0 +1,153 @@
+"""CUDA benchmarks v0: qpel's CUDA against the CUDA original it was translated from, on NVIDIA.
+
+differential/hardware.py writes bench.json while it prepares the behaviour rows: for every CUDA
+original, the program folders of the original and of qpel's CUDA (the same host program,
+GpuProgram, built for both). On the GPU machine, `run` generates one case per original at the
+benchmark size, with the program's own value rules (cases.scaled_case), so no large inputs
+travel with the bundle. Then it runs both programs on that case. Each program runs the case once
+(its outputs are kept for the comparison), then times its launches between CUDA events, with
+the inout buffers restored and the outputs cleared before each repetition (GpuProgram.program).
+Both sides' outputs are compared, and bench_cuda.json gets the median times, their ratio and
+the differences.
+
+    python3 -m differential.bench_cuda run ROOT     # on the GPU machine (run.sh does this)
+    python3 -m differential.bench_cuda report FILE  # here: the table and the summary
+
+The original is compiled with -fmad=false, as in the behaviour rows. qpel's CUDA is f32-strict,
+so neither side contracts.
+"""
+import json
+import math
+from pathlib import Path
+import shutil
+import statistics
+import subprocess
+import sys
+from types import SimpleNamespace
+
+HERE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(HERE))
+
+import numpy as np  # noqa: E402
+
+from . import cases  # noqa: E402
+from .simulate import Program  # noqa: E402
+
+
+def stub(entry, side):
+    """What Program.write_case and read_outputs need from a program, without building it."""
+    program = entry['programs'][side]
+    plan = entry['plan']
+    return SimpleNamespace(plan=plan, resources={r['name']: r for r in plan['resources']}, scalars=program['scalars'],
+                           grids=program['grids'], original=program['original'])
+
+
+def differences(entry, case, expected, actual):
+    """{output: number of elements that differ} and the largest float difference in ulps."""
+    typed = entry['options'].get('outputs') or {}
+    differ, worst = {}, 0
+    for name in entry['outputs']:
+        a, b = expected[name], actual[name]
+        if name in typed:  # a byte buffer holding values of another type
+            dtype = cases.DTYPES[typed[name]]
+            a, b = a.view(dtype), b.view(dtype)
+        defined = (case.defined or {}).get(name)
+        if isinstance(defined, str):  # defined where that output is nonzero (the rasteriser's depth: alpha)
+            where = np.asarray(expected[defined]) != 0
+            a, b = a[where], b[where]
+        elif defined is not None:  # the first `defined` elements
+            a, b = a[:defined], b[:defined]
+        if a.dtype.kind == 'f':
+            signed = np.int32 if a.dtype.itemsize == 4 else np.int16 if a.dtype.itemsize == 2 else np.int64
+            mask = (1 << (8 * a.dtype.itemsize - 1)) - 1
+
+            def ordered(x):
+                bits = x.view(signed).astype(np.int64)
+                return np.where(bits < 0, -(bits & mask), bits)
+            distance = np.where(np.isnan(a) & np.isnan(b), 0, np.abs(ordered(a) - ordered(b)))
+            differ[name] = int(np.count_nonzero(distance))
+            worst = max(worst, int(distance.max(initial=0)))
+        else:
+            differ[name] = int(np.count_nonzero(a != b))
+    return differ, worst
+
+
+def run(root):
+    root = Path(root)
+    results = []
+    for entry in json.loads((root/'bench.json').read_text()):
+        result = {'program': entry['name'], 'source': entry['source']}
+        results.append(result)
+        try:
+            case = cases.scaled_case(entry['name'], entry['plan'], entry['options'], entry['size'])
+        except Exception as error:  # a program whose value rules do not scale is reported, not fatal
+            case, result['skipped'] = None, f'no case at this size: {type(error).__name__}: {error}'
+        if case is None:
+            result.setdefault('skipped', "inputs depend on the program's own sizes; not scaled")
+            continue
+        times, outputs = {}, {}
+        for side in ('original', 'qpel'):
+            folder = root/entry['programs'][side]['dir']
+            work = folder/'bench'
+            work.mkdir(exist_ok=True)
+            program = stub(entry, side)
+            try:
+                Program.write_case(program, case, work)
+                (work/'time').touch()
+                if not (folder/'program').exists():
+                    raise RuntimeError('did not compile')
+                done = subprocess.run([str(folder/'program'), str(work)], capture_output=True, text=True, timeout=300)
+                if done.returncode:
+                    raise RuntimeError(f'exit {done.returncode}: {done.stderr[-500:]}')
+                ms, reps = (work/'time.txt').read_text().split()
+                times[side] = (float(ms), int(reps))
+                outputs[side] = Program.read_outputs(program, work)
+            except Exception as error:
+                result['skipped'] = f'{side}: {type(error).__name__}: {str(error)[:300]}'
+                break
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
+        if 'skipped' in result:
+            continue
+        differ, worst = differences(entry, case, outputs['original'], outputs['qpel'])
+        shape = case.shapes[entry['plan']['stages'][0]['grid']]
+        result.update({'shape': list(shape), 'stages': len(entry['plan']['stages']),
+                       'original_ms': round(times['original'][0], 5), 'qpel_ms': round(times['qpel'][0], 5),
+                       'ratio': round(times['qpel'][0] / times['original'][0], 3) if times['original'][0] else None,
+                       'reps': min(times['original'][1], times['qpel'][1]), 'differ': differ, 'max_ulp': worst})
+        print(f'{entry["name"]:<40} original {times["original"][0]:9.4f} ms   qpel {times["qpel"][0]:9.4f} ms',
+              flush=True)
+    (root/'bench_cuda.json').write_text(json.dumps(results, indent=1) + '\n')
+    return results
+
+
+def report(results):
+    """Print the table and the summary; return the timed ratios."""
+    for r in results:
+        if 'skipped' in r:
+            print(f'SKIP {r["program"]:<40} {r["skipped"]}')
+            continue
+        differ = sum(r['differ'].values())
+        note = '' if not differ else f'   {differ} elements differ (max {r["max_ulp"]} ulp)'
+        print(f'{r["program"]:<40} original {r["original_ms"]:9.4f} ms   qpel {r["qpel_ms"]:9.4f} ms'
+              f'   x{r["ratio"]:.2f}{note}')
+    timed = [r['ratio'] for r in results if r.get('ratio')]
+    if timed:
+        print(f'\n{len(timed)} timed, {len(results) - len(timed)} skipped; qpel/original geometric mean '
+              f'x{math.exp(sum(map(math.log, timed)) / len(timed)):.2f}, median x{statistics.median(timed):.2f}, '
+              f'range x{min(timed):.2f} to x{max(timed):.2f}')
+    return timed
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if len(argv) != 2 or argv[0] not in ('run', 'report'):
+        raise SystemExit('usage: python3 -m differential.bench_cuda run ROOT | report FILE')
+    if argv[0] == 'run':
+        run(argv[1])
+    else:
+        report(json.loads(Path(argv[1]).read_text()))
+
+
+if __name__ == '__main__':
+    main()

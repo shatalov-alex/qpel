@@ -4,6 +4,7 @@ Programs are IR (program.qpel.json) or text (*.qpel, TEXT.md); both build the sa
 import argparse
 import hashlib
 import json
+import sys
 from pathlib import Path
 import tempfile
 
@@ -123,6 +124,13 @@ def main(argv=None):
                      help='CUDA host source with the original <<<>>> launches, such as a PyTorch extension\'s api.cu')
     ops.add_argument('-I', '--include', type=Path, action='append', default=[],
                      help='Extra header folder for the host source')
+    check_port = commands.add_parser('verify', add_help=False,
+                                     help='Check a port against its original on the same cases (qpel verify -h)')
+    check_port.add_argument('arguments', nargs=argparse.REMAINDER)
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ['verify']:  # its own options and help: differential/verify.py
+        from differential import verify
+        raise SystemExit(verify.main(argv[1:]))
     args = parser.parse_args(argv)
     try:
         if args.command == 'print':

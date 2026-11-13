@@ -95,23 +95,16 @@ def gpu_times(*sides):
 
 
 def large_case(prepared, size):
-    """One behaviour-style case at `size`, with the program's own value rules. A program sized in
-    bytes (llama.cpp's rows: its shape's W counts bytes of a typed byte buffer) gets W elements."""
-    o = prepared.options
-    typed = {**(o.get('inputs') or {}), **(o.get('outputs') or {})}
-    if o.get('shapes') and typed:
-        element = max(np.dtype(test_cases.DTYPES[t]).itemsize for t in typed.values())
-        size = (size[0] * element,) + tuple(size[1:])
-    return test_cases.for_program(prepared.name, prepared.plan, values=o.get('values'), shapes=[size],
-                                  inputs=o.get('inputs'))[0]
+    """One behaviour-style case at `size` (cases.scaled_case)."""
+    return test_cases.scaled_case(prepared.name, prepared.plan, prepared.options, size)
 
 
 def bench_source(source, work, size):
     name, path, dialect, plan, include, _, options = source
     prepared = matrix.Prepared(name, path, dialect, plan, include, options, work)
-    if options.get('shapes') and not (options.get('inputs') or options.get('outputs')):
-        return {'program': name, 'skipped': 'sized by the program itself, not scaled'}
     case = large_case(prepared, size)
+    if case is None:
+        return {'program': name, 'skipped': 'inputs depend on the program\'s own sizes; not scaled'}
     original_calls, generated_calls = [], []
     with recording(metal, '_compiled', original_calls):
         metal._LIBRARIES.clear()  # compiled outside the recording otherwise

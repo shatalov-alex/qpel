@@ -70,6 +70,38 @@ element size and length. In TRELLIS.2's o-voxel, 21 of the 25 imported programs 
 operation (`tests/test_torch_op.py` runs z-order and the hash inserts with them); the four
 rasteriser launches pass host-computed grid sizes and pointers into a shared buffer.
 
+## Verifying a port
+
+`qpel verify original.cu port.metal` checks a port (hand-written, AI-generated or translated)
+against its original on the same inputs. Either side can be CUDA or Metal.
+
+```sh
+python3 portable/qpel.py verify cuda_examples/scale_offset.cu metal_examples/scale_offset.metal
+python3 portable/qpel.py verify original.cu port.metal --map scale_offset=affine --json report.json
+```
+
+- **The original is the reference.** It is imported to qpel, which gives the launch plan, the
+  cases and the numeric tolerance.
+- **The port is only read for its kernel signatures.** It need not import to qpel, so it can use
+  constructs qpel does not cover. Its kernel (same name, or `--map ORIGINAL=PORT`) takes the
+  original's arguments in the same order, builtins such as `[[thread_position_in_grid]]` aside.
+  The element types must match, or the port is refused with the argument that differs.
+- **Both sides run the same cases.** These are the behaviour matrix's cases, plus copies whose
+  input buffers mix in edge values: NaN, infinities, signed zeros, type limits, and subnormals
+  where neither side is Metal (Apple GPUs flush subnormals). CUDA runs on the CPU simulator,
+  Metal on the Apple GPU.
+- **Outputs are compared under NUMERICS.md.** They must be bit-exact, or within twice the ulp
+  bound where the original calls bounded math functions. Each failing case reports its first
+  difference, for example `z[0]: original -7, port -8`.
+- **Edge values the original rejects.** An edge case on which the original itself fails (an edge
+  value used as an index, say) is skipped, not counted against the port.
+
+Exit status is 0 when every case agrees, 1 when one differs, and 2 when the port cannot be run.
+`--json` writes the machine-readable report, for an AI porting agent to call in its loop. The 14
+example pairs (`cuda_examples/` and `metal_examples/`) agree in both directions on all 10 cases
+each. A one-character bug, or a port that turns NaN into 0, is caught. Not yet covered: running
+the CUDA side on NVIDIA (GPGPU-Sim or hardware) instead of the CPU simulator.
+
 ## Installing with pip
 
 `python3 portable/packaging/build_wheel.py` builds `dist/qpel-<version>-py3-none-any.whl` and the
@@ -77,7 +109,8 @@ sdist. It stages the compiler alone as a `qpel` package (`qpel/cli.py` is `qpel.
 rewritten to `qpel.*`; tests, the matrix and the corpus stay here), builds it with `uv build`,
 installs the wheel in a new virtual environment and runs `qpel build` and `qpel translate` there.
 Nothing is uploaded. The compiler needs only the standard library; `pip install "qpel[mps]"` adds
-PyTorch and NumPy for the generated Metal hosts and `torch-op`.
+PyTorch and NumPy for the generated Metal hosts and `torch-op`, and `qpel[verify]` adds NumPy for
+`qpel verify`, which the smoke test also runs from the installed package.
 
 ## Benchmarks
 
@@ -96,8 +129,18 @@ neither gets the cold GPU. v0 results on an M4 Pro (macOS 26.5, torch 2.14), 39 
 
 No program is slower after translation. The kernels are element-wise and memory-bound; single
 llama.cpp kernels vary by up to 0.15 between runs (their originals' times spread more than
-qpel's), so the claim is no added cost, not a speedup. CUDA timing needs an NVIDIA GPU and is part
-of the release run.
+qpel's), so the claim is no added cost, not a speedup.
+
+**CUDA.** `differential/hardware.py --kaggle` also times every CUDA original against qpel's CUDA
+on the T4 (`differential/bench_cuda.py`). Each is timed at 8M threads; TRELLIS.2's hash tables and
+rasteriser get about 1M keys or voxels in a 2048 x 1024 image. The inputs are generated on the
+GPU machine, the launches are timed between CUDA events (median of up to 200 repetitions), and
+both sides' outputs are compared. On 2026-11-14, all 65 gave the same outputs; qpel/original was
+x1.00 as a geometric mean and median, ranging from x0.78 to x1.97, in one run. Most are within a
+few percent. Slower: TRELLIS.2 `render` x1.97, `sam2_cc` x1.47, llama.cpp `clamp` f16 x1.42,
+`float32` x1.20 and `fill` f16 x1.13, `preprocess` x1.12. The render kernel's generated code has
+the original's structure (the same shared arrays and barriers), so the cause needs profiling.
+That is Phase 6 work.
 
 ## Validation
 
@@ -151,7 +194,7 @@ python3 -m differential.hardware --kaggle --cupy-only   # only the self-test and
 python3 -m differential.hardware --bundle-only OUT      # OUT/bundle.tar.gz; run `bash run.sh` on any NVIDIA box
 ```
 
-`--kaggle` needs the Kaggle CLI signed in. It uploads the bundle as a private dataset and runs a private script kernel on one T4 with a time limit (`--timeout`, default 1500 s). On 2026-11-12, on a Tesla T4 (sm_75, driver 580.178.04): all 720 behaviour-row cases, the self-test and 20/20 CuPy host fixtures passed. The rows took 170 s on the GPU and the host tests 12 s.
+`--kaggle` needs the Kaggle CLI signed in. It uploads the bundle as a private dataset and runs a private script kernel on one T4 with a time limit (`--timeout`, default 1500 s). On 2026-11-14, on a Tesla T4 (sm_75, driver 580.178.04): all 998 behaviour-row cases (TRELLIS.2 included, its rasteriser's render too), the self-test and 21/21 CuPy host fixtures passed. The rows took 247 s on the GPU, the CUDA benchmarks 196 s and the host tests 13 s. `--no-bench` leaves the benchmarks out; `--bench-size W H N` changes their size.
 
 ### Metal compile check
 
