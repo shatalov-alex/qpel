@@ -86,7 +86,7 @@ ATTRIBUTES = {
     'Variable': {'name': str}, 'Literal': {'value': str}, 'I32Literal': {'value': str}, 'F32Literal': {'value': str},
     'Binary': {'operator': str}, 'Unary': {'operator': str},
     'Member': {'member': str}, 'Pipeline': {'name': str},
-    'Resource': {'name': str, 'kind': str},
+    'Resource': {'name': str, 'kind': str, 'scale': int},
     'Dispatch': {'blockSize': int, 'blockHeight': int, 'blockDepth': int, 'completionBarrier': bool,
                  'groupsX': str, 'groupsY': str, 'groupsZ': str},
     'ThreadIndex': {'axis': str},
@@ -98,7 +98,8 @@ ATTRIBUTES = {
     # IR version 4
     'ArrayType': {'element': str, 'length': int},
 }
-DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer'},
+MAX_SCALE = 4096  # elements per element of a buffer's extent: `in M * 4` for an [M, 4] tensor
+DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer'}, 'Resource': {'scale'},
              'Dispatch': {'blockHeight', 'blockDepth', 'groupsX', 'groupsY', 'groupsZ'}}
 # Every qpel name is emitted verbatim into both CUDA C++ and Metal Shading Language, so it
 # must avoid qpel keywords, C++ keywords, CUDA built-ins and Metal keywords and type names.
@@ -270,6 +271,8 @@ def validate_structure(nodes):
             fail('Invalid struct name')
         if kind == 'Resource' and a['kind'] not in ('input', 'inout', 'output', 'scratch', 'zeroed', 'shape', 'value'):
             fail('Unsupported resource kind')
+        if kind == 'Resource' and 'scale' in a and not (2 <= a['scale'] <= MAX_SCALE and 'extent' in n['links']):
+            fail(f'A buffer scale (elements per element of its extent) is an integer from 2 to {MAX_SCALE}')
         if kind == 'Dispatch':
             dims = (a['blockSize'], a.get('blockHeight', 1), a.get('blockDepth', 1))
             if not all(is_block_size(d) for d in dims) or dims[0]*dims[1]*dims[2] > MAX_BLOCK_SIZE:

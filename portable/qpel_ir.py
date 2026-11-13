@@ -74,6 +74,7 @@ def version_3_features(nodes):
 def version_4_features(nodes):
     used={n['kind'] for n in nodes if n['kind'] in V4_KINDS}
     if any(n['kind']=='Resource' and n['attributes'].get('kind')=='inout' for n in nodes):used.add('inout')
+    if any(n['kind']=='Resource' and 'scale' in n['attributes'] for n in nodes):used.add('buffer scale')
     return used
 
 
@@ -346,6 +347,7 @@ class Lowering:
         resources=[]
         for r in self.children(p,'resources'):
             resources.append(dict(name=r['attributes']['name'],kind=r['attributes']['kind'],type=term(self.child(r,'type')),extent=self.link(r,'extent')['attributes']['name'] if 'extent' in r['links'] else None))
+            if 'scale' in r['attributes']:resources[-1]['scale']=r['attributes']['scale']
         stages=[]
         for s in self.children(p,'stages'):
             stage=dict(kernel=self.link(s,'kernel')['attributes']['name'],grid=self.link(s,'grid')['attributes']['name'],blockSize=s['attributes']['blockSize'],completionBarrier=s['attributes']['completionBarrier'],bindings=[dict(parameter=self.link(b,'parameter')['attributes']['name'],resource=self.link(b,'resource')['attributes']['name']) for b in self.children(s,'bindings')])

@@ -41,6 +41,28 @@ class Pipeline(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'GRID_EXTENT'):
             validate(parse_program(text))
 
+    def test_a_scaled_buffer_holds_k_elements_per_element_of_its_extent(self):
+        from qpel_text import print_program
+        from generate_cuda_host import generate as cuda_host
+        from generate_metal_host import generate as metal_host
+        text = PROGRAM.replace('input keys: buffer<u32, read> in n;', 'input keys: buffer<u32, read> in n * 4;')
+        program = parse_program(text)
+        validate(program)
+        self.assertEqual(program['version'], 4)
+        self.assertIn('in n * 4;', print_program(program))
+        plan = Lowering(program).plan()
+        self.assertEqual(next(r for r in plan['resources'] if r['name'] == 'keys')['scale'], 4)
+        for host in (cuda_host(plan, b''), metal_host(plan, b'')):
+            self.assertIn("sizes['n'] * 4", host)
+            self.assertIn('Buffer exceeds INT32_MAX elements', host)
+        from differential import cases
+        for c in cases.generic(plan, 1):
+            self.assertEqual(c.inputs['keys'].size, 4 * cases.volume(c.shapes['n']))
+        with self.assertRaisesRegex(ValueError, 'version 4'):
+            validate(dict(program, version=3, semantics='qpel-portable-core-v3'))
+        with self.assertRaisesRegex(ValueError, 'buffer scale'):
+            validate(parse_program(text.replace('in n * 4;', 'in n * 1;')))
+
     def test_generic_cases_give_other_shapes_their_own_size(self):
         from differential import cases
         plan = Lowering(parse_program(PROGRAM)).plan()
@@ -97,6 +119,28 @@ void insert_host(torch::Tensor& table_keys, torch::Tensor& table_values, const t
         text = self.HOST.replace('table_values[slot] = i;', 'table_values[slot] = i;\n    table_values[i] = slot;')
         with self.assertRaisesRegex(Unsupported, 'indexed together with buffers of sizes M and N'):
             self.import_text(text)
+
+    def test_a_vector_local_becomes_a_local_array(self):
+        from qpel_text import print_program
+        program, report = self.import_text('''
+#include <torch/extension.h>
+__global__ void sum4(const int M, const int32_t* __restrict__ coords, int* out) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < M) {
+    int4 c = reinterpret_cast<const int4*>(coords)[i];
+    int4 d = make_int4(1, 2, 3, 4);
+    d.w = c.x;
+    out[i] = c.x + c.y * d.y + c.z - c.w + d.w;
+  }
+}
+void host(const torch::Tensor& coords, torch::Tensor& out) {
+  sum4<<<1, 64>>>(coords.size(0), coords.data_ptr<int32_t>(), out.data_ptr<int>());
+}''')
+        text = print_program(program)
+        self.assertIn('let c: array<i32, 4> = [coords[(cast<i32>(qpel.index) * 4) + 0], coords[(cast<i32>(qpel.index) * 4) + 1]', text)
+        self.assertIn('d[3] = c[0];', text)
+        self.assertIn('input coords: buffer<i32, read> in M * 4;', text)
+        self.assertTrue(any('vector local c became array<i32, 4>' in a for a in report['adaptations']))
 
     def test_without_a_launch_site_one_size_remains(self):
         text = self.HOST[:self.HOST.index('void insert_host')]

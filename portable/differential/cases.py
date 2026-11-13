@@ -9,6 +9,7 @@ import numpy as np
 
 from .simulate import Case, DTYPES, VALUE_TYPES, volume
 from qpel_schema import group_count, is_group_count
+from qpel_types import buffer_length
 
 SHAPES = [(1, 1, 1), (5, 1, 1), (17, 3, 2), (64, 4, 1), (129, 7, 3), (33, 33, 1)]
 
@@ -45,7 +46,7 @@ def generic(plan, seed, shapes=SHAPES, values=None):
     for i, shape in enumerate(shapes):
         sizes = {g: shape for g in grids}
         sizes.update({o: tuple(shapes[(i + 1 + j) % len(shapes)]) for j, o in enumerate(others)})
-        inputs = {r['name']: random_array(rng, DTYPES[r['type']], volume(sizes[r['extent']]))
+        inputs = {r['name']: random_array(rng, DTYPES[r['type']], buffer_length(r, sizes))
                   for r in plan['resources'] if r['kind'] in ('input', 'inout')}
         chosen = {}
         for r in plan['resources']:
@@ -162,8 +163,74 @@ def hashmap_cases(plan, seed):
     return cases
 
 
+def hash3d_cases(plan, seed):
+    """TRELLIS.2's hash tables of voxel coordinates: M coordinates (b, x, y, z) as an [M, 4] int32
+    tensor, keyed by b*W*H*D + x*H*D + y*D + z in a table of N slots. Insertion (values given, or
+    the coordinate's index with idx_as_val) gets coordinates whose keys go to distinct slots, so
+    the table is the same in any thread order. Lookups get a table built here one key at a time
+    and coordinates of which about half are in it, some outside the volume (answered with the
+    value type's maximum)."""
+    rng = np.random.default_rng(seed)
+    resources = {r['name']: r for r in plan['resources']}
+    keys_name = 'hashmap_keys' if 'hashmap_keys' in resources else 'hashmap'
+    values_name = 'hashmap_values' if 'hashmap_values' in resources else 'values'
+    key_type, value_type = DTYPES[resources[keys_name]['type']], DTYPES[resources[values_name]['type']]
+    bits = 8 * np.dtype(key_type).itemsize
+    empty = np.iinfo(key_type).max
+    inserting = resources[keys_name]['kind'] == 'inout'
+    table_shape, coords_shape = resources[keys_name]['extent'], resources['coords']['extent']
+    cases = []
+    for slots, count, (w, h, d) in [(1, 1, (1, 1, 1)), (11, 5, (4, 3, 2)), (64, 64, (8, 8, 8)),
+                                    (515, 257, (16, 9, 7)), (2000, 1000, (32, 32, 32))]:
+        def key(c):
+            return (int(c[0]) * w * h * d + int(c[1]) * h * d + int(c[2]) * d + int(c[3])) % 2**bits
+
+        def coordinate():
+            return np.array([rng.integers(0, 3), rng.integers(0, w), rng.integers(0, h), rng.integers(0, d)], np.int32)
+        values = {'W': w, 'H': h, 'D': d}
+        if inserting:
+            chosen, used, seen = [], set(), set()
+            for _ in range(200 * count + 100):
+                if len(chosen) == count:
+                    break
+                c = coordinate()
+                k = key(c)
+                slot = int(murmur_slot(np.array([k], key_type), slots, bits)[0])
+                if k not in seen and slot not in used:
+                    chosen.append(c)
+                    seen.add(k)
+                    used.add(slot)
+            count = len(chosen)  # a small volume may hold fewer distinct keys than asked for
+            coords = np.stack(chosen)[rng.permutation(count)]
+            inputs = {keys_name: np.full(slots, empty, key_type), values_name: np.zeros(slots, value_type),
+                      'coords': coords.reshape(-1)}
+            if 'values' in resources and values_name != 'values':
+                inputs['values'] = rng.integers(0, np.iinfo(value_type).max, count, dtype=value_type, endpoint=True)
+        else:
+            table = np.full(slots, empty, key_type)
+            stored = np.zeros(slots, value_type)
+            present = [coordinate() for _ in range(max(slots - 1, 0))]
+            for c in present:
+                k = key(c)
+                slot = int(murmur_slot(np.array([k], key_type), slots, bits)[0])
+                while table[slot] != empty and table[slot] != k:
+                    slot = (slot + 1) % slots
+                table[slot], stored[slot] = k, rng.integers(0, np.iinfo(value_type).max, dtype=value_type)
+            probes = []
+            for i in range(count):
+                c = present[rng.integers(0, len(present))].copy() if present and rng.random() < 0.5 else coordinate()
+                if rng.random() < 0.1:  # outside the volume on one axis
+                    axis = int(rng.integers(1, 4))
+                    c[axis] = -1 if rng.random() < 0.5 else (w, h, d)[axis - 1]
+                probes.append(c)
+            inputs = {keys_name: table, values_name: stored, 'coords': np.stack(probes).reshape(-1)}
+        cases.append(Case({table_shape: (slots, 1, 1), coords_shape: (count, 1, 1)}, inputs, values,
+                          f'{slots} slots, {count} coordinates in {w}x{h}x{d}'))
+    return cases
+
+
 SPECIAL = {'scale_offset': scale_offset, 'sam2_cc': sam2_cc, 'grid_stride': grid_stride}
-PREFIXES = {'trellis2_hashmap_': hashmap_cases}  # families of corpus programs
+PREFIXES = {'trellis2_hashmap_': hashmap_cases, 'trellis2_hash3d_': hash3d_cases}  # families of corpus programs
 
 
 def for_program(name, plan, seed=20261111, values=None, shapes=None, inputs=None):

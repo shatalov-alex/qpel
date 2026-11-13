@@ -15,7 +15,7 @@ import numpy as np
 import torch
 
 from .simulate import DTYPES, VALUE_TYPES, volume
-from qpel_types import is_struct, pack_struct
+from qpel_types import buffer_length, is_struct, pack_struct
 
 TORCH = {np.uint8: torch.uint8, np.uint32: torch.int32, np.int32: torch.int32, np.float32: torch.float32,
          np.float16: torch.float16}
@@ -117,7 +117,7 @@ def run_original(source, plan, report, case, include=(), constants=None):
         if r['kind'] in ('shape', 'value'):
             continue
         dtype = DTYPES[r['type']]
-        count = volume(case.shapes[r['extent']])
+        count = buffer_length(r, case.shapes)
         array = case.inputs[r['name']] if r['kind'] in ('input', 'inout') else np.zeros(count, dtype)
         buffers[r['name']] = tensor(np.asarray(array, dtype), dtype)
     for s in plan['stages']:

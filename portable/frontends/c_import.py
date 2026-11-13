@@ -14,7 +14,7 @@ from qpel_schema import is_identifier
 from qpel_types import (SCALAR_TERMS, VALUE_TERMS, access, buffer as type_buffer, fits, is_buffer as type_is_buffer,
                         is_signed, node_spec, normalize_plan, term as type_term)
 from qpel_types import access as type_access, bits as type_bits, INTEGER_TERMS, MATH, is_struct, is_array
-from qpel_types import arithmetic as type_arithmetic
+from qpel_types import arithmetic as type_arithmetic, element as element_of
 from . import clang_ast
 from .clang_ast import position
 
@@ -372,6 +372,11 @@ GROUPS_BLOCK = 64  # group size of a Groups kernel without a launch plan
 QPEL_GROUP_SUM_PARAMS = {'qpel_lane', 'qpel_group_size'}  # builtins backends/metal.h adds for a workgroup sum
 ATOMIC_ELEMENTS = {'u32': 'atomic', 'i32': 'atomic_i32'}  # element -> scalar of its atomic buffer
 LOCAL_ARRAY = re.compile(r'(.*\S)\s*\[([0-9]+)\]')  # `unsigned int [3]`: a local array's type
+# CUDA's vector types (int4, uint2, float3, ...): a local of one becomes a local array
+VECTOR_TYPE = re.compile(r'(?:const\s+)?(int|uint|float|short|ushort|char|uchar|longlong|ulonglong)([234])')
+VECTOR_SCALARS = {'int': 'i32', 'uint': 'u32', 'float': 'f32', 'short': 'i16', 'ushort': 'u16', 'char': 'i8',
+                  'uchar': 'u8', 'longlong': 'i64', 'ulonglong': 'u64'}
+VECTOR_FIELDS = 'xyzw'
 ZERO = {'bool': ('Literal', 'false'), 'u32': ('Literal', '0u'), 'i32': ('I32Literal', '0'), 'f32': ('F32Literal', '0.0')}
 GRID3D_BLOCK = (16, 16, 1)  # default block for 2D/3D kernels without a launch plan
 MINIMUM = {'min', 'umin'}
@@ -447,6 +452,7 @@ class Importer:
         self.unit = unit
         self.sites = None  # launch sites of the original's host code, read when first needed
         self.extents = {}  # kernel -> {buffer parameter: shape parameter that sizes it}
+        self.views = {}  # kernel -> {buffer parameter: elements per vector it is read as (its scale)}
         self.grid_params = {}  # kernel -> its shape parameter that is the dispatch grid
         # In a survey every blocker is recorded as (function, error) and the rest of the
         # source is still read; otherwise the first one is raised.
@@ -497,6 +503,9 @@ class Importer:
             if id(node) in main_ids:
                 self.header = False
                 decls.extend(self.attempt(lambda: self.top_level(node), []))
+            elif node.get('kind') == 'FunctionDecl' and VECTOR_TYPE.fullmatch(node.get('name', '')[5:]) and \
+                    node.get('name', '').startswith('make_'):
+                continue  # CUDA's make_int4 and friends: vector locals read them as element lists
             elif not node.get('isImplicit') and contains_any(node, self.reachable):
                 self.header = True
                 decls.extend(self.attempt(lambda: self.top_level(node), []))
@@ -1292,6 +1301,9 @@ class Importer:
         array = LOCAL_ARRAY.fullmatch(decl['type']['qualType'].strip())
         if array:
             return self.array_local(decl, name, array)
+        vector = VECTOR_TYPE.fullmatch(decl['type']['qualType'].strip())
+        if vector and self.dialect.name == 'cuda':
+            return self.vector_local(decl, name, VECTOR_SCALARS[vector.group(1)], int(vector.group(2)))
         if t[0] == 'scalar' and t[1] in self.records:
             raise Unsupported(decl, 'local-type', f'local {name}: struct locals are not in qpel yet')
         if t[0] != 'scalar' or t[1] not in SCALAR_TERMS:
@@ -1368,6 +1380,74 @@ class Importer:
                              'value': self.graph.add('ArrayValue', children={'elements': values})})
         self.scope[decl['id']] = ('local', ir, f'array<{scalar}, {length}>')
         return [ir]
+
+    def vector_local(self, decl, name, scalar, length):
+        """A CUDA vector local (`int4 coord = ...`) as a local array: coord.x is coord[0]. It is
+        read from a buffer of its scalars (`reinterpret_cast<const int4*>(coords)[i]` reads
+        coords[4i] ... coords[4i + 3]), built with make_int4(...) or {...}, or zero."""
+        init = decl['inner'][0] if 'init' in decl else None
+        while init is not None and init['kind'] in LOOSE | {'ConstantExpr', 'CXXConstructExpr'} and \
+                len(init.get('inner', ())) == 1:
+            init = init['inner'][0]  # a copy of the loaded vector
+        if init is None:
+            values = [self.zero(scalar) for _ in range(length)]
+            self.adaptations.append(f'{self.current}: local {name} had no initializer; qpel starts it at zero')
+        elif init['kind'] == 'ArraySubscriptExpr':
+            values = self.vector_load(decl, name, init, scalar, length)
+        elif init['kind'] == 'CallExpr' and decl_name(init['inner'][0]) == f'make_{decl["type"]["qualType"].split()[-1]}':
+            values = [self.convert_types(self.expr(a), scalar_of(a), scalar, a) if scalar_of(a) != scalar else self.expr(a)
+                      for a in init['inner'][1:]]
+        elif init['kind'] == 'InitListExpr' and len(init.get('inner', ())) == length:
+            values = [self.convert_types(self.expr(a), scalar_of(a), scalar, a) if scalar_of(a) != scalar else self.expr(a)
+                      for a in init['inner']]
+        else:
+            raise Unsupported(decl, 'vector-init', f'local {name}: a vector is loaded from a buffer of its elements, '
+                                                   f'or built with make_ or a full list')
+        if len(values) != length:
+            raise Unsupported(decl, 'vector-init', f'local {name} needs {length} elements')
+        ir = self.graph.add('Variable', {'name': self.unique_name(name)},
+                            {'type': self.graph.add('ArrayType', {'element': scalar, 'length': length}),
+                             'value': self.graph.add('ArrayValue', children={'elements': values})})
+        self.scope[decl['id']] = ('local', ir, f'array<{scalar}, {length}>', 'vector')
+        self.adaptations.append(f'{self.current}: vector local {name} became array<{scalar}, {length}> ({name}.x is {name}[0])')
+        return [ir]
+
+    def vector_load(self, decl, name, init, scalar, length):
+        """Elements of `reinterpret_cast<const int4*>(p)[i]`: p[length*i + k], k = 0 .. length-1.
+        p is a kernel's buffer of the vector's scalars; the plan sizes it as length elements per
+        element of its extent."""
+        base, index = init['inner']
+        cast = base
+        while cast['kind'] in ('ImplicitCastExpr', 'ParenExpr') and cast.get('inner'):
+            cast = cast['inner'][0]
+        if cast['kind'] not in ('CXXReinterpretCastExpr', 'CStyleCastExpr'):
+            raise Unsupported(decl, 'vector-init', f'local {name}: only a vector read from a reinterpreted buffer is supported')
+        pointer = cast['inner'][0]
+        while pointer['kind'] in ('ImplicitCastExpr', 'ParenExpr') and pointer.get('inner'):
+            pointer = pointer['inner'][0]
+        entry = self.scope.get(pointer.get('referencedDecl', {}).get('id')) if pointer['kind'] == 'DeclRefExpr' else None
+        if not (self.kernel and entry and entry[0] == 'param' and type_is_buffer(entry[2]) and element_of(entry[2]) == scalar):
+            raise Unsupported(decl, 'vector-init', f'local {name}: a vector is read from a kernel buffer of its '
+                                                   f'element type ({scalar})')
+        buffer = self.graph.nodes[entry[1]]['attributes']['name']
+        views = self.views.setdefault(self.current, {})
+        if views.setdefault(buffer, length) != length:
+            raise Unsupported(decl, 'vector-init', f'{buffer} is read as vectors of {views[buffer]} and of {length}')
+        kind = scalar_of(index)
+        kind = kind if kind in INTEGER_TERMS else 'u32'
+        values = []
+        for k in range(length):
+            scaled = self.graph.add('Binary', {'operator': '*'}, {'left': self.expr(index), 'right': self.int_value(kind, length)})
+            offset = self.graph.add('Binary', {'operator': '+'}, {'left': scaled, 'right': self.int_value(kind, k)})
+            values.append(self.graph.add('Index', children={'base': self.name(entry[1]), 'index': offset}))
+        return values
+
+    def int_value(self, scalar, value):
+        if scalar == 'u32':
+            return self.graph.add('Literal', {'value': f'{value}u'})
+        if scalar == 'i32':
+            return self.graph.add('I32Literal', {'value': str(value)})
+        return self.graph.add('Constant', {'scalar': scalar, 'value': str(value)})
 
     def local_array(self, base):
         """The qpel Variable of a local array that `base` names, or None."""
@@ -1469,6 +1549,11 @@ class Importer:
             raise Unsupported(node, 'assign-target', 'cannot assign to ' + core['referencedDecl'].get('name', '?'))
         if core['kind'] == 'ArraySubscriptExpr':
             return self.index(core)
+        if core['kind'] == 'MemberExpr':
+            base = peel(core['inner'][0])
+            entry = self.scope.get(base.get('referencedDecl', {}).get('id')) if base['kind'] == 'DeclRefExpr' else None
+            if entry and entry[0] == 'local' and entry[3:] == ('vector',):
+                return self.expr(core)  # coord.x = v: an element of the local array
         raise Unsupported(node, 'assign-target', 'only names and buffer elements can be assigned')
 
     # -- expressions --
@@ -1774,6 +1859,8 @@ class Importer:
                 return add(GROUP_NODES[entry[1]], {'axis': field})
             if self.groups and decl_name(base) in CUDA_BUILTINS and field in ('x', 'y', 'z'):
                 return add(GROUP_NODES[CUDA_BUILTINS[decl_name(base)]], {'axis': field})
+            if entry and entry[0] == 'local' and entry[3:] == ('vector',) and field in VECTOR_FIELDS[:int(entry[2].split()[-1][:-1])]:
+                return add('Index', children={'base': self.name(entry[1]), 'index': self.int_value('i32', VECTOR_FIELDS.index(field))})
             if entry and entry[0] in ('param', 'local') and is_struct(entry[2]):
                 return add('Member', {'member': self.safe_name(field)}, {'base': self.name(entry[1])})
             if entry and entry[0] == 'param' and entry[2] == 'shape3' and field in ('x', 'y', 'z'):
@@ -2014,7 +2101,8 @@ class Importer:
         resources, ids = [], {}
         for r in plan['resources']:
             kind, attributes = node_spec(r['type'])
-            ids[r['name']] = add('Resource', {'name': r['name'], 'kind': r['kind']}, {'type': add(kind, attributes)})
+            attrs = {'name': r['name'], 'kind': r['kind']} | ({'scale': r['scale']} if r.get('scale', 1) != 1 else {})
+            ids[r['name']] = add('Resource', attrs, {'type': add(kind, attributes)})
             resources.append((r, ids[r['name']]))
         for r, ident in resources:
             if r.get('extent'):
@@ -2165,6 +2253,11 @@ class Importer:
             raise Unsupported(None, 'extent', 'kernels use different shape parameters; pass a launch plan')
         for r in resources.values():
             r['extent'] = None if r['kind'] in ('shape', 'value') else extents.get(r['name'], next(iter(grids)))
+            scales = {self.views.get(k, {}).get(r['name']) for k in kernels} - {None}
+            if len(scales) > 1:
+                raise Unsupported(None, 'extent', f'{r["name"]} is read as vectors of different lengths in different kernels')
+            if scales:
+                r['scale'] = scales.pop()
         return {'resources': list(resources.values()), 'stages': stages}
 
 

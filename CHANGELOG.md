@@ -20,6 +20,9 @@ older programs keep building.
   receives. The importer reads sizes from the original's launch (`t.size(0)` next to
   `t.data_ptr<T>()`) and from buffers indexed together; the hash tables are now tested larger
   than their key lists.
+- **Vector locals and scaled buffers:** CUDA `int4`-style locals import as local arrays, and a
+  buffer may hold k elements per element of its extent (`in M * 4`). The eight 3D hash kernels
+  of TRELLIS.2 pass the behaviour rows (coverage 111 to 119 of 719 kernels).
 - The CPU simulator ends every buffer at an inaccessible page: an access past a buffer's end
   stops the run instead of passing unnoticed.
 - **Unit tests for every component** (353, from 168): behaviour rows per original source

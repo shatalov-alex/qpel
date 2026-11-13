@@ -27,7 +27,7 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-from qpel_types import NUMPY_DTYPES, element, is_buffer, is_struct, normalize_plan, pack_struct, term  # noqa: E402
+from qpel_types import buffer_length, NUMPY_DTYPES, element, is_buffer, is_struct, normalize_plan, pack_struct, term  # noqa: E402
 
 INCLUDE = HERE/'include'
 IMPORT_INCLUDE = HERE.parent/'frontends/include/libraries'  # PyTorch, cuBLAS; CUDA is the simulator's own
@@ -310,7 +310,7 @@ class Program:
         for r in self.plan['resources']:
             if r['kind'] in ('shape', 'value'):
                 continue
-            count = volume(case.shapes[r['extent']])
+            count = buffer_length(r, case.shapes)
             if r['kind'] in ('input', 'inout'):
                 array = np.ascontiguousarray(case.inputs[r['name']], dtype=DTYPES[r['type']]).reshape(-1)
                 if array.size != count:

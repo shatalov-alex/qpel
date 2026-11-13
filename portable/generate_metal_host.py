@@ -106,6 +106,11 @@ def _input(value, dtype, count, device):
 '''
 
 
+def _count(r):
+    """Generated-code expression for a buffer's element count: its extent's volume, times its scale."""
+    return f"sizes[{r['extent']!r}]" + (f" * {r['scale']}" if r.get('scale', 1) != 1 else '')
+
+
 def generate(plan, shader):
     plan = normalize_plan(plan)
     validate_resources(plan)
@@ -130,6 +135,9 @@ def generate(plan, shader):
     for name in shapes:
         lines.append(f'    dims[{name!r}], sizes[{name!r}] = _shape(shapes[{name!r}])')
     for r in resources:
+        if r.get('scale', 1) != 1:  # a scaled buffer can be longer than its extent's checked volume
+            lines += [f'    if {_count(r)} > 2**31 - 1:', '        raise ValueError("Buffer exceeds INT32_MAX elements")']
+    for r in resources:
         if r['kind'] == 'value':
             if is_struct(r['type']):
                 layout, size = struct_layout(plan['structs'][r['type'][7:]])
@@ -139,7 +147,7 @@ def generate(plan, shader):
     # Validate all inputs before compiling or allocating GPU resources.
     for r in resources:
         if r['kind'] in ('input', 'inout'):  # an inout buffer is updated in a copy, returned as an output
-            lines.append(f"    buffers[{r['name']!r}] = _input(inputs[{r['name']!r}], torch.{BUFFER_TYPES[element(r['type'])]}, sizes[{r['extent']!r}], device)"
+            lines.append(f"    buffers[{r['name']!r}] = _input(inputs[{r['name']!r}], torch.{BUFFER_TYPES[element(r['type'])]}, {_count(r)}, device)"
                          + ('.clone()' if r['kind'] == 'inout' else ''))
     lines.append('    lib = _library()')
     for r in resources:
@@ -153,7 +161,7 @@ def generate(plan, shader):
                 lines.append(f"    buffers[{name!r}] = torch.tensor([scalar_{name}], device=device, dtype=torch.{VALUE_TYPES[r['type']]})")
         elif r['kind'] not in ('input', 'inout'):
             allocate = 'zeros' if r['kind'] == 'zeroed' else 'empty'  # zeroed scratch starts at zero
-            lines.append(f"    buffers[{name!r}] = torch.{allocate}(sizes[{r['extent']!r}], device=device, dtype=torch.{BUFFER_TYPES[element(r['type'])]})")
+            lines.append(f"    buffers[{name!r}] = torch.{allocate}({_count(r)}, device=device, dtype=torch.{BUFFER_TYPES[element(r['type'])]})")
     for s in plan['stages']:
         args = ', '.join(f"buffers[{b['resource']!r}]" for b in s['bindings'])
         if s.get('domain') == 'groups':  # whole threadgroups, as CUDA launches whole blocks

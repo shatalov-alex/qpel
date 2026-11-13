@@ -184,6 +184,8 @@ class Printer:
                 text += f': {self.type(self.child(r, "type"))}'
             if 'extent' in r['links']:
                 text += f' in {self.link(r, "extent")["attributes"]["name"]}'
+                if 'scale' in r['attributes']:
+                    text += f' * {r["attributes"]["scale"]}'
             lines.append(text + ';')
         for s in self.children(p, 'stages'):
             a = s['attributes']
@@ -608,6 +610,8 @@ class Parser:
             ident = self.add('Resource', {'name': rname, 'kind': word}, {'type': rtype})
             if self.accept('in'):
                 extents.append((ident, self.take(kind='name')))
+                if self.accept('*'):  # elements per element of the extent: `in M * 4`
+                    self.graph.nodes[ident]['attributes']['scale'] = int(self.take(kind='number'))
             self.take(';')
             ids[rname] = ident
             resources.append(ident)

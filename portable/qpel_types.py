@@ -538,6 +538,12 @@ def node_spec(t):
     return 'ScalarType', {'scalar': t}
 
 
+def buffer_length(resource, shapes):
+    """Number of elements of a buffer resource of a plan, for {shape name: (W, H, N)}."""
+    w, h, n = shapes[resource['extent']]
+    return w * h * n * resource.get('scale', 1)
+
+
 def normalize_plan(plan):
     """A launch plan with type terms (schema 2); schema 1 plans spell types with concept names."""
     if plan.get('schema') == 2:

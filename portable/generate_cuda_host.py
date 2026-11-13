@@ -82,6 +82,11 @@ def _value(value, kind):
 '''
 
 
+def _count(r):
+    """Generated-code expression for a buffer's element count: its extent's volume, times its scale."""
+    return f"sizes[{r['extent']!r}]" + (f" * {r['scale']}" if r.get('scale', 1) != 1 else '')
+
+
 def generate(plan, shader):
     plan = normalize_plan(plan)
     validate_resources(plan)
@@ -103,6 +108,9 @@ def generate(plan, shader):
     for name in shapes:
         lines.append(f'    buffers[{name!r}], sizes[{name!r}] = _shape(shapes[{name!r}])')
     for r in resources:
+        if r.get('scale', 1) != 1:  # a scaled buffer can be longer than its extent's checked volume
+            lines += [f'    if {_count(r)} > 2**31 - 1:', '        raise ValueError("Buffer exceeds INT32_MAX elements")']
+    for r in resources:
         if r['kind'] == 'value':
             if is_struct(r['type']):  # passed by value: a NumPy void scalar holding the struct's bytes
                 layout, size = struct_layout(plan['structs'][r['type'][7:]])
@@ -113,7 +121,7 @@ def generate(plan, shader):
         if r['kind'] in ('input', 'inout'):
             name = r['name']
             lines += [f'    value = inputs[{name!r}]',
-                      f"    if not isinstance(value, cp.ndarray) or value.device.id != device or value.dtype != cp.{CUPY_BUFFERS[element(r['type'])]} or value.size != sizes[{r['extent']!r}]:",
+                      f"    if not isinstance(value, cp.ndarray) or value.device.id != device or value.dtype != cp.{CUPY_BUFFERS[element(r['type'])]} or value.size != {_count(r)}:",
                       '        raise ValueError("Input device, dtype or element count does not match Pipeline")']
     lines += ['    with cp.cuda.Device(device):', '        stream = cp.cuda.get_current_stream()',
               '        lib = _library(device)']
@@ -125,7 +133,7 @@ def generate(plan, shader):
             lines.append(f'        buffers[{name!r}] = cp.array(inputs[{name!r}], copy=True, order="C").reshape(-1)')
         elif r['kind'] not in ('shape', 'value'):
             allocate = 'zeros' if r['kind'] == 'zeroed' else 'empty'  # zeroed scratch starts at zero
-            lines.append(f"        buffers[{name!r}] = cp.{allocate}(sizes[{r['extent']!r}], dtype=cp.{CUPY_BUFFERS[element(r['type'])]})")
+            lines.append(f"        buffers[{name!r}] = cp.{allocate}({_count(r)}, dtype=cp.{CUPY_BUFFERS[element(r['type'])]})")
     for s in plan['stages']:
         args = ', '.join(f"buffers[{b['resource']!r}]" for b in s['bindings'])
         block = s['blockSize']
