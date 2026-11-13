@@ -7,6 +7,9 @@ older programs keep building.
 ## [Unreleased] — Phase 3
 
 ### Added
+- **`qpel.py torch-op`:** PyTorch operations from a package and the original extension's
+  launch code (`generated/torch_ops.py`), one per `<<<>>>` launch, run on `mps` tensors with
+  in-place outputs like the launch. 21 of TRELLIS.2 o-voxel's 25 programs get one.
 - **First pilot, TRELLIS.2 o-voxel** (corpus/trellis2): the Z-order and Hilbert serialisation
   kernels, the 32-bit-key hash insert and every hash lookup import and pass the behaviour rows
   (CPU simulator, Apple GPU, GPGPU-Sim). The 64-bit-key insert is refused: Metal has no 64-bit

@@ -44,6 +44,32 @@ python3 portable/qpel.py import kernels.cu --out program.qpel.json      # or a .
 python3 portable/qpel.py translate kernels.cu --out /tmp/qpel-translated  # import, then build both backends
 ```
 
+### PyTorch operations
+
+For a PyTorch CUDA extension, `torch-op` reads the extension's own `<<<>>>` launches and adds
+`generated/torch_ops.py` to a built package: one Python function per launch of the package's
+kernel, named after the host function around it, taking the tensors of that launch (the host
+function's tensor parameters in its order, then the ones it allocates) and its scalar parameters.
+It runs the Metal kernel on `mps` tensors and writes the outputs and in-place tensors back,
+as the launch does. The caller allocates outputs, as the host function does before launching.
+
+```sh
+python3 portable/qpel.py build portable/tests/fixtures/qpel_ir/trellis2_z_order_encode/program.qpel.json --out /tmp/z_order
+python3 portable/qpel.py torch-op /tmp/z_order --launches portable/corpus/trellis2/o-voxel/src/serialize/api.cu -I portable/corpus/include
+```
+
+```python
+ops.z_order_encode_cuda(x, y, z, codes)   # x, y, z, codes: int32 tensors on mps; codes is written
+```
+
+Each launch argument must be a tensor's storage (`t.data_ptr<T>()`, `t.contiguous().data_ptr<T>()`),
+its length (`t.size(0)`, `t.numel()`), a parameter of the host function or a literal; other
+launches are reported with the reason and get no function. Inputs may be strided (they are
+copied, as `.contiguous()` does); outputs must be contiguous. Tensors are checked for device,
+element size and length. In TRELLIS.2's o-voxel, 21 of the 25 imported programs get an
+operation (`tests/test_torch_op.py` runs z-order and the hash inserts with them); the four
+rasteriser launches pass host-computed grid sizes and pointers into a shared buffer.
+
 ## Validation
 
 Run everything that needs no NVIDIA hardware with one command:

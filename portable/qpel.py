@@ -117,6 +117,12 @@ def main(argv=None):
         command.add_argument('--block', type=int, default=64, help='Block size when there is no plan')
         command.add_argument('-I', '--include', type=Path, action='append', default=[],
                              help='Extra header folder, such as stubs for a library the source includes')
+    ops = commands.add_parser('torch-op', help='Add PyTorch operations for the original extension\'s launches to a built package')
+    ops.add_argument('package', type=Path, help='Output directory of build or translate (or its package folder)')
+    ops.add_argument('--launches', type=Path, action='append', required=True,
+                     help='CUDA host source with the original <<<>>> launches, such as a PyTorch extension\'s api.cu')
+    ops.add_argument('-I', '--include', type=Path, action='append', default=[],
+                     help='Extra header folder for the host source')
     args = parser.parse_args(argv)
     try:
         if args.command == 'print':
@@ -143,6 +149,11 @@ def main(argv=None):
                 args.out.write_text(print_program(program))
             else:
                 save(args.out, program)
+        elif args.command == 'torch-op':
+            from frontends import torch_op
+            package = args.package/'package' if (args.package/'package').is_dir() else args.package
+            path, skipped = torch_op.write(package, args.launches, args.include)
+            report = {'torch_ops': str(path), 'skipped_launches': skipped}
         else:
             report = translate(args.source, args.out, args.plan, args.module, args.block, args.include)
     except (ValueError, OSError, RuntimeError) as error:
