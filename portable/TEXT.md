@@ -26,6 +26,7 @@ See `examples/saxpy.qpel`.
       output y: buffer<f32, write> in s;
       inout  t: buffer<u32, atomic> in s;              // filled by the caller, returned (v4)
       input  c: buffer<i32, read>  in s * 4;            // 4 elements per element of s (v4)
+      input  m: buffer<f32, read>  [16];                // a fixed length (v4)
       value  n: i64;
       dispatch k over s block (64) (p = x, ...);        // 1D block
       dispatch k over s block (16, 16, 1) groups ("(W + 15)/16", "H", "1") (...);

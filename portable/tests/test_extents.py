@@ -36,10 +36,27 @@ class Pipeline(unittest.TestCase):
         extents = {r['name']: r.get('extent') for r in plan['resources']}
         self.assertEqual((extents['keys'], extents['table']), ('n', 'slots'))
 
-    def test_a_size_the_kernel_cannot_see_is_refused(self):
+    def test_a_buffer_may_be_sized_by_a_shape_the_kernel_does_not_receive(self):
+        # as TRELLIS.2's tile keys, whose length (all tiles touched) no kernel argument gives
         text = PROGRAM.replace('shape slots;', 'shape slots;\n  shape other;').replace('in slots;', 'in other;')
-        with self.assertRaisesRegex(ValueError, 'GRID_EXTENT'):
-            validate(parse_program(text))
+        validate(parse_program(text))
+        with self.assertRaisesRegex(ValueError, 'EXTENT'):
+            validate(parse_program(PROGRAM.replace('in slots;', 'in keys;')))
+
+    def test_a_fixed_length_buffer(self):
+        from qpel_text import print_program
+        from generate_metal_host import generate as metal_host
+        from differential import cases
+        text = PROGRAM.replace('zeroed table: buffer<u32, atomic> in slots;', 'zeroed table: buffer<u32, atomic> [16];')
+        program = parse_program(text)
+        validate(program)
+        self.assertIn('zeroed table: buffer<u32, atomic> [16];', print_program(program))
+        plan = Lowering(program).plan()
+        self.assertEqual(next(r for r in plan['resources'] if r['name'] == 'table')['length'], 16)
+        self.assertIn('torch.zeros(16,', metal_host(plan, b''))
+        self.assertEqual(cases.buffer_length(next(r for r in plan['resources'] if r['name'] == 'table'), {}), 16)
+        with self.assertRaisesRegex(ValueError, 'fixed-length'):
+            validate(parse_program(text.replace('[16]', '[0]')))
 
     def test_a_scaled_buffer_holds_k_elements_per_element_of_its_extent(self):
         from qpel_text import print_program

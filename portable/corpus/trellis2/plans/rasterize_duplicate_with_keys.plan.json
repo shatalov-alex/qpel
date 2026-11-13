@@ -1,0 +1,93 @@
+{
+ "schema": 2,
+ "module": "trellis2_raster_duplicate_with_keys",
+ "resources": [
+  {
+   "name": "P",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "grid",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "rendered",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "depths",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "P"
+  },
+  {
+   "name": "offsets",
+   "kind": "input",
+   "type": "buffer<i64, read>",
+   "extent": "P"
+  },
+  {
+   "name": "bboxes",
+   "kind": "input",
+   "type": "buffer<i32, read>",
+   "extent": "P",
+   "scale": 4
+  },
+  {
+   "name": "keys_unsorted",
+   "kind": "inout",
+   "type": "buffer<i64, write>",
+   "extent": "rendered"
+  },
+  {
+   "name": "values_unsorted",
+   "kind": "inout",
+   "type": "buffer<u32, write>",
+   "extent": "rendered"
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "duplicateWithKeys",
+   "grid": "P",
+   "blockSize": 256,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "P",
+     "resource": "P"
+    },
+    {
+     "parameter": "grid",
+     "resource": "grid"
+    },
+    {
+     "parameter": "depths",
+     "resource": "depths"
+    },
+    {
+     "parameter": "offsets",
+     "resource": "offsets"
+    },
+    {
+     "parameter": "bboxes",
+     "resource": "bboxes"
+    },
+    {
+     "parameter": "keys_unsorted",
+     "resource": "keys_unsorted"
+    },
+    {
+     "parameter": "values_unsorted",
+     "resource": "values_unsorted"
+    }
+   ]
+  }
+ ]
+}

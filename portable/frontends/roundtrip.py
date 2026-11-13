@@ -246,8 +246,13 @@ def rows(fixtures=None):
         include = [CORPUS/folder for folder in entry.get('include', ())]
         dialect = 'cuda' if source.suffix == '.cu' else 'metal'
         yield (f'{dialect} -> qpel', f'corpus/{entry["source"]} {",".join(program["kernels"])}',
-               check(fixture(program['fixture']), source, None, validate, include, program['kernels'], program['fixture'],
+               check(fixture(program['fixture']), source, program_plan(program), validate, include, program['kernels'], program['fixture'],
                      program.get('constants'), program.get('geometry'), program.get('resources')))
+
+
+def program_plan(program):
+    """A corpus program's own launch plan (sizes the original's host computes), or None."""
+    return json.loads((CORPUS/program['plan']).read_text()) if program.get('plan') else None
 
 
 def reimport(program):

@@ -125,8 +125,9 @@ def main(argv=None):
         fixtures = HERE/'tests/fixtures/qpel_ir'
         for entry in entries():
             for program in entry.get('programs', ()):
+                from .roundtrip import program_plan
                 imported, _ = import_source(CORPUS/entry['source'], include=[CORPUS/f for f in entry.get('include', ())],
-                                            kernels=program['kernels'], module=program['fixture'],
+                                            kernels=program['kernels'], module=program['fixture'], plan=program_plan(program),
                                             constants=program.get('constants'), geometry=program.get('geometry'),
                                             resources=program.get('resources'))
                 folder = fixtures/program['fixture']

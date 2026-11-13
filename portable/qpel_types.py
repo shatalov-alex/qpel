@@ -595,6 +595,8 @@ def node_spec(t):
 
 def buffer_length(resource, shapes):
     """Number of elements of a buffer resource of a plan, for {shape name: (W, H, N)}."""
+    if resource.get('length'):
+        return resource['length']
     w, h, n = shapes[resource['extent']]
     return w * h * n * resource.get('scale', 1)
 

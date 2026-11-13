@@ -233,6 +233,85 @@ SPECIAL = {'scale_offset': scale_offset, 'sam2_cc': sam2_cc, 'grid_stride': grid
 PREFIXES = {'trellis2_hashmap_': hashmap_cases, 'trellis2_hash3d_': hash3d_cases}  # families of corpus programs
 
 
+RASTER_IMAGES = [(16, 16), (37, 23), (64, 48)]  # (W, H); TRELLIS.2 tiles are 8 x 8 (config.h)
+TILE = 8
+
+
+def camera(rng):
+    """Column-major 4x4 view and projection matrices, as TRELLIS.2 passes them: a camera at the
+    origin looking down +z, slightly rotated, with a perspective projection (w = z)."""
+    a, b = rng.uniform(-0.2, 0.2, 2)
+    rx = np.array([[1, 0, 0], [0, np.cos(a), -np.sin(a)], [0, np.sin(a), np.cos(a)]])
+    ry = np.array([[np.cos(b), 0, np.sin(b)], [0, 1, 0], [-np.sin(b), 0, np.cos(b)]])
+    view = np.eye(4)
+    view[:3, :3] = rx @ ry
+    view[:3, 3] = rng.uniform(-0.3, 0.3, 3)
+    fx, fy = rng.uniform(0.8, 1.6, 2)
+    proj = np.array([[fx, 0, 0, 0], [0, fy, 0, 0], [0, 0, 1.0, -0.1], [0, 0, 1.0, 0]]) @ view
+    # matrix[0], matrix[4], matrix[8], matrix[12] is the first row: column-major storage
+    return view.T.reshape(-1).astype(np.float32), proj.T.reshape(-1).astype(np.float32)
+
+
+def raster_rect(box, grid):
+    """getRect (auxiliary.h): the tiles a pixel box (x0, y0, x1, y1) touches, clamped to the grid."""
+    gx, gy = grid
+    lo = (min(gx, max(0, int(box[0] / TILE))), min(gy, max(0, int(box[1] / TILE))))
+    hi = (min(gx, max(0, int((box[2] + TILE - 1) / TILE))), min(gy, max(0, int((box[3] + TILE - 1) / TILE))))
+    return lo, hi
+
+
+def raster_cases(plan, seed):
+    """TRELLIS.2's voxel rasteriser stages, each with inputs the previous stage would give it.
+    preprocess: voxel centres in front of (and some behind) a random camera; outputs start at
+    zero, as the host's torch::zeros. duplicateWithKeys: boxes in the image (some empty), their
+    tile counts' inclusive sum as offsets, and key/value lists of exactly that total.
+    identifyTileRanges: a sorted list of (tile << 32 | depth bits) keys and zeroed ranges."""
+    rng = np.random.default_rng(seed)
+    names = {r['name'] for r in plan['resources']}
+    cases = []
+    for (w, h), count in zip(RASTER_IMAGES * 2, [1, 7, 40, 300, 64, 129]):
+        grid = (-(-w // TILE), -(-h // TILE), 1)
+        if 'positions' in names:  # preprocess
+            view, proj = camera(rng)
+            depth = rng.uniform(-0.5, 6.0, count)
+            spread = rng.uniform(-1.2, 1.2, (count, 2)) * np.maximum(depth, 0.3)[:, None]
+            positions = np.column_stack([spread, depth]).astype(np.float32)
+            inputs = {'positions': positions.reshape(-1), 'viewmatrix': view, 'projmatrix': proj,
+                      'bboxes': np.zeros(4 * count, np.int32), 'depths': np.zeros(count, np.float32),
+                      'tiles_touched': np.zeros(count, np.uint32)}
+            values = {'voxel_size': float(np.float32(rng.uniform(0.02, 0.4))), 'width': w, 'height': h}
+            cases.append(Case({'num_nodes': (count, 1, 1), 'grid': grid}, inputs, values, f'{count} voxels, {w}x{h}'))
+        elif 'offsets' in names:  # duplicateWithKeys
+            boxes = np.zeros((count, 4), np.int32)
+            tiles = np.zeros(count, np.int64)
+            for i in range(count):
+                if rng.random() < 0.8:
+                    x0, y0 = int(rng.integers(0, w)), int(rng.integers(0, h))
+                    box = (x0, y0, int(rng.integers(x0 + 1, w + 1)), int(rng.integers(y0 + 1, h + 1)))
+                    (lx, ly), (hx, hy) = raster_rect(box, grid[:2])
+                    if (hx - lx) * (hy - ly):
+                        boxes[i], tiles[i] = box, (hx - lx) * (hy - ly)
+            if not tiles.any():
+                boxes[0], tiles[0] = (0, 0, 1, 1), 1
+            offsets = np.cumsum(tiles).astype(np.int64)
+            rendered = int(offsets[-1])
+            inputs = {'depths': rng.uniform(0.2, 9.0, count).astype(np.float32), 'offsets': offsets, 'bboxes': boxes.reshape(-1),
+                      'keys_unsorted': np.zeros(rendered, np.int64), 'values_unsorted': np.zeros(rendered, np.uint32)}
+            cases.append(Case({'P': (count, 1, 1), 'grid': grid, 'rendered': (rendered, 1, 1)}, inputs, {},
+                              f'{count} voxels, {rendered} tile instances, {w}x{h}'))
+        else:  # identifyTileRanges
+            tiles = grid[0] * grid[1]
+            tile = np.sort(rng.integers(0, tiles, count)).astype(np.int64)
+            depth_bits = rng.uniform(0.2, 9.0, count).astype(np.float32).view(np.uint32).astype(np.int64)
+            keys = np.sort((tile << 32) | depth_bits)
+            inputs = {'point_list_keys': keys, 'ranges': np.zeros(2 * tiles, np.uint32)}
+            cases.append(Case({'L': (count, 1, 1), 'tiles': (tiles, 1, 1)}, inputs, {}, f'{count} keys, {tiles} tiles'))
+    return cases
+
+
+PREFIXES['trellis2_raster_'] = raster_cases
+
+
 def for_program(name, plan, seed=20261111, values=None, shapes=None, inputs=None):
     """Cases for a program. `values` constrains scalar arguments: 'volume' is the number of
     elements of the dispatch shape (a count the buffers must hold), an integer is used as is,

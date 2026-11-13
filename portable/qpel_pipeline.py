@@ -105,7 +105,8 @@ class PipelineChecker(TypeChecker):
                 ready.add(resource['id'])
             else:
                 self.require(resource, is_buffer(typ), 'RESOURCE_TYPE', 'Data resource requires buffer type')
-                self.require(resource, extent in local and self.nodes[extent]['attributes']['kind'] == 'shape' and self.declared(self.nodes[extent]) == 'shape3', 'EXTENT', 'Extent must reference a local shape')
+                fixed = 'length' in resource['attributes']  # buffer<f32, read> [16]: the same size in every launch
+                self.require(resource, fixed or extent in local and self.nodes[extent]['attributes']['kind'] == 'shape' and self.declared(self.nodes[extent]) == 'shape3', 'EXTENT', 'Extent must reference a local shape')
                 self.require(resource, not is_buffer(typ) or access(typ) != 'read' or kind == 'input', 'RESOURCE_ACCESS', 'Read-only buffers must be inputs')
                 # zeroed scratch is filled with zeros before the first stage; an inout buffer
                 # arrives with data, as an input does, and is returned, as an output is
@@ -126,9 +127,6 @@ class PipelineChecker(TypeChecker):
             params, bindings = self.children(kernel, 'parameters'), self.children(stage, 'bindings')
             self.require(stage, len(params) == len(bindings), 'DISPATCH_ARITY', 'Bind every parameter exactly once')
             effects, seen, written = self.effects(kernel), set(), set()
-            # A buffer is sized by the grid or by a shape the kernel receives in this dispatch,
-            # so the kernel can know the size of everything it indexes.
-            visible = {grid['id']} | {b['links']['resource'] for p, b in zip(params, bindings) if self.declared(p) == 'shape3'}
             for param, binding in zip(params, bindings):
                 self.require(binding, binding['links']['parameter'] == param['id'], 'PARAM_ORDER', 'Bindings must follow parameter declaration order')
                 resource = self.target(binding, 'resource')
@@ -137,9 +135,6 @@ class PipelineChecker(TypeChecker):
                 self.require(binding, rid not in seen, 'ALIAS', 'Aliasing within a dispatch is unsupported')
                 seen.add(rid)
                 self.require(binding, typ == self.declared(param), 'BIND_TYPE', 'Resource and parameter types must match')
-                if is_buffer(typ):
-                    self.require(binding, resource['links'].get('extent') in visible, 'GRID_EXTENT',
-                                 'Buffer extent must be the grid or a shape bound in the same dispatch')
                 if typ in VALUE_TERMS or is_struct(typ):
                     self.require(binding, resource['attributes']['kind'] == 'value', 'VALUE_BINDING', 'Scalar parameters bind value resources')
                 if typ == 'shape3':

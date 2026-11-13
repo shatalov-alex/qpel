@@ -1,0 +1,130 @@
+{
+ "schema": 2,
+ "module": "trellis2_raster_preprocess",
+ "resources": [
+  {
+   "name": "num_nodes",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "positions",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "num_nodes",
+   "scale": 3
+  },
+  {
+   "name": "voxel_size",
+   "kind": "value",
+   "type": "f32",
+   "extent": null
+  },
+  {
+   "name": "viewmatrix",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": null,
+   "length": 16
+  },
+  {
+   "name": "projmatrix",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": null,
+   "length": 16
+  },
+  {
+   "name": "width",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "height",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "grid",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "bboxes",
+   "kind": "inout",
+   "type": "buffer<i32, write>",
+   "extent": "num_nodes",
+   "scale": 4
+  },
+  {
+   "name": "depths",
+   "kind": "inout",
+   "type": "buffer<f32, write>",
+   "extent": "num_nodes"
+  },
+  {
+   "name": "tiles_touched",
+   "kind": "inout",
+   "type": "buffer<u32, write>",
+   "extent": "num_nodes"
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "preprocess",
+   "grid": "num_nodes",
+   "blockSize": 256,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "num_nodes",
+     "resource": "num_nodes"
+    },
+    {
+     "parameter": "positions",
+     "resource": "positions"
+    },
+    {
+     "parameter": "voxel_size",
+     "resource": "voxel_size"
+    },
+    {
+     "parameter": "viewmatrix",
+     "resource": "viewmatrix"
+    },
+    {
+     "parameter": "projmatrix",
+     "resource": "projmatrix"
+    },
+    {
+     "parameter": "width",
+     "resource": "width"
+    },
+    {
+     "parameter": "height",
+     "resource": "height"
+    },
+    {
+     "parameter": "grid",
+     "resource": "grid"
+    },
+    {
+     "parameter": "bboxes",
+     "resource": "bboxes"
+    },
+    {
+     "parameter": "depths",
+     "resource": "depths"
+    },
+    {
+     "parameter": "tiles_touched",
+     "resource": "tiles_touched"
+    }
+   ]
+  }
+ ]
+}

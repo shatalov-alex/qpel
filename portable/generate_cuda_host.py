@@ -84,6 +84,8 @@ def _value(value, kind):
 
 def _count(r):
     """Generated-code expression for a buffer's element count: its extent's volume, times its scale."""
+    if r.get('length'):
+        return str(r['length'])  # a fixed-length buffer
     return f"sizes[{r['extent']!r}]" + (f" * {r['scale']}" if r.get('scale', 1) != 1 else '')
 
 

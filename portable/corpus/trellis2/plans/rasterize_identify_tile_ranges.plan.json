@@ -1,0 +1,53 @@
+{
+ "schema": 2,
+ "module": "trellis2_raster_identify_tile_ranges",
+ "resources": [
+  {
+   "name": "L",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "tiles",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "point_list_keys",
+   "kind": "input",
+   "type": "buffer<i64, write>",
+   "extent": "L"
+  },
+  {
+   "name": "ranges",
+   "kind": "inout",
+   "type": "buffer<u32, write>",
+   "extent": "tiles",
+   "scale": 2
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "identifyTileRanges",
+   "grid": "L",
+   "blockSize": 256,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "L",
+     "resource": "L"
+    },
+    {
+     "parameter": "point_list_keys",
+     "resource": "point_list_keys"
+    },
+    {
+     "parameter": "ranges",
+     "resource": "ranges"
+    }
+   ]
+  }
+ ]
+}

@@ -87,7 +87,7 @@ ATTRIBUTES = {
     'Variable': {'name': str}, 'Literal': {'value': str}, 'I32Literal': {'value': str}, 'F32Literal': {'value': str},
     'Binary': {'operator': str}, 'Unary': {'operator': str},
     'Member': {'member': str}, 'Pipeline': {'name': str},
-    'Resource': {'name': str, 'kind': str, 'scale': int},
+    'Resource': {'name': str, 'kind': str, 'scale': int, 'length': int},
     'Dispatch': {'blockSize': int, 'blockHeight': int, 'blockDepth': int, 'completionBarrier': bool,
                  'groupsX': str, 'groupsY': str, 'groupsZ': str},
     'ThreadIndex': {'axis': str},
@@ -101,7 +101,7 @@ ATTRIBUTES = {
     'VectorType': {'element': str, 'length': int}, 'VectorValue': {'element': str, 'length': int},
 }
 MAX_SCALE = 4096  # elements per element of a buffer's extent: `in M * 4` for an [M, 4] tensor
-DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer', 'reference'}, 'Resource': {'scale'},
+DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer', 'reference'}, 'Resource': {'scale', 'length'},
              'Dispatch': {'blockHeight', 'blockDepth', 'groupsX', 'groupsY', 'groupsZ'}}
 # Every qpel name is emitted verbatim into both CUDA C++ and Metal Shading Language, so it
 # must avoid qpel keywords, C++ keywords, CUDA built-ins and Metal keywords and type names.
@@ -275,6 +275,8 @@ def validate_structure(nodes):
             fail('Invalid struct name')
         if kind == 'Resource' and a['kind'] not in ('input', 'inout', 'output', 'scratch', 'zeroed', 'shape', 'value'):
             fail('Unsupported resource kind')
+        if kind == 'Resource' and 'length' in a and not (1 <= a['length'] <= 2**31 - 1 and 'extent' not in n['links'] and 'scale' not in a):
+            fail('A fixed-length buffer has a length from 1 to INT32_MAX elements, and no extent or scale')
         if kind == 'Resource' and 'scale' in a and not (2 <= a['scale'] <= MAX_SCALE and 'extent' in n['links']):
             fail(f'A buffer scale (elements per element of its extent) is an integer from 2 to {MAX_SCALE}')
         if kind == 'Dispatch':

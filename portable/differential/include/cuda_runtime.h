@@ -22,6 +22,7 @@ struct uint3 { unsigned int x, y, z; };
 struct dim3 {
   unsigned int x, y, z;
   dim3(unsigned int x = 1, unsigned int y = 1, unsigned int z = 1) : x(x), y(y), z(z) {}
+  dim3(uint3 v) : x(v.x), y(v.y), z(v.z) {}  // as CUDA's dim3
 };
 inline uint3 threadIdx, blockIdx;
 inline dim3 blockDim, gridDim;

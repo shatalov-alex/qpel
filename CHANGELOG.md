@@ -24,6 +24,9 @@ older programs keep building.
   passed and returned, with `.x .y .z .w`; CUDA's `int4`/`float3`/`make_float3` and Metal's vectors
   import to them and print back. Helper parameters may be `ref` (CUDA `T&`, Metal `thread T&`); a
   non-const C++ reference was previously read as a copy.
+- **TRELLIS.2 rasteriser, 3 of 4 kernels:** preprocess (camera projection, float math bit-exact
+  on both GPUs), duplicateWithKeys and identifyTileRanges pass the rows, with vector buffers
+  (`int4*`), fixed-length buffers (`[16]`) and per-program launch plans.
 - **Scaled buffers:** a
   buffer may hold k elements per element of its extent (`in M * 4`). The eight 3D hash kernels
   of TRELLIS.2 pass the behaviour rows (coverage 111 to 119 of 719 kernels).

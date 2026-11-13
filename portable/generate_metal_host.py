@@ -25,7 +25,7 @@ def validate_resources(plan):
             if not is_buffer(typ) or element(typ) not in BUFFER_TYPES:
                 raise ValueError('Unsupported buffer type: ' + typ)
             extent = resources.get(r.get('extent'))
-            if extent is None or extent['kind'] != 'shape':
+            if (extent is None or extent['kind'] != 'shape') and not r.get('length'):
                 raise ValueError('Buffer requires a shape extent')
             if kind != 'input' and access(typ) == 'read':
                 raise ValueError('Read-only buffers must be inputs')
@@ -108,6 +108,8 @@ def _input(value, dtype, count, device):
 
 def _count(r):
     """Generated-code expression for a buffer's element count: its extent's volume, times its scale."""
+    if r.get('length'):
+        return str(r['length'])  # a fixed-length buffer
     return f"sizes[{r['extent']!r}]" + (f" * {r['scale']}" if r.get('scale', 1) != 1 else '')
 
 

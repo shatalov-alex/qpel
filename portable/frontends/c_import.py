@@ -254,7 +254,7 @@ LOOSE = {'ImplicitCastExpr', 'ParenExpr', 'CStyleCastExpr', 'CXXStaticCastExpr',
 def launch_tensor(node):
     """('size', name) for a launch argument `t.size(0)` or `t.numel()`, ('data', name) for
     `t.data_ptr<T>()` (PyTorch's way of passing a tensor's length and its storage), or None."""
-    while node.get('kind') in LOOSE and node.get('inner'):
+    while node.get('kind') in LOOSE | {'CXXReinterpretCastExpr'} and node.get('inner'):
         node = node['inner'][0]
     if node.get('kind') not in ('CXXMemberCallExpr', 'CallExpr') or not node.get('inner'):
         return None
@@ -465,6 +465,7 @@ class Importer:
         self.sites = None  # launch sites of the original's host code, read when first needed
         self.extents = {}  # kernel -> {buffer parameter: shape parameter that sizes it}
         self.views = {}  # kernel -> {buffer parameter: elements per vector it is read as (its scale)}
+        self.vector_params = {}  # clang id of a kernel's vector-buffer parameter (int4* p) -> N
         self.grid_params = {}  # kernel -> its shape parameter that is the dispatch grid
         # In a survey every blocker is recorded as (function, error) and the rest of the
         # source is still read; otherwise the first one is raised.
@@ -768,6 +769,14 @@ class Importer:
                                                             'no 64-bit compare-and-swap or add (only 64-bit min/max on newer GPUs)')
                     raise Unsupported(p, 'atomic-type', f'atomics on {p["type"]["qualType"]} are not in qpel; only on unsigned int and int')
                 return type_buffer(scalar, 'atomic')
+            if is_vector(t[2]):
+                # int4* bboxes: a buffer of the vector's scalars, N per element of its extent
+                if not self.dialect.is_kernel(decl):
+                    raise Unsupported(p, 'buffer-type', f'{p["type"]["qualType"]} helper arguments are not in qpel yet')
+                self.vector_params[p['id']] = vector_length(t[2])
+                if self.views.setdefault(decl['name'], {}).setdefault(self.safe_name(p['name']), vector_length(t[2])) != vector_length(t[2]):
+                    raise Unsupported(p, 'buffer-type', f'{p["name"]} is read as vectors of two lengths')
+                return type_buffer(vector_element(t[2]), 'read' if t[1] else 'write')
             if t[2] not in SCALAR_TERMS or t[2] == 'bool':
                 raise Unsupported(p, 'buffer-type', f'{p["type"]["qualType"]} buffers are not in qpel yet')
             if t[2] == 'u8' and not t[1] and p['name'] not in written_buffers(body_of(decl)):
@@ -1186,8 +1195,9 @@ class Importer:
         (`if (i >= n) return;`, `if (i < n) {...}`). qpel turns it into a shape
         (n, 1, 1); every other scalar stays an ordinary kernel argument."""
         params = params_of(decl)
-        if any(types.get((decl['name'], i)) == 'shape3' for i in range(len(params))):
-            return None
+        # A kernel with a uint3/dim3 argument is sized by it, unless the thread index is compared
+        # with a count instead (TRELLIS.2's preprocess: `if (idx >= num_nodes)`, with a dim3 tile grid).
+        shaped = any(types.get((decl['name'], i)) == 'shape3' for i in range(len(params)))
         unsigned = {p['id']: p for i, p in enumerate(params)
                     if types.get((decl['name'], i)) in INTEGER_TERMS and not self.dialect.builtin(p)}
         grid = {p['id'] for p in params if self.dialect.builtin(p) == 'grid'}
@@ -1206,6 +1216,8 @@ class Importer:
                 for index, other in ((a, b), (b, a)):
                     if (refers(index, grid) or is_grid_index(index)) and refers(other, unsigned):
                         compared[peel(other)['referencedDecl']['id']] = True
+        if shaped and len(compared) != 1:
+            return None
         if len(compared) > 1:
             raise Unsupported(decl, 'no-extent', 'the thread index is compared with several counts; pass a uint3 shape')
         if compared:
@@ -1488,6 +1500,53 @@ class Importer:
                 values.append(self.graph.add('Index', children={'base': self.name(entry[1]), 'index': offset}))
         return self.graph.add('VectorValue', {'element': element, 'length': length}, {'elements': values})
 
+    def vector_element_ref(self, node):
+        """(qpel parameter, index node, N, element) for `p[i]`, p a kernel's vector buffer (int4* p), or None."""
+        node = peel(node) if node.get('kind') != 'ArraySubscriptExpr' else node
+        if node.get('kind') != 'ArraySubscriptExpr':
+            return None
+        base, index = node['inner']
+        core = base
+        while core.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and core.get('inner'):
+            core = core['inner'][0]
+        if core.get('kind') != 'DeclRefExpr' or core['referencedDecl']['id'] not in self.vector_params:
+            return None
+        if any(x.get('kind') in ('CallExpr', 'CompoundAssignOperator') or x.get('opcode') in ('=', '++', '--')
+               for x in walk(index)):
+            raise Unsupported(node, 'vector-buffer', 'a vector buffer is indexed by an expression without side effects')
+        entry = self.scope[core['referencedDecl']['id']]
+        return entry[1], index, self.vector_params[core['referencedDecl']['id']], element_of(entry[2])
+
+    def vector_element_index(self, ref, k):
+        """p[N*i + k] for a vector buffer element p[i] (see vector_element_ref)."""
+        param, index, length, _ = ref
+        kind = scalar_of(index)
+        kind = kind if kind in INTEGER_TERMS else 'u32'
+        scaled = self.graph.add('Binary', {'operator': '*'}, {'left': self.expr(index), 'right': self.int_value(kind, length)})
+        offset = self.graph.add('Binary', {'operator': '+'}, {'left': scaled, 'right': self.int_value(kind, k)})
+        return self.graph.add('Index', children={'base': self.name(param), 'index': offset})
+
+    def vector_store(self, node, target, value):
+        """`p[i] = v` into a vector buffer: one store per element, through a local when v is not a list."""
+        ref = self.vector_element_ref(target)
+        element, length = ref[3], ref[2]
+        vtype = f'vec<{element}, {length}>'
+        add = self.graph.add
+        statements = []
+        inner = value
+        while inner['kind'] in LOOSE | {'ConstantExpr'} and len(inner.get('inner', ())) == 1:
+            inner = inner['inner'][0]
+        if inner['kind'] == 'InitListExpr':
+            elements = self.graph.nodes[self.vector_elements(inner, inner.get('inner', ()), vtype)]['children']['elements']
+            parts = elements
+        else:
+            temp = add('Variable', {'name': self.unique_name('stored')}, {'type': self.type_node(vtype), 'value': self.vector_value(value, vtype)})
+            statements.append(temp)
+            parts = [add('Member', {'member': VECTOR_FIELDS[k]}, {'base': self.name(temp)}) for k in range(length)]
+        for k, part in enumerate(parts):
+            statements.append(add('Assign', children={'target': self.vector_element_index(ref, k), 'value': part}))
+        return add('Block', children={'statements': statements})
+
     def int_value(self, scalar, value):
         if scalar == 'u32':
             return self.graph.add('Literal', {'value': f'{value}u'})
@@ -1556,6 +1615,10 @@ class Importer:
                 self.note_atomic_access(peel(target)['inner'][0])
                 store = add('AtomicStore', children={'address': self.element_address(peel(target)), 'value': self.expr(value)})
                 return add('Evaluate', children={'value': store})
+        if kind == 'BinaryOperator' and node['opcode'] == '=' and self.vector_element_ref(node['inner'][0]):
+            return self.vector_store(node, *node['inner'])
+        if kind in ('CXXOperatorCallExpr',) and decl_name(node['inner'][0]) == 'operator=' and self.vector_element_ref(node['inner'][1]):
+            return self.vector_store(node, node['inner'][1], node['inner'][2])
         if kind == 'BinaryOperator' and node['opcode'] == '=':
             target, value = node['inner']
             return add('Assign', children={'target': self.lvalue(target), 'value': self.expr(value)})
@@ -1594,8 +1657,13 @@ class Importer:
                 return self.graph.add('Name', links={'declaration': entry[1]})
             raise Unsupported(node, 'assign-target', 'cannot assign to ' + core['referencedDecl'].get('name', '?'))
         if core['kind'] == 'ArraySubscriptExpr':
+            if self.vector_element_ref(core):
+                raise Unsupported(node, 'vector-buffer', 'a whole vector buffer element is stored by `p[i] = v;`')
             return self.index(core)
         if core['kind'] in ('MemberExpr', 'ExtVectorElementExpr') and is_vector(scalar_of(core['inner'][0])):
+            ref = self.vector_element_ref(core['inner'][0])
+            if ref and member_name(core, self.source) in VECTOR_FIELDS:  # ranges[t].x = ...
+                return self.vector_element_index(ref, VECTOR_FIELDS.index(member_name(core, self.source)))
             if peel(core['inner'][0])['kind'] == 'DeclRefExpr':
                 return self.expr(core)  # v.x = ...: an element of a vector variable
         raise Unsupported(node, 'assign-target', 'only names and buffer elements can be assigned')
@@ -1781,6 +1849,13 @@ class Importer:
         if is_vector(scalar_of(n)) and (kind in ('InitListExpr', 'MetalVectorInitExpr', 'CXXConstructExpr')
                                         or self.vector_load_base(n) is not None):
             return self.vector_value(n, scalar_of(n))
+        if kind == 'CXXConstructExpr' and len(n.get('inner', ())) == 1 and \
+                ' '.join(words(n['type']['qualType'])) == ' '.join(words(n['inner'][0]['type']['qualType'])):
+            return self.expr(n['inner'][0])  # a copy (a dim3 or vector passed by value)
+        if kind == 'ArraySubscriptExpr' and self.vector_element_ref(n):
+            ref = self.vector_element_ref(n)
+            return add('VectorValue', {'element': ref[3], 'length': ref[2]},
+                       {'elements': [self.vector_element_index(ref, k) for k in range(ref[2])]})
         if kind == 'DeclRefExpr':
             ref = n['referencedDecl']
             entry = self.typed(self.scope.get(ref['id']), n)
@@ -1864,6 +1939,9 @@ class Importer:
                 return self.expr(operand)
             if op == '&' and address and peel(operand)['kind'] == 'ArraySubscriptExpr':
                 return self.element_address(peel(operand))
+            if op == '*' and scalar_of(operand) == 'pointer' and scalar_of(n) in SCALAR_TERMS:
+                # *p is p[0]: `*((uint32_t*)&depths[i])` reads the bits of a float as an integer
+                return add('Index', children={'base': self.expr(operand, address=True), 'index': self.int_value('u32', 0)})
             raise Unsupported(n, 'operator', f'operator {op} is not supported here')
         if n.get('castKind') == 'BitCast':  # (device float*)(src + off): the bytes read as another type
             target = describe(n['type']['qualType'])
@@ -1910,6 +1988,9 @@ class Importer:
                 vtype = scalar_of(n['inner'][0])
                 if field not in VECTOR_FIELDS[:vector_length(vtype)]:
                     raise Unsupported(n, 'member', f'{field} of a {vtype}: only single elements .x .y .z .w')
+                ref = self.vector_element_ref(n['inner'][0])
+                if ref:  # bboxes[i].w reads one element
+                    return self.vector_element_index(ref, VECTOR_FIELDS.index(field))
                 return add('Member', {'member': field}, {'base': self.vector_value(n['inner'][0], vtype)})
             if entry and entry[0] in ('param', 'local') and is_struct(entry[2]):
                 return add('Member', {'member': self.safe_name(field)}, {'base': self.name(entry[1])})
@@ -1941,6 +2022,10 @@ class Importer:
         core = peel(node)
         entry = self.scope.get(core.get('referencedDecl', {}).get('id')) if core['kind'] == 'DeclRefExpr' else None
         self.typed(entry, node)
+        if core.get('castKind') == 'BitCast' and scalar_of(core) == 'pointer':
+            target = describe(core['type']['qualType'])  # ((uint*)(depths + i))[0]: a view, as qpel writes it
+            if target[2] in SCALAR_TERMS - {'bool'}:
+                return type_buffer(target[2], 'read' if target[1] else 'write')
         if core['kind'] != 'DeclRefExpr' and scalar_of(core) == 'pointer':
             raise Unsupported(node, 'buffer', 'index a buffer or a buffer local, not a pointer expression')
         if not entry or entry[0] not in ('param', 'local') or not type_is_buffer(entry[2]):
@@ -1949,7 +2034,10 @@ class Importer:
 
     def buffer(self, node):
         self.buffer_kind(node)
-        return self.name(self.scope[peel(node)['referencedDecl']['id']][1])
+        core = peel(node)
+        if core.get('castKind') == 'BitCast':
+            return self.core(core, False, True)  # a view (see buffer_kind)
+        return self.name(self.scope[core['referencedDecl']['id']][1])
 
     def offset(self, node):
         """A pointer offset, which qpel takes unsigned. A negative int offset from a buffer's
@@ -2026,8 +2114,15 @@ class Importer:
             return self.constant(n, limit, value)
         if callee in MINIMUM or callee in MAXIMUM:
             need(2)
-            return add('Minimum' if callee in MINIMUM else 'Maximum',
-                       children={'left': self.expr(args[0]), 'right': self.expr(args[1])})
+            result = scalar_of(n)
+            if result == 'f32' and all(scalar_of(a) == 'f32' for a in args):  # CUDA's min(float, float) is fminf
+                return add('Math', {'function': 'fmin' if callee in MINIMUM else 'fmax'},
+                           {'arguments': [self.expr(a) for a in args]})
+            # CUDA's min(unsigned int, int) and friends compare in the result type
+            operands = [self.convert_types(self.expr(a), scalar_of(a), result, a)
+                        if result in INTEGER_TERMS and scalar_of(a) in INTEGER_TERMS and scalar_of(a) != result else self.expr(a)
+                        for a in args]
+            return add('Minimum' if callee in MINIMUM else 'Maximum', children={'left': operands[0], 'right': operands[1]})
         if callee in FMA:
             need(3)
             return add('F32Fma', children={r: self.expr(a) for r, a in zip(('left', 'right', 'addend'), args)})
@@ -2153,7 +2248,8 @@ class Importer:
         resources, ids = [], {}
         for r in plan['resources']:
             kind, attributes = node_spec(r['type'])
-            attrs = {'name': r['name'], 'kind': r['kind']} | ({'scale': r['scale']} if r.get('scale', 1) != 1 else {})
+            attrs = {'name': r['name'], 'kind': r['kind']} | ({'scale': r['scale']} if r.get('scale', 1) != 1 else {}) \
+                | ({'length': r['length']} if r.get('length') else {})
             ids[r['name']] = add('Resource', attrs, {'type': add(kind, attributes)})
             resources.append((r, ids[r['name']]))
         for r, ident in resources:
