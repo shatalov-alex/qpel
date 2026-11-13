@@ -36,8 +36,13 @@ sys.path.insert(0, str(HERE))
 from . import matrix  # noqa: E402
 from .simulate import Program  # noqa: E402
 
-IMAGE = 'qpel/gpgpu-sim:dev-4195dd4-qpel6'  # change the tag whenever gpgpusim/ changes
+IMAGE = 'qpel/gpgpu-sim:dev-4195dd4-qpel10'  # change the tag whenever gpgpusim/ changes
 DOCKERFILE = HERE/'gpgpusim'
+# Programs GPGPU-Sim cannot run correctly yet, for the original and qpel's CUDA alike, while
+# the CPU simulator and the Apple GPU agree (gpgpusim/README.md, Open). Real NVIDIA hardware
+# (differential/hardware.py) runs them.
+SIMULATOR_ISSUES = {'trellis2_raster_render': 'skipped: GPGPU-Sim finds no voxel for the original either '
+                                              '(gpgpusim/README.md, Open); to check on real NVIDIA hardware (Kaggle T4)'}
 CONFIG = 'SM75_RTX2060'
 ARCH = 'compute_75'
 
@@ -171,10 +176,10 @@ def rows(names=None, gpu=None, config=CONFIG, functional=True, keep=False):
     if problem:
         return
     yield from prepared_rows(names, gpu, lambda root: run_all(root, [root, HERE], config, functional), keep,
-                             'qpel-gpgpusim-')
+                             'qpel-gpgpusim-', skip=SIMULATOR_ISSUES)
 
 
-def prepared_rows(names, gpu, execute, keep=False, prefix='qpel-nvidia-', device='nvidia'):
+def prepared_rows(names, gpu, execute, keep=False, prefix='qpel-nvidia-', device='nvidia', skip=None):
     """Write a CUDA host program and its cases for every original (GpuProgram), call
     execute(root) to compile and run them all, then compare each case with its reference.
     Program folders are root/s*/p_*/ (main.cu, nvcc.args), cases their c*/ subfolders."""
@@ -189,6 +194,9 @@ def prepared_rows(names, gpu, execute, keep=False, prefix='qpel-nvidia-', device
     try:
         for index, (name, path, dialect, plan, include, grids, options) in enumerate(matrix.sources()):
             if names and name not in names:
+                continue
+            if name in (skip or {}):
+                yield f'{device}: {dialect} original', f'{path.name} [{name}]', skip[name]
                 continue
             if dialect == 'metal' and not matrix.metal_available():
                 yield f'{device}: metal original', path.name, 'skipped: no Metal toolchain (Xcode) to import it'

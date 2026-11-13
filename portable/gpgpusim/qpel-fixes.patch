@@ -396,3 +396,126 @@ index ad2d6c29..c36a6228 100644
    #OPT = -O0 -DNTHREADS=$(NTHREADS)
  endif
  
+diff --git a/src/cuda-sim/ptx_ir.cc b/src/cuda-sim/ptx_ir.cc
+index 4e500ccb..e74c5c42 100644
+--- a/src/cuda-sim/ptx_ir.cc
++++ b/src/cuda-sim/ptx_ir.cc
+@@ -1374,6 +1374,7 @@ ptx_instruction::ptx_instruction(
+       case ATOMIC_DEC:
+       case ATOMIC_MIN:
+       case ATOMIC_MAX:
++      case ATOMIC_POPC:  // bar.red.popc (__syncthreads_count)
+         m_atomic_spec = last_ptx_inst_option;
+         break;
+       case APPROX_OPTION:
+diff --git a/src/abstract_hardware_model.h b/src/abstract_hardware_model.h
+index 7dd20058..ca0f01c0 100644
+--- a/src/abstract_hardware_model.h
++++ b/src/abstract_hardware_model.h
+@@ -1879,6 +1879,8 @@ class core_t {
+   unsigned get_reduction_value(unsigned ctaid, unsigned barid) {
+     return reduction_storage[ctaid][barid];
+   }
++  // A barrier reduction (bar.red, __syncthreads_count) counts one barrier: start the next at 0.
++  void reset_reduction(unsigned ctaid, unsigned barid) { reduction_storage[ctaid][barid] = 0; }
+ 
+  protected:
+   class gpgpu_sim *m_gpu;
+diff --git a/src/gpgpu-sim/shader.cc b/src/gpgpu-sim/shader.cc
+index 96656943..e77d6c32 100644
+--- a/src/gpgpu-sim/shader.cc
++++ b/src/gpgpu-sim/shader.cc
+@@ -4941,6 +4941,17 @@ void shader_core_ctx::broadcast_barrier_reduction(unsigned cta_id,
+           inst->get_active_mask());
+     }
+   }
++  // Every waiting thread has read the result; the next reduction on this barrier starts at 0.
++  for (unsigned i = 0; i < m_config->max_warps_per_shader; i++) {
++    if (!warps.test(i)) continue;
++    for (unsigned lane = 0; lane < m_warp_size; lane++) {
++      ptx_thread_info *thread = m_thread[i * m_warp_size + lane];
++      if (thread) {
++        reset_reduction(thread->get_cta_uid(), bar_id);
++        return;
++      }
++    }
++  }
+ }
+ 
+ bool shader_core_ctx::fetch_unit_response_buffer_full() const { return false; }
+diff --git a/src/cuda-sim/cuda-sim.cc b/src/cuda-sim/cuda-sim.cc
+index 69d1eb74..1d891133 100644
+--- a/src/cuda-sim/cuda-sim.cc
++++ b/src/cuda-sim/cuda-sim.cc
+@@ -2688,6 +2688,7 @@ void functionalCoreSim::execute(int inst_count, unsigned ctaid_cp) {
+     }
+     if (!someOneLive) break;
+     if (allAtBarrier) {
++      release_barrier_reductions();
+       for (unsigned i = 0; i < m_warp_count; i++) m_warpAtBarrier[i] = false;
+     }
+   }
+@@ -2742,6 +2743,10 @@ void functionalCoreSim::executeWarp(unsigned i, bool &allAtBarrier,
+     if (inst.isatomic()) inst.do_atomic(true);
+     if (inst.op == BARRIER_OP || inst.op == MEMORY_BARRIER_OP)
+       m_warpAtBarrier[i] = true;
++    if (inst.op == BARRIER_OP && inst.bar_type == RED) {
++      delete m_reductionInst[i];
++      m_reductionInst[i] = new warp_inst_t(inst);
++    }
+     updateSIMTStack(i, &inst);
+   }
+   if (m_liveThreadCount[i] > 0) someOneLive = true;
+@@ -2930,3 +2935,24 @@ void functionalCoreSim::warp_exit(unsigned warp_id) {
+     }
+   }
+ }
++
++// Functional mode releases a barrier when every live warp has reached it. A bar.red
++// (__syncthreads_count/and/or) then gives each waiting thread the group's result, as the
++// timing model's broadcast_barrier_reduction does, and the next reduction starts at 0.
++void functionalCoreSim::release_barrier_reductions() {
++  unsigned bar_id = (unsigned)-1;
++  for (unsigned i = 0; i < m_warp_count; i++) {
++    if (!m_reductionInst[i]) continue;
++    m_reductionInst[i]->broadcast_barrier_reduction(m_reductionInst[i]->get_active_mask());
++    bar_id = m_reductionInst[i]->bar_id;
++    delete m_reductionInst[i];
++    m_reductionInst[i] = nullptr;
++  }
++  if (bar_id == (unsigned)-1) return;
++  for (unsigned t = 0; t < m_warp_count * m_warp_size; t++) {
++    if (m_thread[t]) {
++      reset_reduction(m_thread[t]->get_cta_uid(), bar_id);
++      return;
++    }
++  }
++}
+diff --git a/src/cuda-sim/cuda-sim.h b/src/cuda-sim/cuda-sim.h
+index 21e1ca05..5e6dc36d 100644
+--- a/src/cuda-sim/cuda-sim.h
++++ b/src/cuda-sim/cuda-sim.h
+@@ -69,11 +69,13 @@ class functionalCoreSim : public core_t {
+       : core_t(g, kernel, warp_size, kernel->threads_per_cta()) {
+     m_warpAtBarrier = new bool[m_warp_count];
+     m_liveThreadCount = new unsigned[m_warp_count];
++    m_reductionInst.assign(m_warp_count, nullptr);
+   }
+   virtual ~functionalCoreSim() {
+     warp_exit(0);
+     delete[] m_liveThreadCount;
+     delete[] m_warpAtBarrier;
++    for (warp_inst_t *inst : m_reductionInst) delete inst;
+   }
+   //! executes all warps till completion
+   void execute(int inst_count, unsigned ctaid_cp);
+@@ -99,6 +101,9 @@ class functionalCoreSim : public core_t {
+   // each warp live thread count and barrier indicator
+   unsigned *m_liveThreadCount;
+   bool *m_warpAtBarrier;
++  // each warp's bar.red waiting for the group: its result is delivered when all arrive
++  std::vector<warp_inst_t *> m_reductionInst;
++  void release_barrier_reductions();
+ };
+ 
+ #define RECONVERGE_RETURN_PC ((address_type)-2)

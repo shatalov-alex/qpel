@@ -11,7 +11,10 @@ RUN git clone https://github.com/accel-sim/gpgpu-sim_distribution.git /opt/gpgpu
 WORKDIR /opt/gpgpu-sim
 # qpel-fixes.patch: GPGPU-Sim bugs that made NVIDIA execution differ from real GPUs
 # (README.md), plus the AccelWattch Makefile flags that break the build off x86.
-# Submitted upstream as two pull requests; it is their exact diff.
+# The first part was submitted upstream as two pull requests (their exact diff); the bar.red.popc
+# parse fix (ptx_ir.cc) and the reset of barrier reduction counts after each barrier (shader.cc,
+# abstract_hardware_model.h; functional mode in cuda-sim.cc/.h), all for __syncthreads_count,
+# are local so far.
 COPY qpel-fixes.patch /tmp/
 RUN git apply /tmp/qpel-fixes.patch
 RUN bash -c 'set -eo pipefail; export CUDA_INSTALL_PATH=/usr/local/cuda; source setup_environment release; \

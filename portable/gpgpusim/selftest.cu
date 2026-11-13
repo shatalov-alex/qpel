@@ -61,8 +61,22 @@ __global__ void asm_checks(unsigned long long* o, const unsigned* in) {
   asm("neg.f32 %0, %1;" : "=f"(z) : "f"(0.0f)); o[6] = fbits(z);
   o[7] = fbits(sinf(__uint_as_float(in[3])));  // 200000.0f: the large-argument path
 }
+// bar.red.popc (__syncthreads_count): parsed, delivered and counted per barrier, in every block.
+__global__ void barrier_counts(int* out) {
+  int t = threadIdx.x, a = __syncthreads_count(t < 10), b = __syncthreads_count(t < 3), c = 0;
+  for (int r = 0; r < 3; r++) c += __syncthreads_count(t < 5 + r);
+  if (t == 0) { out[blockIdx.x * 3] = a; out[blockIdx.x * 3 + 1] = b; out[blockIdx.x * 3 + 2] = c; }
+}
 int main() {
   int failures = 0;
+  { // barrier counts: 10, 3 and 5 + 6 + 7 in each of 4 blocks
+    int h[12], *d; cudaMalloc(&d, sizeof h); barrier_counts<<<4, 64>>>(d); cudaDeviceSynchronize();
+    cudaMemcpy(h, d, sizeof h, cudaMemcpyDeviceToHost);
+    for (int i = 0; i < 12; ++i) if (h[i] != (i % 3 == 0 ? 10 : i % 3 == 1 ? 3 : 18)) {
+      printf("SELFTEST FAIL bar.red.popc: block %d count %d is %d, want %d\n", i / 3, i % 3, h[i], i % 3 == 0 ? 10 : i % 3 == 1 ? 3 : 18);
+      ++failures; break;
+    }
+  }
   { // asm checks
     const unsigned in[4] = {0xDEADBEEFu, 0xCAFEBABEu, 40u, 0x48435000u};
     const unsigned long long want[8] = {0xdeadbeefcafebabeull, 0xb092ab7c88cf5b62ull, 0x0000000000f00000ull,
