@@ -3,6 +3,8 @@
 using namespace metal;
 // f32-strict-v1: every float32 operation rounds on its own; only QPEL_FMA_F32 fuses.
 #pragma clang fp contract(off)
+// Generated conditions keep their own parentheses: `if ((a == b))` is intended.
+#pragma clang diagnostic ignored "-Wparentheses-equality"
 #define QPEL_KERNEL kernel
 #define QPEL_DEVICE
 #define QPEL_U8 uchar
@@ -170,6 +172,21 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long, -9223372036854775808.0f, 9223372
 #define QPEL_GROUP_SIZE(axis) qpel_group_size.axis
 #define QPEL_GROUP_COUNT(axis) qpel_group_count.axis
 #define QPEL_GROUPS_THREAD_INDEX(axis) (qpel_group.axis * qpel_group_size.axis + qpel_local.axis)
+// IR version 4 shared memory and barriers (Groups kernels). A barrier orders device and
+// threadgroup memory, as __syncthreads does; barrier_count counts with a threadgroup atomic.
+#define QPEL_SHARED(T, name, n) threadgroup T name[n]
+#define QPEL_BARRIER() threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup)
+#define QPEL_BARRIER_COUNT_SCRATCH threadgroup atomic_int qpel_barrier_counter;
+inline int qpel_barrier_count(bool p, threadgroup atomic_int* counter, uint rank) {
+    if (rank == 0) atomic_store_explicit(counter, 0, memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+    if (p) atomic_fetch_add_explicit(counter, 1, memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    int count = atomic_load_explicit(counter, memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    return count;
+}
+#define QPEL_BARRIER_COUNT(p) qpel_barrier_count((p) != 0, &qpel_barrier_counter, qpel_local.x + qpel_group_size.x * (qpel_local.y + qpel_group_size.y * qpel_local.z))
 #endif
 
 #ifdef QPEL_MATH_ENABLED

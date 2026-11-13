@@ -1,0 +1,217 @@
+{
+ "schema": 2,
+ "module": "trellis2_raster_render",
+ "resources": [
+  {
+   "name": "image",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "color",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "tiles",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "rendered",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "voxels",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "attributes",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "ranges",
+   "kind": "input",
+   "type": "buffer<u32, read>",
+   "extent": "tiles",
+   "scale": 2
+  },
+  {
+   "name": "point_list",
+   "kind": "input",
+   "type": "buffer<u32, read>",
+   "extent": "rendered"
+  },
+  {
+   "name": "C",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "W",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "H",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "cam_pos",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": null,
+   "length": 3
+  },
+  {
+   "name": "tan_fovx",
+   "kind": "value",
+   "type": "f32",
+   "extent": null
+  },
+  {
+   "name": "tan_fovy",
+   "kind": "value",
+   "type": "f32",
+   "extent": null
+  },
+  {
+   "name": "viewmatrix",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": null,
+   "length": 16
+  },
+  {
+   "name": "positions",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "voxels",
+   "scale": 3
+  },
+  {
+   "name": "attrs",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "attributes"
+  },
+  {
+   "name": "voxel_size",
+   "kind": "value",
+   "type": "f32",
+   "extent": null
+  },
+  {
+   "name": "out_color",
+   "kind": "inout",
+   "type": "buffer<f32, write>",
+   "extent": "color"
+  },
+  {
+   "name": "out_depth",
+   "kind": "inout",
+   "type": "buffer<f32, write>",
+   "extent": "image"
+  },
+  {
+   "name": "out_alpha",
+   "kind": "inout",
+   "type": "buffer<f32, write>",
+   "extent": "image"
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "render",
+   "grid": "image",
+   "blockSize": 8,
+   "completionBarrier": true,
+   "domain": "groups",
+   "blockShape": [
+    8,
+    8,
+    1
+   ],
+   "groups": [
+    "(W + 7)/8",
+    "(H + 7)/8",
+    "1"
+   ],
+   "bindings": [
+    {
+     "parameter": "ranges",
+     "resource": "ranges"
+    },
+    {
+     "parameter": "point_list",
+     "resource": "point_list"
+    },
+    {
+     "parameter": "C",
+     "resource": "C"
+    },
+    {
+     "parameter": "W",
+     "resource": "W"
+    },
+    {
+     "parameter": "H",
+     "resource": "H"
+    },
+    {
+     "parameter": "cam_pos",
+     "resource": "cam_pos"
+    },
+    {
+     "parameter": "tan_fovx",
+     "resource": "tan_fovx"
+    },
+    {
+     "parameter": "tan_fovy",
+     "resource": "tan_fovy"
+    },
+    {
+     "parameter": "viewmatrix",
+     "resource": "viewmatrix"
+    },
+    {
+     "parameter": "positions",
+     "resource": "positions"
+    },
+    {
+     "parameter": "attrs",
+     "resource": "attrs"
+    },
+    {
+     "parameter": "voxel_size",
+     "resource": "voxel_size"
+    },
+    {
+     "parameter": "out_color",
+     "resource": "out_color"
+    },
+    {
+     "parameter": "out_depth",
+     "resource": "out_depth"
+    },
+    {
+     "parameter": "out_alpha",
+     "resource": "out_alpha"
+    }
+   ]
+  }
+ ]
+}

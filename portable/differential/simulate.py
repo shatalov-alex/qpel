@@ -61,7 +61,9 @@ class Case:
 
     def __init__(self, shapes, inputs=None, values=None, label='', defined=None):
         """defined: {output: number of leading elements the kernel writes}, when it leaves the rest
-        undefined (a grid-stride loop up to n); outputs not listed are compared in full."""
+        undefined (a grid-stride loop up to n), or {output: other output}, when it is defined only
+        where the original's other output is nonzero (TRELLIS.2's depth, where alpha is 1);
+        outputs not listed are compared in full."""
         self.shapes, self.inputs, self.values, self.label = shapes, inputs or {}, values or {}, label
         self.defined = defined or {}
 
@@ -98,6 +100,20 @@ def geometry(stage, shape):
         return tuple(-(-shape[a] // block[a]) for a in range(3)), block
     block = stage['blockSize']
     return (-(-volume(shape) // block), 1, 1), (block, 1, 1)
+
+
+BARRIERS = ('__syncthreads', '.sync()', 'QPEL_BARRIER', 'QPEL_GROUP_SUM_F32(', 'threadgroup_barrier')
+GENERATED = '// Generated from qpel IR. Do not edit.'
+
+
+def needs_threads(text):
+    """True when a source's kernels use barriers, so the simulator must run a block's threads
+    together. In qpel's output only the kernels count (the inlined backend header mentions
+    __syncthreads whether or not they use it)."""
+    if GENERATED in text:
+        text = text[text.rindex(GENERATED):]
+    return any(token in line for line in text.splitlines() if not line.lstrip().startswith(('#', '//'))
+               for token in BARRIERS)
 
 
 class Program:
@@ -143,6 +159,7 @@ class Program:
             include = [source.parent] + include
             source = device
         self.source, self.include = source, include
+        self.threaded = needs_threads(source.read_text(errors='replace'))
         self.main = self.work/self.MAIN
         self.main.write_text(self.program(source))
         self.binary = self.work/'simulate'
@@ -151,7 +168,8 @@ class Program:
     MAIN = 'main.cpp'
 
     def build(self):
-        build = subprocess.run(['clang++', '-std=c++17', '-O1', '-ffp-contract=off', '-fsanitize=undefined',
+        threads = ['-pthread', '-DQPEL_SIM_THREADED'] if self.threaded else []
+        build = subprocess.run(['clang++', '-std=c++17', '-O1', '-ffp-contract=off', '-fsanitize=undefined', *threads,
                                 '-fno-sanitize-recover=all', '-w', '-I', str(INCLUDE),
                                 *[arg for folder in self.include for arg in ('-I', str(folder))],
                                 # The importer's library stand-ins (PyTorch, ATen, c10, pybind11, cuBLAS).
@@ -168,7 +186,7 @@ class Program:
     HEADERS = ('"cuda_runtime.h"', '"cuda_fp16.h"', '"cuda_bf16.h"')
 
     def program(self, source):
-        lines = [f'#include {h}' for h in self.HEADERS] + [f'#include "{source}"', '#include <vector>', '#include <string>',
+        lines = [f'#include {h}' for h in self.HEADERS] + [f'#include "{source}"', '#include <vector>', '#include <string>', '#include <thread>',
                  '#include <cstring>', '#include <fstream>', '#include <sys/mman.h>', '#include <unistd.h>', '#include <cstdlib>',
                  'struct Ptr { void* p; template <class T> operator T*() const { return (T*)p; } };',
                  'static std::vector<char> load(const std::string& path) {',
@@ -259,6 +277,19 @@ class Program:
         return f'Ptr{{b_{name}.data()}}'
 
     def launch(self, kernel, callee, args, g, b):
+        if self.threaded:  # the threads of a block run together, so its barriers work
+            return [f'  gridDim = dim3({", ".join(g)}); blockDim = dim3({", ".join(b)});',
+                    '  for (unsigned bz = 0; bz < gridDim.z; ++bz) for (unsigned by = 0; by < gridDim.y; ++by)'
+                    ' for (unsigned bx = 0; bx < gridDim.x; ++bx) {',
+                    '    qpel_block_start((int)(blockDim.x * blockDim.y * blockDim.z));',
+                    '    std::vector<std::thread> threads;',
+                    '    for (unsigned tz = 0; tz < blockDim.z; ++tz) for (unsigned ty = 0; ty < blockDim.y; ++ty)'
+                    ' for (unsigned tx = 0; tx < blockDim.x; ++tx)',
+                    '      threads.emplace_back([&, bx, by, bz, tx, ty, tz] {',
+                    '        blockIdx = uint3{bx, by, bz}; threadIdx = uint3{tx, ty, tz};',
+                    f'        {callee}({", ".join(args)});',
+                    '        qpel_thread_exit();', '      });',
+                    '    for (auto& t : threads) t.join();', '  }']
         return [f'  gridDim = dim3({", ".join(g)}); blockDim = dim3({", ".join(b)});',
                 '  for (unsigned bz = 0; bz < gridDim.z; ++bz) for (unsigned by = 0; by < gridDim.y; ++by)'
                 ' for (unsigned bx = 0; bx < gridDim.x; ++bx)',

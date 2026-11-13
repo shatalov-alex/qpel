@@ -271,7 +271,7 @@ def raster_cases(plan, seed):
     cases = []
     for (w, h), count in zip(RASTER_IMAGES * 2, [1, 7, 40, 300, 64, 129]):
         grid = (-(-w // TILE), -(-h // TILE), 1)
-        if 'positions' in names:  # preprocess
+        if 'positions' in names and 'point_list' not in names:  # preprocess
             view, proj = camera(rng)
             depth = rng.uniform(-0.5, 6.0, count)
             spread = rng.uniform(-1.2, 1.2, (count, 2)) * np.maximum(depth, 0.3)[:, None]
@@ -299,6 +299,32 @@ def raster_cases(plan, seed):
                       'keys_unsorted': np.zeros(rendered, np.int64), 'values_unsorted': np.zeros(rendered, np.uint32)}
             cases.append(Case({'P': (count, 1, 1), 'grid': grid, 'rendered': (rendered, 1, 1)}, inputs, {},
                               f'{count} voxels, {rendered} tile instances, {w}x{h}'))
+        elif 'point_list' in names:  # render: each tile's voxels, in list order (first hit wins)
+            view, _ = camera(rng)
+            tiles = grid[0] * grid[1]
+            channels = int(rng.integers(1, 4))
+            voxels = max(count // 4, 1)
+            depth = rng.uniform(1.5, 5.0, voxels)
+            spread = rng.uniform(-0.6, 0.6, (voxels, 2)) * depth[:, None]
+            positions = np.column_stack([spread, depth]).astype(np.float32)
+            lists, ranges = [], np.zeros(2 * tiles, np.uint32)
+            for t in range(tiles):
+                chosen = rng.choice(voxels, int(rng.integers(0, min(voxels, 70) + 1)), replace=True) if rng.random() < 0.85 else []
+                ranges[2 * t], ranges[2 * t + 1] = sum(len(x) for x in lists), sum(len(x) for x in lists) + len(chosen)
+                lists.append(np.asarray(chosen, np.uint32))
+            point_list = np.concatenate(lists).astype(np.uint32) if sum(len(x) for x in lists) else np.zeros(1, np.uint32)
+            inputs = {'ranges': ranges, 'point_list': point_list, 'cam_pos': rng.uniform(-0.1, 0.1, 3).astype(np.float32),
+                      'viewmatrix': view, 'positions': positions.reshape(-1),
+                      'attrs': rng.uniform(0, 1, voxels * channels).astype(np.float32),
+                      'out_color': np.zeros(channels * w * h, np.float32), 'out_depth': np.zeros(w * h, np.float32),
+                      'out_alpha': np.zeros(w * h, np.float32)}
+            values = {'C': channels, 'W': w, 'H': h, 'tan_fovx': float(np.float32(rng.uniform(0.3, 0.7))),
+                      'tan_fovy': float(np.float32(rng.uniform(0.3, 0.7))), 'voxel_size': float(np.float32(rng.uniform(0.15, 0.6)))}
+            # depth is the original's uninitialized D where no voxel is hit: defined only where alpha is 1
+            cases.append(Case({'image': (w, h, 1), 'color': (w, h, channels), 'tiles': (tiles, 1, 1),
+                               'rendered': (len(point_list), 1, 1), 'voxels': (voxels, 1, 1),
+                               'attributes': (voxels * channels, 1, 1)}, inputs, values,
+                              f'{voxels} voxels, {len(point_list)} in tiles, {w}x{h}x{channels}', defined={'out_depth': 'out_alpha'}))
         else:  # identifyTileRanges
             tiles = grid[0] * grid[1]
             tile = np.sort(rng.integers(0, tiles, count)).astype(np.int64)

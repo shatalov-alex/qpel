@@ -152,9 +152,9 @@ class CudaIdioms(Sources):
             'for-init': THRESHOLD_CU.replace('binary[i] =', 'for (unsigned j = 0, k = 1; j < 2u; ++j) {} binary[i] ='),
             'double': THRESHOLD_CU.replace('intensity[i] >= cutoff[i]', '0.5 > 0.25'),
             'thread-builtin': '__device__ unsigned int lane() { return threadIdx.x; }\n' + THRESHOLD_CU,
-            'call': THRESHOLD_CU.replace('binary[i] =', '__syncthreads(); binary[i] ='),
+            'call': THRESHOLD_CU.replace('binary[i] =', '__syncwarp(); binary[i] ='),
             'buffer-type': THRESHOLD_CU.replace('unsigned int* binary', 'double* binary'),
-            'local-type': THRESHOLD_CU.replace('binary[i] =', '__shared__ unsigned int cache[64]; binary[i] ='),
+            'local-type': THRESHOLD_CU.replace('binary[i] =', 'char4 packed; binary[i] ='),
             'scalar-kernel-argument': THRESHOLD_CU.replace('uint3 dimensions', 'uint3 dimensions, bool extra'),
             'no-extent': THRESHOLD_CU.replace('uint3 dimensions', 'unsigned int n, unsigned int m').replace(
                 'dimensions.x * dimensions.y * dimensions.z', 'n || i >= m'),

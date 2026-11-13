@@ -5,7 +5,7 @@ and whole-resource pipeline effects, not numerical lowering, bounds or races.
 """
 import json
 from qpel_schema import validate_envelope, validate_structure
-from qpel_types import is_vector, vector_element, vector_length, EXACT_MATH, validate_types, TypeChecker, LEGACY, term, is_buffer, element, access, is_signed, bits, unsigned_of, arithmetic, INTEGER_TERMS, is_array, array_element, array_length
+from qpel_types import is_shared, shared_element, shared_length, is_vector, vector_element, vector_length, EXACT_MATH, validate_types, TypeChecker, LEGACY, term, is_buffer, element, access, is_signed, bits, unsigned_of, arithmetic, INTEGER_TERMS, is_array, array_element, array_length
 from qpel_pipeline import validate_pipeline
 from qpel_bounds import validate_static_bounds
 
@@ -15,8 +15,8 @@ LEGACY_MACROS={'void':'void','bool':'bool','u8':'QPEL_U8','u32':'QPEL_U32','i32'
        'buffer<u32, atomic>':'QPEL_ATOMIC_U32','buffer<i32, atomic>':'QPEL_ATOMIC_I32','buffer<i32, read>':'QPEL_READ_I32',
        'buffer<i32, write>':'QPEL_WRITE_I32','buffer<f32, read>':'QPEL_READ_F32','buffer<f32, write>':'QPEL_WRITE_F32',
        'buffer<f16, read>':'QPEL_READ_F16','buffer<f16, write>':'QPEL_WRITE_F16'}
-TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType','StructType','ArrayType','VectorType'}
-KINDS=TYPE_KINDS|set('ArrayValue VectorValue View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange Pipeline Resource Dispatch Binding'.split())
+TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType','StructType','ArrayType','VectorType','SharedType'}
+KINDS=TYPE_KINDS|set('ArrayValue VectorValue Barrier BarrierCount View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange Pipeline Resource Dispatch Binding'.split())
 COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage','groups','math_exact','math_bounded'}
 PROFILES={'metal':COMMON_FEATURES,'cuda':COMMON_FEATURES}
 SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3',4:'qpel-portable-core-v4'}
@@ -28,7 +28,7 @@ V2_KINDS={'Grid3D','ThreadIndex','For','DoWhile','Break','Continue','I32Type','R
 V3_KINDS={'ScalarType','BufferType','Cast','Constant','Math','View','StructDecl','Field','StructType','Groups','GroupIndex','LocalIndex','GroupSize','GroupCount'}
 # Version 4 adds thread-private local arrays (array<T, N>, ArrayValue), compare-and-swap and
 # inout resources (filled by the caller, updated by the kernels, returned).
-V4_KINDS={'ArrayType','ArrayValue','AtomicCompareExchange','VectorType','VectorValue'}
+V4_KINDS={'ArrayType','ArrayValue','AtomicCompareExchange','VectorType','VectorValue','SharedType','Barrier','BarrierCount'}
 def type_macro(t):
     """Backend macro spelling a type term."""
     if t in LEGACY_MACROS:return LEGACY_MACROS[t]
@@ -77,6 +77,7 @@ def version_4_features(nodes):
     if any(n['kind']=='Resource' and n['attributes'].get('kind')=='inout' for n in nodes):used.add('inout')
     if any(n['kind']=='Resource' and 'scale' in n['attributes'] for n in nodes):used.add('buffer scale')
     if any(n['kind']=='Resource' and 'length' in n['attributes'] for n in nodes):used.add('fixed-length buffer')
+    if any(n['kind']=='For' and len(n['children'].get('step',[]))>1 for n in nodes):used.add('for loop with several steps')
     if any(n['kind']=='Parameter' and n['attributes'].get('reference') for n in nodes):used.add('reference parameter')
     return used
 
@@ -138,6 +139,8 @@ def validate(program, backend=None):
     if seen!=set(nodes):raise ValueError('Unreachable IR nodes')
     validate_structure(nodes)
     validate_types(program)
+    from qpel_uniform import check_barriers
+    check_barriers(program)
     validate_pipeline(program)
     bounds = validate_static_bounds(program)
     if backend is not None:
@@ -176,7 +179,12 @@ class Lowering:
             if kernel and self.child(n,'domain')['kind']=='Grid3D':
                 return 'QPEL_KERNEL '+e('resultType')+' '+a['name']+'('+args+' QPEL_GRID3D_PARAM) {\n'+e('body')+'\n}\n'
             if kernel and self.child(n,'domain')['kind']=='Groups':
-                return 'QPEL_KERNEL '+e('resultType')+' '+a['name']+'('+args+' QPEL_GROUPS_PARAM) {\n'+e('body')+'\n}\n'
+                # Shared memory and the barrier counter live at the kernel's own scope (Metal's threadgroup rule).
+                body=self.child(n,'body')
+                shared=[v for v in self.children(body,'statements') if v['kind']=='Variable' and is_shared(term(self.child(v,'type')))]
+                top=''.join('QPEL_SHARED('+type_macro(shared_element(term(self.child(v,'type'))))+', '+v['attributes']['name']+', '+str(shared_length(term(self.child(v,'type'))))+');\n' for v in shared)
+                if self.contains(n,'BarrierCount'):top+='QPEL_BARRIER_COUNT_SCRATCH\n'
+                return 'QPEL_KERNEL '+e('resultType')+' '+a['name']+'('+args+' QPEL_GROUPS_PARAM) {\n'+top+e('body')+'\n}\n'
             return ('QPEL_KERNEL ' if kernel else 'QPEL_DEVICE ')+e('resultType')+' '+a['name']+'('+args+(' QPEL_GRID_PARAM(qpel_index)' if kernel else '')+') {\n'+('QPEL_GRID_LOCAL(qpel_index)\n' if kernel else '')+e('body')+'\n}\n'
         if k=='Parameter':
             if a.get('reference'):return 'QPEL_REF('+e('type')+') '+a['name']  # T& (CUDA), thread T& (Metal)
@@ -253,6 +261,8 @@ class Lowering:
             return '('+a['operator']+operand+')'
         if k=='Index':return e('base')+'['+e('index')+']'
         if k=='ArrayValue':return '{'+joined('elements',', ')+'}'
+        if k=='Barrier':return 'QPEL_BARRIER()'
+        if k=='BarrierCount':return 'QPEL_BARRIER_COUNT('+e('value')+')'
         if k=='VectorValue':return f"QPEL_MAKE_VEC{a['length']}_{a['element'].upper()}("+joined('elements',', ')+')'
         if k=='Member':return e('base')+'.'+a['member']
         if k=='Call':return self.link(n,'function')['attributes']['name']+'('+joined('arguments',', ')+')'
@@ -271,6 +281,7 @@ class Lowering:
                 self.read_names={x['links']['declaration'] for x in self.nodes.values() if x['kind']=='Name'}
             unused='QPEL_UNUSED ' if n['id'] not in self.read_names else ''  # never read, e.g. after folded branches
             declared=term(self.child(n,'type'))
+            if is_shared(declared):return ''  # declared at the kernel's top (see Function)
             if is_array(declared):  # T name[N] = {...}: the same in CUDA C++ and Metal (thread address space)
                 return unused+type_macro(array_element(declared))+' '+a['name']+'['+str(array_length(declared))+'] = '+e('value')+';\n'
             return unused+e('type')+' '+a['name']+(' = '+e('value') if self.children(n,'value') else '')+';\n'
@@ -280,7 +291,7 @@ class Lowering:
         if k=='Return':return 'return '+(e('value') if self.children(n,'value') else '')+';\n'
         if k=='If':return 'if ('+e('condition')+') '+e('thenBody')+(' else '+e('elseBody') if self.children(n,'elseBody') else '')+'\n'
         if k=='For':
-            part = lambda role: self.emit(self.child(n,role)).strip().rstrip(';') if self.children(n,role) else ''
+            part = lambda role: ', '.join(self.emit(x).strip().rstrip(';') for x in self.children(n,role))
             return 'for ('+part('init')+'; '+part('condition')+'; '+part('step')+') '+e('body')+'\n'
         if k=='Break':return 'break;\n'
         if k=='Continue':return 'continue;\n'
@@ -291,6 +302,8 @@ class Lowering:
             macro={'AtomicLoad':'QPEL_LOAD','AtomicStore':'QPEL_STORE','AtomicAdd':'QPEL_ADD','AtomicMin':'QPEL_MIN'}[k]
             return macro+'('+e('address')+('' if k=='AtomicLoad' else ', '+e('value'))+')'
         raise ValueError('Not a source expression/statement: '+k)
+    def contains(self,n,kind):
+        return n['kind']==kind or any(self.contains(self.nodes[c],kind) for values in n['children'].values() for c in values)
     def domain_of(self,n):
         """Domain kind of the kernel containing node n."""
         if not hasattr(self,'parents'):

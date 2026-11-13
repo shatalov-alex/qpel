@@ -172,6 +172,11 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long long, -9223372036854775808.0f, 92
 #define QPEL_GROUP_SIZE(axis) blockDim.axis
 #define QPEL_GROUP_COUNT(axis) gridDim.axis
 #define QPEL_GROUPS_THREAD_INDEX(axis) (blockIdx.axis * blockDim.axis + threadIdx.axis)
+// IR version 4 shared memory and barriers (Groups kernels).
+#define QPEL_SHARED(T, name, n) __shared__ T name[n]
+#define QPEL_BARRIER() __syncthreads()
+#define QPEL_BARRIER_COUNT(p) __syncthreads_count((p) ? 1 : 0)
+#define QPEL_BARRIER_COUNT_SCRATCH
 #endif
 
 #ifdef QPEL_MATH_ENABLED

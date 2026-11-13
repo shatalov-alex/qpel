@@ -12,7 +12,11 @@ struct thread_block {
   dim3 thread_index() const { return dim3(threadIdx.x, threadIdx.y, threadIdx.z); }
   dim3 group_dim() const { return blockDim; }
   dim3 dim_threads() const { return blockDim; }
+#ifdef QPEL_SIM_THREADED
+  void sync() const { __syncthreads(); }
+#else
   void sync() const { qpel_simulator_needs_threads("thread_block::sync"); }
+#endif
 };
 struct grid_group {
   unsigned long long thread_rank() const {

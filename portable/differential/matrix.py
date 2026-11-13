@@ -95,7 +95,10 @@ def compare(expected, actual, names, defined=None, ulps=0, views=None, zero_sign
         if views and name in views:  # a byte buffer holding values of another type
             dtype = test_cases.DTYPES[views[name]]
             a, b = a.view(dtype), b.astype(a.dtype, copy=False).view(dtype)
-        if defined and name in defined:
+        if defined and name in defined and isinstance(defined[name], str):
+            mask = np.asarray(expected[defined[name]]) != 0  # defined where another output is nonzero
+            a, b = a[mask], b[mask]
+        elif defined and name in defined:
             a, b = a[:defined[name]], b[:defined[name]]
         if a.shape != b.shape:
             return f'{name}: {a.shape} != {b.shape}'

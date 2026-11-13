@@ -1,11 +1,13 @@
 // CPU simulator for CUDA kernels, used to run original and qpel-generated CUDA
 // sources on the host and compare their outputs (differential/README.md).
 //
-// A launch runs every block and every thread one after another, which is one
-// valid CUDA schedule. That is exact for kernels whose result does not depend
-// on the schedule, such as all race-free kernels and atomics whose combined
-// effect is order-independent (atomicAdd, atomicMin on integers). Barriers and
-// shared memory need threads running together and are rejected at run time.
+// A launch runs every block one after another. Without QPEL_SIM_THREADED its threads
+// also run one after another, which is one valid CUDA schedule: exact for kernels whose
+// result does not depend on the schedule (race-free kernels, atomics whose combined
+// effect is order-independent). With QPEL_SIM_THREADED (sources with barriers) the
+// threads of a block run together as host threads: __syncthreads and friends wait for
+// every thread of the block that has not exited (as on Volta and later), __shared__ is
+// one copy for the block (blocks run one at a time), and atomics take a lock.
 #pragma once
 #include <cmath>
 #include <cstdint>
@@ -24,26 +26,59 @@ struct dim3 {
   dim3(unsigned int x = 1, unsigned int y = 1, unsigned int z = 1) : x(x), y(y), z(z) {}
   dim3(uint3 v) : x(v.x), y(v.y), z(v.z) {}  // as CUDA's dim3
 };
+#ifdef QPEL_SIM_THREADED
+#include <condition_variable>
+#include <mutex>
+inline thread_local uint3 threadIdx, blockIdx;
+#else
 inline uint3 threadIdx, blockIdx;
+#endif
 inline dim3 blockDim, gridDim;
 typedef struct CUstream_st* cudaStream_t;
 typedef int cudaError_t;
 
+#ifdef QPEL_SIM_THREADED
+// One block's barrier. `active` threads have not exited; a barrier opens when all of them wait.
+struct QpelBlockBarrier {
+  std::mutex m; std::condition_variable cv;
+  int active = 0, waiting = 0, generation = 0, count = 0, result = 0;
+  void open() { result = count; count = 0; waiting = 0; ++generation; cv.notify_all(); }
+};
+inline QpelBlockBarrier qpel_barrier;
+inline std::mutex qpel_atomic_lock;
+inline void qpel_block_start(int threads) { qpel_barrier.active = threads; qpel_barrier.waiting = 0; qpel_barrier.count = 0; }
+inline int qpel_sync(int predicate) {  // the number of waiting threads whose predicate is nonzero
+  std::unique_lock<std::mutex> lock(qpel_barrier.m);
+  int generation = qpel_barrier.generation;
+  qpel_barrier.count += predicate != 0;
+  if (++qpel_barrier.waiting == qpel_barrier.active) qpel_barrier.open();
+  else qpel_barrier.cv.wait(lock, [&] { return qpel_barrier.generation != generation; });
+  return qpel_barrier.result;
+}
+inline void qpel_thread_exit() {
+  std::lock_guard<std::mutex> lock(qpel_barrier.m);
+  if (--qpel_barrier.active == qpel_barrier.waiting && qpel_barrier.waiting > 0) qpel_barrier.open();
+}
+inline void __syncthreads() { qpel_sync(0); }
+#define QPEL_SIM_ATOMIC std::lock_guard<std::mutex> qpel_guard(qpel_atomic_lock);
+#else
 inline void __syncthreads() {
   std::fprintf(stderr, "qpel simulator: __syncthreads needs threads that run together\n");
   std::abort();
 }
+#define QPEL_SIM_ATOMIC
+#endif
 
 // Atomics. Signed arithmetic wraps, as the hardware does.
-inline unsigned int atomicAdd(unsigned int* a, unsigned int v) { unsigned int o = *a; *a = o + v; return o; }
-inline int atomicAdd(int* a, int v) { int o = *a; *a = (int)((unsigned int)o + (unsigned int)v); return o; }
-inline float atomicAdd(float* a, float v) { float o = *a; *a = o + v; return o; }
-inline unsigned int atomicExch(unsigned int* a, unsigned int v) { unsigned int o = *a; *a = v; return o; }
-inline int atomicExch(int* a, int v) { int o = *a; *a = v; return o; }
-inline unsigned int atomicMin(unsigned int* a, unsigned int v) { unsigned int o = *a; if (v < o) *a = v; return o; }
-inline int atomicMin(int* a, int v) { int o = *a; if (v < o) *a = v; return o; }
-inline unsigned int atomicMax(unsigned int* a, unsigned int v) { unsigned int o = *a; if (v > o) *a = v; return o; }
-inline int atomicMax(int* a, int v) { int o = *a; if (v > o) *a = v; return o; }
+inline unsigned int atomicAdd(unsigned int* a, unsigned int v) { QPEL_SIM_ATOMIC unsigned int o = *a; *a = o + v; return o; }
+inline int atomicAdd(int* a, int v) { QPEL_SIM_ATOMIC int o = *a; *a = (int)((unsigned int)o + (unsigned int)v); return o; }
+inline float atomicAdd(float* a, float v) { QPEL_SIM_ATOMIC float o = *a; *a = o + v; return o; }
+inline unsigned int atomicExch(unsigned int* a, unsigned int v) { QPEL_SIM_ATOMIC unsigned int o = *a; *a = v; return o; }
+inline int atomicExch(int* a, int v) { QPEL_SIM_ATOMIC int o = *a; *a = v; return o; }
+inline unsigned int atomicMin(unsigned int* a, unsigned int v) { QPEL_SIM_ATOMIC unsigned int o = *a; if (v < o) *a = v; return o; }
+inline int atomicMin(int* a, int v) { QPEL_SIM_ATOMIC int o = *a; if (v < o) *a = v; return o; }
+inline unsigned int atomicMax(unsigned int* a, unsigned int v) { QPEL_SIM_ATOMIC unsigned int o = *a; if (v > o) *a = v; return o; }
+inline int atomicMax(int* a, int v) { QPEL_SIM_ATOMIC int o = *a; if (v > o) *a = v; return o; }
 
 // CUDA's integer min/max, including the mixed overloads (which compare unsigned).
 inline unsigned int min(unsigned int a, unsigned int b) { return a < b ? a : b; }
@@ -116,9 +151,15 @@ inline int __all_sync(unsigned, int) { qpel_simulator_needs_threads("__all_sync"
 inline unsigned __ballot_sync(unsigned, int) { qpel_simulator_needs_threads("__ballot_sync"); }
 inline void __syncwarp(unsigned = 0xffffffffu) { qpel_simulator_needs_threads("__syncwarp"); }
 inline unsigned __activemask() { qpel_simulator_needs_threads("__activemask"); }
+#ifdef QPEL_SIM_THREADED
+inline int __syncthreads_count(int p) { return qpel_sync(p); }
+inline int __syncthreads_or(int p) { return qpel_sync(p) != 0; }
+inline int __syncthreads_and(int p) { int n = qpel_barrier.active; return qpel_sync(p) == n; }
+#else
 inline int __syncthreads_count(int) { qpel_simulator_needs_threads("__syncthreads_count"); }
 inline int __syncthreads_or(int) { qpel_simulator_needs_threads("__syncthreads_or"); }
 inline int __syncthreads_and(int) { qpel_simulator_needs_threads("__syncthreads_and"); }
+#endif
 inline void __threadfence() {}
 inline void __threadfence_block() {}
 inline void __trap() { std::abort(); }
@@ -150,11 +191,11 @@ inline float rsqrtf(float x) { return 1.0f / std::sqrt(x); }
 // CUDA's float math functions (sinf, powf, ...) by their global C names: libstdc++ 13 has no
 // std::sinf, while both C++ libraries declare ::sinf through <math.h>.
 #include <math.h>
-inline long long atomicAdd(long long* a, long long v) { long long o = *a; *a = (long long)((unsigned long long)o + (unsigned long long)v); return o; }
-inline unsigned long long atomicAdd(unsigned long long* a, unsigned long long v) { unsigned long long o = *a; *a = o + v; return o; }
-inline int atomicCAS(int* a, int c, int v) { int o = *a; if (o == c) *a = v; return o; }
-inline unsigned atomicCAS(unsigned* a, unsigned c, unsigned v) { unsigned o = *a; if (o == c) *a = v; return o; }
-inline unsigned long long atomicCAS(unsigned long long* a, unsigned long long c, unsigned long long v) { unsigned long long o = *a; if (o == c) *a = v; return o; }
+inline long long atomicAdd(long long* a, long long v) { QPEL_SIM_ATOMIC long long o = *a; *a = (long long)((unsigned long long)o + (unsigned long long)v); return o; }
+inline unsigned long long atomicAdd(unsigned long long* a, unsigned long long v) { QPEL_SIM_ATOMIC unsigned long long o = *a; *a = o + v; return o; }
+inline int atomicCAS(int* a, int c, int v) { QPEL_SIM_ATOMIC int o = *a; if (o == c) *a = v; return o; }
+inline unsigned atomicCAS(unsigned* a, unsigned c, unsigned v) { QPEL_SIM_ATOMIC unsigned o = *a; if (o == c) *a = v; return o; }
+inline unsigned long long atomicCAS(unsigned long long* a, unsigned long long c, unsigned long long v) { QPEL_SIM_ATOMIC unsigned long long o = *a; if (o == c) *a = v; return o; }
 
 // Runtime API: declarations only. Host code in library headers mentions them; the
 // simulator never calls them (host functions of the simulated file are blanked).

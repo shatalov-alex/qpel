@@ -112,7 +112,7 @@ class Printer:
             part = lambda role, f: f(self.child(s, role)) if s['children'].get(role) else ''
             init = part('init', lambda n: self.statement(n, 0, bare=True))
             cond = part('condition', self.expr)
-            step = part('step', lambda n: self.statement(n, 0, bare=True))
+            step = ', '.join(self.statement(n, 0, bare=True) for n in self.children(s, 'step'))
             return f'{pad}for ({init}; {cond}; {step}) {self.block(self.child(s, "body"), depth)}'
         raise ValueError('Not a statement: ' + k)
 
@@ -154,6 +154,10 @@ class Printer:
             return f'qpel.sum_f32({e("buffer")}, {e("start")}, {e("count")})'
         if k == 'WorkgroupSumF32':
             return f'qpel.group_sum_f32({e("value")})'
+        if k == 'Barrier':
+            return 'qpel.barrier()'
+        if k == 'BarrierCount':
+            return f'qpel.barrier_count({e("value")})'
         if k == 'GridIndex':
             return 'qpel.index'
         if k in BUILTIN_AXES:
@@ -318,6 +322,13 @@ class Parser:
             return f'buffer<{element}, {access}>'
         if name == 'struct':
             return 'struct ' + self.take(kind='name')
+        if name == 'shared':
+            self.take('<')
+            element = self.type_term()
+            self.take(',')
+            length = self.take(kind='number')
+            self.take('>')
+            return f'shared<{element}, {length}>'
         if name == 'vec':
             self.take('<')
             element = self.take(kind='name')
@@ -344,6 +355,9 @@ class Parser:
             return self.add('BufferType', {'element': element, 'access': access})
         if t.startswith('struct '):
             return self.add('StructType', {'name': t[len('struct '):]})
+        if t.startswith('shared<'):
+            element, length = t[len('shared<'):-1].rsplit(', ', 1)
+            return self.add('SharedType', {'element': element, 'length': int(length)})
         if t.startswith('vec<'):
             element, length = t[len('vec<'):-1].split(', ')
             if not length.isdigit():
@@ -458,8 +472,12 @@ class Parser:
             if self.peek()[1] != ';':
                 children['condition'] = self.expr()
             self.take(';')
-            if self.peek()[1] != ')':
-                children['step'] = self.statement(bare=True)
+            steps = []
+            while self.peek()[1] != ')':
+                steps.append(self.statement(bare=True))
+                self.accept(',')
+            if steps:
+                children['step'] = steps
             self.take(')')
             children['body'] = self.block()
             self.scopes.pop()
@@ -602,6 +620,12 @@ class Parser:
             what = self.take(kind='name')
             if what == 'index':
                 return self.add('GridIndex')
+            if what == 'barrier':
+                self.take('(')
+                self.take(')')
+                return self.add('Barrier')
+            if what == 'barrier_count':
+                return self.add('BarrierCount', children={'value': self.arguments()[0]})
             if what in BUILTIN_AXES.values():
                 self.take('.')
                 axis = self.take(kind='name')

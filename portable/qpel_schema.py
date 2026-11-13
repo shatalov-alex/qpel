@@ -6,10 +6,10 @@ import re
 import math
 import struct
 
-from qpel_types import INTEGER_TERMS, INTEGERS_BITS, MATH, SCALAR_TERMS, array, buffer, is_valid, vector
+from qpel_types import INTEGER_TERMS, INTEGERS_BITS, MATH, SCALAR_TERMS, array, buffer, is_valid, vector, shared
 
-TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType StructType ArrayType VectorType'.split())
-EXPRESSIONS = set('ArrayValue VectorValue Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange'.split())
+TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType StructType ArrayType VectorType SharedType'.split())
+EXPRESSIONS = set('ArrayValue VectorValue Barrier BarrierCount Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange'.split())
 STATEMENTS = set('Block Variable Assign Evaluate If While DoWhile For Break Continue Return'.split())
 
 # Child role -> (allowed concepts, minimum count, maximum count or None).
@@ -42,7 +42,8 @@ CHILDREN = {
     'Variable': {'type': one(TYPE_KINDS), 'value': optional(EXPRESSIONS)},  # only buffer locals may omit it
     'View': {'base': one(EXPRESSIONS)},
     'ArrayValue': {'elements': many(EXPRESSIONS)},  # IR version 4: initializes a local array
-    'VectorValue': {'elements': many(EXPRESSIONS)},  # IR version 4: a vec<T, N> made of N elements
+    'VectorValue': {'elements': many(EXPRESSIONS)},
+    'BarrierCount': {'value': one(EXPRESSIONS)},  # IR version 4: __syncthreads_count  # IR version 4: a vec<T, N> made of N elements
     'Binary': {'left': one(EXPRESSIONS), 'right': one(EXPRESSIONS)},
     'Unary': {'operand': one(EXPRESSIONS)},
     'Index': {'base': one(EXPRESSIONS), 'index': one(EXPRESSIONS)},
@@ -57,7 +58,7 @@ CHILDREN = {
     'DoWhile': {'body': one('Block'), 'condition': one(EXPRESSIONS)},
     # for (init; condition; step) body. A missing condition means true.
     'For': {'init': optional('Variable Assign'), 'condition': optional(EXPRESSIONS),
-            'step': optional('Assign Evaluate'), 'body': one('Block')},
+            'step': many('Assign Evaluate'), 'body': one('Block')},  # several steps: IR version 4 (`i++, n -= 8`)
     'Return': {'value': optional(EXPRESSIONS)},
     'Pipeline': {'resources': many('Resource'), 'stages': many('Dispatch')},
     'Resource': {'type': one(TYPE_KINDS)},
@@ -99,6 +100,7 @@ ATTRIBUTES = {
     # IR version 4
     'ArrayType': {'element': str, 'length': int},
     'VectorType': {'element': str, 'length': int}, 'VectorValue': {'element': str, 'length': int},
+    'SharedType': {'element': str, 'length': int},
 }
 MAX_SCALE = 4096  # elements per element of a buffer's extent: `in M * 4` for an [M, 4] tensor
 DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer', 'reference'}, 'Resource': {'scale', 'length'},
@@ -121,6 +123,12 @@ METAL_NAMES = set('''device constant threadgroup threadgroup_imageblock thread r
 RESERVED = QPEL_KEYWORDS | CPP_KEYWORDS | CUDA_NAMES | METAL_NAMES
 IDENTIFIER = re.compile(r'[A-Za-z][A-Za-z0-9_]*')
 MAX_BLOCK_SIZE = 256
+
+
+# Metal's standard library functions that take vectors: a qpel function of the same name makes
+# calls to it ambiguous in Metal (a local of that name is fine, so these bind function names only).
+METAL_FUNCTIONS = set('normalize length length_squared dot cross distance distance_squared reflect refract '
+                      'faceforward'.split())
 
 
 def is_identifier(name):
@@ -232,6 +240,8 @@ def validate_structure(nodes):
             name = a['name']
             if not is_identifier(name):
                 fail('Invalid or reserved identifier')
+            if kind == 'Function' and name in METAL_FUNCTIONS:
+                fail(f'{name} is a Metal library function; name the function differently')
         if kind == 'Literal':
             value = a['value']
             if value not in ('true', 'false'):
@@ -256,6 +266,8 @@ def validate_structure(nodes):
             fail(f"Invalid buffer type buffer<{a['element']}, {a['access']}>")
         if kind == 'ArrayType' and not is_valid(array(a['element'], a['length'])):
             fail(f"Invalid array type array<{a['element']}, {a['length']}>: a scalar element and 1 to 1024 of them")
+        if kind == 'SharedType' and not is_valid(shared(a['element'], a['length'])):
+            fail(f"Invalid shared type shared<{a['element']}, {a['length']}>: scalars or vectors, at most 16384 bytes")
         if kind in ('VectorType', 'VectorValue') and not is_valid(vector(a['element'], a['length'])):
             fail(f"Invalid vector type vec<{a['element']}, {a['length']}>: i32, u32 or f32 and 2 to 4 of them")
         if kind == 'Math' and a['function'] not in MATH:

@@ -10,11 +10,11 @@ from pathlib import Path
 import re
 import struct
 
-from qpel_schema import is_identifier
+from qpel_schema import METAL_FUNCTIONS, is_identifier
 from qpel_types import (SCALAR_TERMS, VALUE_TERMS, access, buffer as type_buffer, fits, is_buffer as type_is_buffer,
                         is_signed, node_spec, normalize_plan, term as type_term)
 from qpel_types import access as type_access, bits as type_bits, INTEGER_TERMS, MATH, is_struct, is_array
-from qpel_types import arithmetic as type_arithmetic, element as element_of, is_vector, vector_element, vector_length
+from qpel_types import arithmetic as type_arithmetic, element as element_of, is_vector, vector_element, vector_length, is_shared
 from . import clang_ast
 from .clang_ast import position
 
@@ -164,6 +164,37 @@ def is_member(node, base, field):
 
 
 TEMPORARIES = ('ImplicitCastExpr', 'MaterializeTemporaryExpr', 'CXXBindTemporaryExpr', 'ExprWithCleanups', 'ParenExpr')
+
+
+BARRIER_CALLS = {'__syncthreads', '__syncthreads_count', 'threadgroup_barrier', 'qpel_barrier_count'}
+
+
+def predicate(node):
+    """A barrier count's condition without `c ? 1 : 0` and `x != 0` around it (qpel's own
+    spellings, and C's bool-to-int promotion): they count the same threads."""
+    while True:
+        stripped = predicate_once(node)
+        if stripped is node:
+            return node
+        node = stripped
+
+
+def predicate_once(node):
+    core = node
+    while core.get('kind') in TEMPORARIES and core.get('inner'):
+        core = core['inner'][0]
+    if core is not node and scalar_of(core) == 'bool':
+        return core  # C's promotion of a bool to int
+    if core.get('kind') == 'ConditionalOperator':
+        _, yes, no = core['inner']
+        if [integer_constant(yes), integer_constant(no)] == [1, 0]:
+            return core['inner'][0]
+    if core.get('kind') == 'BinaryOperator' and core.get('opcode') == '!=' and integer_constant(core['inner'][1]) == 0:
+        left = core['inner'][0]
+        while left.get('kind') in TEMPORARIES and left.get('inner'):
+            left = left['inner'][0]  # (bool) promoted to int for the comparison
+        return left
+    return node
 
 
 def cooperative_rank(node):
@@ -1017,9 +1048,20 @@ class Importer:
             result = ('scalar', 'void')
         body = self.block(body_of(decl))
         statements = self.graph.nodes[body]['children'].get('statements', [])
-        if len(statements) == 1 and self.graph.nodes[statements[0]]['kind'] == 'Block':
-            body = statements[0]  # `{ { ... } }`, the shape qpel's own output has
-        attrs = {'name': name, 'isKernel': True} if kernel else {'name': name}
+        shared = [x for x in statements if self.graph.nodes[x]['kind'] == 'Variable' and
+                  self.graph.nodes[self.graph.nodes[x]['children']['type'][0]]['kind'] == 'SharedType']
+        rest = [x for x in statements if x not in shared]
+        if len(rest) == 1 and self.graph.nodes[rest[0]]['kind'] == 'Block':
+            # `{ { ... } }`, the shape qpel's own output has (shared memory declared before the inner block)
+            inner = self.graph.nodes[rest[0]]['children'].get('statements', [])
+            body = self.graph.add('Block', children={'statements': shared + inner}) if shared else rest[0]
+        elif shared:  # shared memory first: where it is declared does not matter, and qpel's output hoists it
+            self.graph.nodes[body]['children']['statements'] = shared + rest
+        own = self.safe_name(name)
+        if own in METAL_FUNCTIONS:  # normalize, dot, ...: Metal's own would make calls ambiguous
+            own = own + '_'
+            self.adaptations.append(f'{name} is a Metal library function name and was renamed {own}')
+        attrs = {'name': own, 'isKernel': True} if kernel else {'name': own}
         children = {'parameters': params, 'resultType': self.type_node(result[1]), 'body': body}
         if kernel:
             children['domain'] = self.graph.add('Groups' if self.groups else 'Grid3D' if self.grid3d else 'Grid1D')
@@ -1163,6 +1205,25 @@ class Importer:
         self.adaptations.append(f'{decl["name"]}: {", ".join(extents[a] for a in sorted(extents))} became a shape ({", ".join(sizes)})')
         return shape
 
+    def block_method(self, node):
+        """The method of a cooperative-groups thread_block that `node` calls (`block.sync()`,
+        `cg::this_thread_block().thread_rank()`), or None."""
+        while node.get('kind') in TEMPORARIES and node.get('inner'):
+            node = node['inner'][0]
+        if node.get('kind') != 'CXXMemberCallExpr' or not node.get('inner'):
+            return None
+        member = node['inner'][0]
+        if member.get('kind') != 'MemberExpr' or not member.get('inner'):
+            return None
+        base = member['inner'][0]
+        while base.get('kind') in TEMPORARIES + ('CXXConstructExpr',) and base.get('inner'):
+            base = base['inner'][0]
+        if base.get('kind') == 'DeclRefExpr' and self.scope.get(base['referencedDecl']['id'], ('',))[0] == 'cg-block':
+            return member.get('name')
+        if base.get('kind') == 'CallExpr' and decl_name(base['inner'][0]) == 'this_thread_block':
+            return member.get('name')
+        return None
+
     def uses_groups(self, decl):
         """A kernel is a Groups kernel when it reads a thread builtin other than the global
         index: CUDA's threadIdx, blockIdx, blockDim or gridDim outside blockIdx * blockDim +
@@ -1173,6 +1234,11 @@ class Importer:
                 or 'qpel_group' in names:
             return True  # (qpel_lane and qpel_group_size alone belong to qpel's own workgroup sum)
         body = body_of(decl)
+        for node in walk(body):  # a block of threads that work together: barriers, shared memory, a thread_block
+            if node.get('kind') == 'CallExpr' and decl_name(node['inner'][0]) in BARRIER_CALLS | {'this_thread_block'} or \
+                    node.get('kind') == 'VarDecl' and 'CUDASharedAttr' in attributes(node) and \
+                    not node.get('name', '').startswith('qpel_'):  # (qpel's own workgroup-sum scratch)
+                return True
         idiom = set()
         for node in walk(body):
             if node.get('kind') == 'BinaryOperator' and grid_axis(node) or \
@@ -1281,7 +1347,17 @@ class Importer:
             if cond:
                 children['condition'] = self.expr(cond)
             if step:
-                children['step'] = self.expression_statement(step)
+                steps = []
+                def split(x):  # `i++, toDo -= 8`: one step each, run in order
+                    while x['kind'] in ('ExprWithCleanups', 'ParenExpr'):
+                        x = x['inner'][0]
+                    if x['kind'] == 'BinaryOperator' and x['opcode'] == ',':
+                        split(x['inner'][0])
+                        split(x['inner'][1])
+                    else:
+                        steps.append(self.expression_statement(x))
+                split(step)
+                children['step'] = steps
             children['body'] = self.as_block(body)
             return [add('For', children=children)]
         if kind == 'BreakStmt':
@@ -1322,8 +1398,11 @@ class Importer:
         if decl['kind'] != 'VarDecl':
             raise Unsupported(decl, 'declaration', decl['kind'] + ' inside a function is not supported')
         name = decl['name']
-        if name.startswith('qpel_') and decl.get('storageClass') != 'auto' and 'init' not in decl:
+        if name.startswith('qpel_') and decl.get('storageClass') != 'auto' and ('init' not in decl or 'threadgroup' in decl['type']['qualType']):
             self.scope[decl['id']] = ('builtin', name)  # backend scratch for workgroup collectives
+            return []
+        if 'thread_block' in decl['type']['qualType']:
+            self.scope[decl['id']] = ('cg-block',)  # cg::this_thread_block(): the group, read through its methods
             return []
         self.scope[decl['id']] = ('untyped', name)  # until it is read, so later uses are not reported again
         t = describe(decl['type']['qualType'])
@@ -1376,11 +1455,10 @@ class Importer:
         element = describe(array.group(1))
         length = int(array.group(2))
         space = set(decl['type']['qualType'].replace('[', ' ').split()) & {'threadgroup', 'constant', 'device'}
-        if 'CUDASharedAttr' in attributes(decl) or space or decl.get('storageClass') == 'static':
-            # shared by the threads of a group, or one copy for all: not a thread's own array
-            raise Unsupported(decl, 'local-type', f'local {name}: '
-                              + ('shared memory' if 'CUDASharedAttr' in attributes(decl) or 'threadgroup' in space
-                                 else 'a static or constant-space array') + ' is not in qpel yet')
+        if 'CUDASharedAttr' in attributes(decl) or 'threadgroup' in space:
+            return self.shared_local(decl, name, element, length)
+        if space or decl.get('storageClass') == 'static':  # one copy for all: not a thread's own array
+            raise Unsupported(decl, 'local-type', f'local {name}: a static or constant-space array is not in qpel yet')
         if element[0] != 'scalar' or element[1] not in SCALAR_TERMS or not 1 <= length <= 1024:
             raise Unsupported(decl, 'local-type', f'local {name} of type {decl["type"]["qualType"]} is not in qpel: '
                                                   'local arrays hold 1 to 1024 scalars')
@@ -1410,6 +1488,24 @@ class Importer:
                             {'type': self.graph.add('ArrayType', {'element': scalar, 'length': length}),
                              'value': self.graph.add('ArrayValue', children={'elements': values})})
         self.scope[decl['id']] = ('local', ir, f'array<{scalar}, {length}>')
+        return [ir]
+
+    def shared_local(self, decl, name, element, length):
+        """`__shared__ float3 collected[64]` (Metal `threadgroup float3 ...`): memory of the group
+        (IR version 4 shared<T, N>), declared at the top of a Groups kernel."""
+        item = element[1] if element[0] == 'scalar' else None
+        if not self.kernel or not self.groups:
+            raise Unsupported(decl, 'shared', f'shared memory {name} is only in kernels whose threads work as a group')
+        if item not in SCALAR_TERMS - {'bool'} and not is_vector(item or ''):
+            raise Unsupported(decl, 'shared', f'shared memory of {decl["type"]["qualType"]} is not in qpel yet')
+        init = decl['inner'][0] if 'init' in decl and decl.get('inner') else None
+        if init is not None and not (init['kind'] in ('CXXConstructExpr', 'ArrayInitLoopExpr') and not any(
+                x.get('kind') not in ('CXXConstructExpr', 'ArrayInitLoopExpr', 'ArrayInitIndexExpr', 'OpaqueValueExpr')
+                for x in walk(init))):
+            raise Unsupported(decl, 'shared', f'shared memory {name} cannot have an initializer')  # (a default constructor is none)
+        ir = self.graph.add('Variable', {'name': self.unique_name(name)},
+                            {'type': self.graph.add('SharedType', {'element': item, 'length': length})})
+        self.scope[decl['id']] = ('local', ir, f'shared<{item}, {length}>')
         return [ir]
 
     def vector_local(self, decl, name, vtype):
@@ -1562,7 +1658,7 @@ class Importer:
         if core.get('kind') != 'DeclRefExpr':
             return None
         entry = self.scope.get(core['referencedDecl']['id'])
-        return entry[1] if entry and entry[0] == 'local' and is_array(entry[2]) else None
+        return entry[1] if entry and entry[0] == 'local' and (is_array(entry[2]) or is_shared(entry[2])) else None
 
     def safe_name(self, name):
         """A C name that qpel or a backend reserves (min, max, kernel, half, ...) gets a trailing _."""
@@ -1907,6 +2003,20 @@ class Importer:
             if scalar_of(n) != 'f32':
                 raise Unsupported(n, 'double', 'double precision is not in qpel; write a float literal such as 0.5f')
             return add('F32Literal', {'value': n['value']})
+        method = self.block_method(n)
+        if method in ('thread_rank', 'sync', 'size', 'num_threads'):
+            if method == 'sync':
+                return add('Barrier')
+            size = lambda a: add('GroupSize', {'axis': a})
+            if method == 'thread_rank':  # x + size.x * (y + size.y * z)
+                inner = add('Binary', {'operator': '+'}, {'left': add('LocalIndex', {'axis': 'y'}), 'right': add(
+                    'Binary', {'operator': '*'}, {'left': size('y'), 'right': add('LocalIndex', {'axis': 'z'})})})
+                return add('Binary', {'operator': '+'}, {'left': add('LocalIndex', {'axis': 'x'}), 'right': add(
+                    'Binary', {'operator': '*'}, {'left': size('x'), 'right': inner})})
+            xy = add('Binary', {'operator': '*'}, {'left': size('x'), 'right': size('y')})
+            return add('Binary', {'operator': '*'}, {'left': xy, 'right': size('z')})
+        if method:
+            raise Unsupported(n, 'thread-builtin', f'thread_block::{method}() is supported through .x, .y and .z')
         if cooperative_rank(n) and (self.groups or self.grid3d or cooperative_rank(n) == 'block'):
             raise Unsupported(n, 'thread-builtin', 'cooperative groups thread_rank() is supported as the grid rank '
                                                    'of a one-dimensional kernel')
@@ -1980,6 +2090,10 @@ class Importer:
             entry = self.scope.get(base.get('referencedDecl', {}).get('id')) if base['kind'] == 'DeclRefExpr' else None
             if entry and entry[0] == 'position' and field in ('x', 'y', 'z'):
                 return self.thread_index(field, n)
+            method = self.block_method(base)
+            if method in ('group_index', 'thread_index', 'group_dim', 'dim_threads') and field in ('x', 'y', 'z'):
+                kind = {'group_index': 'GroupIndex', 'thread_index': 'LocalIndex'}.get(method, 'GroupSize')
+                return add(kind, {'axis': field})
             if entry and entry[0] == 'group-builtin' and field in ('x', 'y', 'z'):
                 return add(GROUP_NODES[entry[1]], {'axis': field})
             if self.groups and decl_name(base) in CUDA_BUILTINS and field in ('x', 'y', 'z'):
@@ -2089,6 +2203,10 @@ class Importer:
         add = self.graph.add
         callee = self.callee(n)
         args = n['inner'][1:]
+        if callee in ('__syncthreads', 'threadgroup_barrier'):  # (Metal's flags: qpel's barrier orders both)
+            return add('Barrier')
+        if callee in ('__syncthreads_count', 'qpel_barrier_count'):
+            return add('BarrierCount', children={'value': self.expr(predicate(args[0]))})
         if callee and callee.startswith('make_') and callee[5:] in VECTOR_NAMES:  # CUDA's make_float3(x, y, z)
             return self.vector_elements(n, args, VECTOR_NAMES[callee[5:]])
         if callee in self.functions:

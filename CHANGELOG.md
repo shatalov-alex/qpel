@@ -24,6 +24,11 @@ older programs keep building.
   passed and returned, with `.x .y .z .w`; CUDA's `int4`/`float3`/`make_float3` and Metal's vectors
   import to them and print back. Helper parameters may be `ref` (CUDA `T&`, Metal `thread T&`); a
   non-const C++ reference was previously read as a copy.
+- **Shared memory and barriers (IR v4):** `shared<T, N>`, `qpel.barrier()`, `qpel.barrier_count(c)`
+  in Groups kernels, with a static check that every thread of a group reaches each barrier.
+  The CPU simulator runs a block's threads together for sources with barriers.
+- **TRELLIS.2 pilot ported:** `render` passes the rows, so every o-voxel kernel but the two
+  64-bit-key inserts runs from qpel on CUDA and Metal.
 - **TRELLIS.2 rasteriser, 3 of 4 kernels:** preprocess (camera projection, float math bit-exact
   on both GPUs), duplicateWithKeys and identifyTileRanges pass the rows, with vector buffers
   (`int4*`), fixed-length buffers (`[16]`) and per-program launch plans.

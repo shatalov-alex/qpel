@@ -125,10 +125,10 @@ __global__ void k(const unsigned int* x, unsigned int* slots, unsigned int* y, u
 
     def test_shared_and_64_bit_atomics_are_refused(self):
         from frontends.c_import import Unsupported
-        with self.assertRaisesRegex(Unsupported, 'shared memory'):
+        with self.assertRaisesRegex(Unsupported, 'static or constant-space array'):
             self.import_text('''__global__ void k(unsigned int* y, unsigned int n) {
   unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-  __shared__ unsigned int cache[64];
+  static unsigned int cache[64];
   if (i < n) y[i] = cache[0];
 }''')
         with self.assertRaisesRegex(Unsupported, 'Metal has no 64-bit compare-and-swap'):

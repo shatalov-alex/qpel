@@ -34,6 +34,10 @@ MAX_ARRAY = 1024
 VECTOR = re.compile(r'vec<(\w+), ([234])>')
 VECTOR_ELEMENTS = {'i32', 'u32', 'f32'}
 VECTOR_FIELDS = 'xyzw'
+# IR version 4: memory shared by the threads of one group (CUDA __shared__, Metal threadgroup),
+# declared at the top of a Groups kernel; its elements are scalars or vectors.
+SHARED = re.compile(r'shared<(\w+|vec<\w+, [234]>), ([1-9][0-9]{0,4})>')
+MAX_SHARED_BYTES = 16384  # within Metal's 32 KiB and CUDA's 48 KiB, with room for the backends' own
 COMPARISONS = {'==', '!=', '<', '>', '<=', '>='}
 # Math functions on float32: name -> arity. EXACT ones give the same bits on every backend;
 # the others are within MATH_ULPS of the exact result (NUMERICS.md, math functions).
@@ -57,6 +61,8 @@ def term(t):
             return array(t['attributes']['element'], t['attributes']['length'])
         if t['kind'] == 'VectorType':
             return vector(t['attributes']['element'], t['attributes']['length'])
+        if t['kind'] == 'SharedType':
+            return shared(t['attributes']['element'], t['attributes']['length'])
         return LEGACY.get(t['kind'], t['kind'])
     return LEGACY.get(t, t)
 
@@ -109,6 +115,29 @@ def vector_length(t):
     return int(VECTOR.fullmatch(term(t)).group(2))
 
 
+def shared(element, length):
+    return f'shared<{element}, {length}>'
+
+
+def is_shared(t):
+    return SHARED.fullmatch(term(t)) is not None
+
+
+def shared_element(t):
+    return SHARED.fullmatch(term(t)).group(1)
+
+
+def shared_length(t):
+    return int(SHARED.fullmatch(term(t)).group(2))
+
+
+def shared_bytes(t):
+    """Bytes of a shared array on the larger backend (Metal's 3-vectors take 16 bytes)."""
+    item = shared_element(t)
+    size = 4 * (4 if vector_length(item) == 3 else vector_length(item)) if is_vector(item) else SIZES[item]
+    return size * shared_length(t)
+
+
 def is_struct(t):
     return term(t).startswith('struct ')
 
@@ -123,6 +152,10 @@ def is_valid(t):
     m = VECTOR.fullmatch(t)
     if m:
         return m.group(1) in VECTOR_ELEMENTS
+    m = SHARED.fullmatch(t)
+    if m:
+        return (m.group(1) in SCALAR_TERMS - {'bool'} or is_valid(m.group(1)) and is_vector(m.group(1))) \
+            and shared_bytes(t) <= MAX_SHARED_BYTES
     m = BUFFER.fullmatch(t)
     return bool(m) and m.group(1) in SCALAR_TERMS - {'bool'} and (m.group(2) != 'atomic' or m.group(1) in ATOMIC_ELEMENTS)
 
@@ -188,6 +221,7 @@ class TypeChecker:
         self.nodes = {n['id']: n for n in program['nodes']}
         self.functions = self.children(self.nodes[program['roots']['module']], 'functions')
         self.expression_types = {}
+        self.shared_bytes = {}
         self.parents = {ref: n for n in program['nodes'] for values in n['children'].values() for ref in values}
         self.order = {f['id']: i for i, f in enumerate(self.functions)}
         # IR version 3: struct name -> {field: type term}, for kernel arguments such as ggml's kargs
@@ -250,10 +284,10 @@ class TypeChecker:
             target = self.target(node, 'declaration')
             check(target['id'] in env, 'SCOPE', 'Declaration is not visible here')
             declared = self.declared(target)
-            if is_array(declared):  # arrays are not values: they are only indexed (IR version 4)
+            if is_array(declared) or is_shared(declared):  # not values: they are only indexed (IR version 4)
                 parent = self.parents.get(node['id'])
                 check(parent is not None and parent['kind'] == 'Index' and parent['children']['base'] == [node['id']],
-                      'ARRAY_USE', 'A local array can only be indexed')
+                      'ARRAY_USE', 'A local or shared array can only be indexed')
             return declared
         if k == 'Literal':
             return 'bool' if a['value'] in ('true', 'false') else 'u32'
@@ -340,6 +374,12 @@ class TypeChecker:
         if k == 'Index':
             base, index = e('base'), e('index')
             check(index in INTEGER_TERMS, 'INDEX_TYPE', 'Index must be an integer')
+            if is_shared(base):
+                at = self.child(node, 'index')
+                if at['kind'] in ('Literal', 'I32Literal', 'Constant'):
+                    value = int(at['attributes']['value'].rstrip('uU'))
+                    check(0 <= value < shared_length(base), 'ARRAY_BOUNDS', f'Index {value} is outside {base}')
+                return shared_element(base)
             if is_array(base):
                 at = self.child(node, 'index')
                 if at['kind'] in ('Literal', 'I32Literal', 'Constant'):
@@ -412,6 +452,15 @@ class TypeChecker:
                 self.require(item, fits(array_element(expected), actual), 'ARRAY_VALUE',
                              f'Expected {array_element(expected)}, got {actual}')
             return expected
+        if k in ('Barrier', 'BarrierCount'):
+            check(function['attributes'].get('isKernel', False) and self.domain(function) == 'Groups', 'BARRIER_CONTEXT',
+                  'Barriers are in Groups kernels (the threads of a group wait for each other)')
+            if k == 'Barrier':
+                parent = self.parents.get(node['id'])
+                check(parent is not None and parent['kind'] == 'Evaluate', 'BARRIER_CONTEXT', 'qpel.barrier() is a statement')
+                return 'void'
+            check(e('value') in CONDITIONS, 'CONDITION', 'barrier_count counts threads whose condition holds')
+            return 'i32'
         if k == 'VectorValue':
             expected = vector(a['element'], a['length'])
             check(is_valid(expected), 'VECTOR_VALUE', f'Invalid vector type {expected}')
@@ -449,7 +498,16 @@ class TypeChecker:
             self.unique(node, names)
             expected = self.declared(node)
             pointer = is_buffer(expected) and access(expected) != 'atomic'  # a view into a buffer (IR version 3)
-            if is_array(expected):  # IR version 4: always initialized, element by element
+            if is_shared(expected):  # IR version 4: declared at the top of a Groups kernel, without a value
+                body = self.child(function, 'body')
+                check(function['attributes'].get('isKernel', False) and self.domain(function) == 'Groups'
+                      and node['id'] in body['children'].get('statements', []), 'SHARED_PLACE',
+                      'Shared memory is declared at the top level of a Groups kernel')
+                check(not self.children(node, 'value'), 'VARIABLE_TYPE', 'Shared memory starts undefined; write it first')
+                self.shared_bytes[function['id']] = self.shared_bytes.get(function['id'], 0) + shared_bytes(expected)
+                check(self.shared_bytes[function['id']] <= MAX_SHARED_BYTES, 'SHARED_SIZE',
+                      f'A kernel has at most {MAX_SHARED_BYTES} bytes of shared memory')
+            elif is_array(expected):  # IR version 4: always initialized, element by element
                 check(self.children(node, 'value') and self.child(node, 'value')['kind'] == 'ArrayValue',
                       'VARIABLE_TYPE', 'A local array needs an array value')
                 e('value')
@@ -468,7 +526,7 @@ class TypeChecker:
                 writable = is_vector(self.expr(self.child(target, 'base'), env, function))  # v.x = ...
             if target['kind'] == 'Index':
                 base = self.expr(self.child(target, 'base'), env, function)
-                writable = is_buffer(base) and access(base) == 'write' or is_array(base)
+                writable = is_buffer(base) and access(base) == 'write' or is_array(base) or is_shared(base)
             check(writable, 'READ_ONLY', 'Assignment target is not writable')
             check(fits(expected, actual), 'ASSIGN_TYPE', f'Incompatible assignment {expected} <- {actual}')
         elif k == 'Evaluate':
@@ -588,6 +646,8 @@ def node_spec(t):
         return 'StructType', {'name': t[len('struct '):]}
     if is_vector(t):
         return 'VectorType', {'element': vector_element(t), 'length': vector_length(t)}
+    if is_shared(t):
+        return 'SharedType', {'element': shared_element(t), 'length': shared_length(t)}
     if is_array(t):
         return 'ArrayType', {'element': array_element(t), 'length': array_length(t)}
     return 'ScalarType', {'scalar': t}
