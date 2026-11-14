@@ -19,6 +19,10 @@ older programs keep building.
 - Shared memory declared in an inner block is moved to the kernel's top.
 - llama.cpp `argmax_f32` is a corpus program and passes both behaviour rows.
 
+- GPGPU-Sim image `qpel12` with `gpgpusim/qpel-shfl.patch`: two warp shuffle bugs fixed. Every
+  `shfl.sync` read 0, and in functional mode every warp used warp 0's threads. The self-test now
+  covers idx, bfly, down and up.
+
 ### Found
 - Apple's `simd_sum` on float32 adds in a different order from CUDA's shuffle-down sum, so
   results differ in the last bits. A float `simd_sum` therefore imports as qpel's fixed-order sum,

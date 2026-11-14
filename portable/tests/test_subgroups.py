@@ -318,5 +318,36 @@ class Verify(unittest.TestCase):
         self.assertTrue(all('error' not in c for c in simd['cases']), simd['cases'])
 
 
+@unittest.skipUnless(shutil.which('clang'), 'clang required')
+class OnNvidia(unittest.TestCase):
+    """The CUDA warp sum on GPGPU-Sim (QPEL_NVIDIA=1): against itself, and against the Metal
+    xor-butterfly port on the Apple GPU."""
+
+    def setUp(self):
+        from qpel_test_support import NVIDIA
+        if not NVIDIA:
+            self.skipTest('GPGPU-Sim runs are slow; set QPEL_NVIDIA=1 (check_all.py --nvidia)')
+        from differential import gpgpusim
+        if not gpgpusim.image_ready(build=False):
+            unavailable(self, 'nvidia', f'no Docker image {gpgpusim.IMAGE}')
+
+    def test_warp_sum(self):
+        from differential import verify
+        with tempfile.TemporaryDirectory() as d:
+            original, port = Path(d)/'warp_sum.cu', Path(d)/'warp_sum.metal'
+            original.write_text(WARP_SUM_CUDA)
+            port.write_text(WARP_SUM_XOR)
+            same = verify.verify(original, original, values={'n': 'volume'}, edges=False, nvidia=True)
+            self.assertTrue(same['passed'], [c for c in same['cases'] if len(c) > 1])
+            try:
+                import torch
+                if not torch.backends.mps.is_available():
+                    return
+            except ImportError:
+                return
+            ported = verify.verify(original, port, values={'n': 'volume'}, edges=False, nvidia=True, metal='preflight')
+            self.assertTrue(ported['passed'], [c for c in ported['cases'] if len(c) > 1])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

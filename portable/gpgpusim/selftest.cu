@@ -1,4 +1,4 @@
-// GPGPU-Sim self-test: the PTX behaviour qpel-fixes.patch corrects, and a sweep of the
+// GPGPU-Sim self-test: the PTX behaviour qpel-fixes.patch corrects (bar.red, shfl.sync), and a sweep of the
 // integer and float conversions qpel's CUDA uses (device against host C semantics, in
 // ranges where C defines them). differential/gpgpusim.py runs it before any NVIDIA row.
 #include <cstdio>
@@ -71,8 +71,31 @@ __global__ void barrier_counts(int* out) {
   int* o = out + blockIdx.x * 5;
   if (t == 0) { o[0] = a; o[1] = b; o[2] = c; o[3] = all + some; o[4] = one + none; }
 }
+// shfl.sync (__shfl_*_sync, as CUDA 12 emits it with a d|p destination): in every warp of every
+// block, value 1000 * warp + lane. Index 3, xor 5, down 4 and up 4; out-of-range lanes keep their own.
+__global__ void shuffles(unsigned* out) {
+  unsigned lane = threadIdx.x & 31u, v = 1000u * (blockIdx.x * 2u + threadIdx.x / 32u) + lane;
+  unsigned* o = out + (blockIdx.x * blockDim.x + threadIdx.x) * 4;
+  o[0] = __shfl_sync(0xffffffffu, v, 3);
+  o[1] = __shfl_xor_sync(0xffffffffu, v, 5);
+  o[2] = __shfl_down_sync(0xffffffffu, v, 4);
+  o[3] = __shfl_up_sync(0xffffffffu, v, 4);
+}
 int main() {
   int failures = 0;
+  { // warp shuffles, 3 blocks of 2 warps
+    static unsigned h[3 * 64 * 4]; unsigned* d; cudaMalloc(&d, sizeof h);
+    shuffles<<<3, 64>>>(d); cudaDeviceSynchronize(); cudaMemcpy(h, d, sizeof h, cudaMemcpyDeviceToHost);
+    const char* names[4] = {"shfl.sync.idx", "shfl.sync.bfly", "shfl.sync.down", "shfl.sync.up"};
+    for (int t = 0; t < 3 * 64; ++t) {
+      unsigned lane = t & 31u, base = 1000u * (t / 32u);
+      unsigned want[4] = {base + 3u, base + (lane ^ 5u), base + (lane + 4u < 32u ? lane + 4u : lane), base + (lane >= 4u ? lane - 4u : lane)};
+      for (int m = 0; m < 4; ++m) if (h[t * 4 + m] != want[m]) {
+        printf("SELFTEST FAIL %s: thread %d gives %u, want %u\n", names[m], t, h[t * 4 + m], want[m]);
+        ++failures; break;
+      }
+    }
+  }
   { // barrier reductions, in each of 4 blocks
     const int want[5] = {10, 3, 18, 2, 2};
     const char* names[5] = {"bar.red.popc", "bar.red.popc (second)", "bar.red.popc (loop)", "bar.red.and", "bar.red.or"};

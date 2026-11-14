@@ -1,0 +1,47 @@
+diff --git a/src/abstract_hardware_model.h b/src/abstract_hardware_model.h
+--- a/src/abstract_hardware_model.h
++++ b/src/abstract_hardware_model.h
+@@ -1661,6 +1661,7 @@
+   {
+     return m_warp_id;
+   }
++  void set_warp_id_func(unsigned warp_id) { m_warp_id = warp_id; }  // functional simulation
+   unsigned dynamic_warp_id() const {
+     assert(!m_empty);
+     return m_dynamic_warp_id;
+diff --git a/src/abstract_hardware_model.cc b/src/abstract_hardware_model.cc
+--- a/src/abstract_hardware_model.cc
++++ b/src/abstract_hardware_model.cc
+@@ -1253,6 +1253,9 @@
+   m_simt_stack[warpId]->get_pdom_stack_top_info(&pc, &rpc);
+   warp_inst_t wi = *(m_gpu->gpgpu_ctx->ptx_fetch_inst(pc));
+   wi.set_active(m_simt_stack[warpId]->get_active_mask());
++  // shfl, mma and the other warp-wide instructions find the warp's threads by this id;
++  // left unset, every warp used warp 0's (shuffles in warp 1 read and wrote warp 0).
++  wi.set_warp_id_func(warpId);
+   return wi;
+ }
+ 
+diff --git a/src/cuda-sim/instructions.cc b/src/cuda-sim/instructions.cc
+--- a/src/cuda-sim/instructions.cc
++++ b/src/cuda-sim/instructions.cc
+@@ -5498,7 +5498,18 @@
+         "threads in a warp\n");
+     data.u32 = 0;
+   }
+-  thread->set_operand_value(dst, data, i_type, thread, pI);
++  if (dst.is_vector()) {
++    // shfl.sync d|p (as CUDA 12 emits it): d receives the value and p whether the source lane
++    // was in range. set_operand_value handles two-register destinations of other forms, and
++    // the value never reached d (every shuffle read 0).
++    ptx_reg_t in_range;
++    in_range.u64 = 0;
++    in_range.pred = p ? 1 : 0;
++    thread->set_reg(dst.vec_symbol(0), data);
++    thread->set_reg(dst.vec_symbol(1), in_range);
++  } else {
++    thread->set_operand_value(dst, data, i_type, thread, pI);
++  }
+ 
+   /*
+   TODO: deal with predicates appropriately using the following pseudocode:

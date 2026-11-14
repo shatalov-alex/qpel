@@ -14,9 +14,11 @@ WORKDIR /opt/gpgpu-sim
 # The first part was submitted upstream as two pull requests (their exact diff); the bar.red.popc
 # parse fix (ptx_ir.cc) and the reset of barrier reduction counts after each barrier (shader.cc,
 # abstract_hardware_model.h; functional mode in cuda-sim.cc/.h), all for __syncthreads_count,
-# are local so far.
-COPY qpel-fixes.patch /tmp/
-RUN git apply /tmp/qpel-fixes.patch
+# are local so far. qpel-shfl.patch (local, 2026-11-14): warp shuffles. shfl.sync with a d|p destination,
+# as CUDA 12 emits it, lost its value (every shuffle read 0), and in functional mode every warp
+# used warp 0's threads (getExecuteWarp did not set the warp id that shfl_impl and mma read).
+COPY qpel-fixes.patch qpel-shfl.patch /tmp/
+RUN git apply /tmp/qpel-fixes.patch && git apply /tmp/qpel-shfl.patch
 RUN bash -c 'set -eo pipefail; export CUDA_INSTALL_PATH=/usr/local/cuda; source setup_environment release; \
       make -j"$(nproc)" > /tmp/make.log 2>&1 || { tail -60 /tmp/make.log; exit 1; }; \
       ls lib/*/*/release/libcudart.so*'
