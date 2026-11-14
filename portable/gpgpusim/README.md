@@ -93,7 +93,7 @@ across scoped `bar.red` blocks) each behave correctly in isolation. On real NVID
 this is a simulator problem; the GPGPU-Sim row stays skipped. The same fuzzing run found one qpel bug, in the importer
 (`fuzz/regressions/unsigned_to_i32_literal.qpel`).
 
-**Fixed locally (2026-11-14), `qpel-shfl.patch`:** warp shuffles were wrong in two ways, so no
+**Fixed (2026-11-14), `qpel-shfl.patch`, upstream as [#156](https://github.com/accel-sim/gpgpu-sim_distribution/pull/156):** warp shuffles were wrong in two ways, so no
 shuffle result from GPGPU-Sim could be trusted before image `qpel12`.
 - **Every shuffle read 0.** `shfl.sync` with a `d|p` destination, as CUDA 12 emits it, lost
   its value: `set_operand_value` handles two-register destinations of other forms.
@@ -102,8 +102,9 @@ shuffle result from GPGPU-Sim could be trusted before image `qpel12`.
   warp 1 read and wrote warp 0, and llama.cpp's `argmax_f32` crashed in `shfl_impl`.
 
 The self-test checks idx, bfly, down and up in 3 blocks of 2 warps. llama.cpp `argmax_f32`
-passes for the original and qpel's CUDA. These two fixes are not yet submitted upstream.
-Timing (performance) mode still crashes on shuffles; qpel runs functional mode only.
+passes for the original and qpel's CUDA. The pull request has the same two changes, one commit each, reformatted with clang-format.
+Timing (performance) mode still aborts on shuffles, before and after the fixes
+(`bitset::test` out of range in `shader_core_ctx::execute`); qpel runs functional mode only.
 
 ## What this does not prove
 
