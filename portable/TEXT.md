@@ -66,6 +66,9 @@ Literals: `7u` (u32), `7` (i32), `7_i64` (any integer type; negative ones
 | `qpel.index` | GridIndex (Grid1D) |
 | `qpel.thread.x` | ThreadIndex (Grid3D, Groups) |
 | `qpel.group.x`, `qpel.local.x`, `qpel.group_size.x`, `qpel.group_count.x` | Groups builtins |
+| `qpel.subgroup_lane`, `qpel.subgroup_index`, `qpel.subgroup_size` | Subgroup builtins (Groups kernels, IR version 5) |
+| `qpel.shuffle(v, lane)`, `qpel.shuffle_xor(v, m)`, `qpel.shuffle_down(v, d)`, `qpel.shuffle_up(v, d)` | SubgroupShuffle |
+| `qpel.subgroup_add(v)`, `qpel.subgroup_min(v)`, `qpel.subgroup_max(v)`, `qpel.subgroup_and(v)`, `qpel.subgroup_or(v)`, `qpel.subgroup_xor(v)` | SubgroupReduce |
 | `atomic.load(p)`, `atomic.store(p, v)`, `atomic.add(p, v)`, `atomic.min(p, v)`, `atomic.cas(p, expected, v)` | atomics on `buffer + offset`; `cas` returns the value found (IR version 4) |
 | `b[i]`, `s.field`, `f(args)` | Index, Member, Call |
 

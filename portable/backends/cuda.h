@@ -204,3 +204,39 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long long, -9223372036854775808.0f, 92
 // Compare-and-swap (IR version 4): the value found, as atomicCAS returns it.
 #define QPEL_CAS(address, expected, value) atomicCAS((address), (expected), (value))
 #endif
+
+#ifdef QPEL_SUBGROUPS_ENABLED
+// SIMD-group (warp) operations, IR version 5 (NUMERICS.md, Subgroups). A subgroup is 32 lanes
+// of consecutive linear thread indices in the group; qpel_uniform.py ensures all 32 take part.
+// A shuffle operand of 32 or more gives the lane its own value; a reduction combines the lanes
+// in one fixed butterfly order (xor 16, 8, 4, 2, 1), so float sums are the same bits everywhere.
+__device__ inline unsigned int qpel_subgroup_lane() { return (threadIdx.x + blockDim.x * (threadIdx.y + blockDim.y * threadIdx.z)) & 31u; }
+__device__ inline unsigned int qpel_subgroup_index() { return (threadIdx.x + blockDim.x * (threadIdx.y + blockDim.y * threadIdx.z)) >> 5; }
+__device__ inline unsigned int qpel_subgroup_size() { return 32u; }
+#define QPEL_SUBGROUP_LANE() qpel_subgroup_lane()
+#define QPEL_SUBGROUP_INDEX() qpel_subgroup_index()
+#define QPEL_SUBGROUP_SIZE() qpel_subgroup_size()
+#define QPEL_FULL_MASK 0xffffffffu
+template <class T> __device__ inline T qpel_shuffle_index(T v, unsigned int lane) { return __shfl_sync(QPEL_FULL_MASK, v, (int)(lane & 31u)); }
+template <class T> __device__ inline T qpel_shuffle_xor(T v, unsigned int m) { T r = __shfl_xor_sync(QPEL_FULL_MASK, v, (int)(m & 31u)); return m < 32u ? r : v; }
+template <class T> __device__ inline T qpel_shuffle_down(T v, unsigned int d) { T r = __shfl_down_sync(QPEL_FULL_MASK, v, d & 31u); return d < 32u ? r : v; }
+template <class T> __device__ inline T qpel_shuffle_up(T v, unsigned int d) { T r = __shfl_up_sync(QPEL_FULL_MASK, v, d & 31u); return d < 32u ? r : v; }
+__device__ inline unsigned int qpel_combine_add(unsigned int a, unsigned int b) { return a + b; }
+__device__ inline int qpel_combine_add(int a, int b) { return (int)((unsigned int)a + (unsigned int)b); }
+__device__ inline float qpel_combine_add(float a, float b) { return __fadd_rn(a, b); }
+__device__ inline unsigned int qpel_combine_min(unsigned int a, unsigned int b) { return b < a ? b : a; }
+__device__ inline int qpel_combine_min(int a, int b) { return b < a ? b : a; }
+__device__ inline float qpel_combine_min(float a, float b) { return fminf(a, b); }
+__device__ inline unsigned int qpel_combine_max(unsigned int a, unsigned int b) { return a < b ? b : a; }
+__device__ inline int qpel_combine_max(int a, int b) { return a < b ? b : a; }
+__device__ inline float qpel_combine_max(float a, float b) { return fmaxf(a, b); }
+template <class T> __device__ inline T qpel_combine_and(T a, T b) { return a & b; }
+template <class T> __device__ inline T qpel_combine_or(T a, T b) { return a | b; }
+template <class T> __device__ inline T qpel_combine_xor(T a, T b) { return a ^ b; }
+#define QPEL_SUBGROUP_REDUCE(op) \
+  template <class T> __device__ inline T qpel_subgroup_##op(T v) { \
+    for (unsigned int m = 16u; m > 0u; m >>= 1) v = qpel_combine_##op(v, __shfl_xor_sync(QPEL_FULL_MASK, v, (int)m)); \
+    return v; }
+QPEL_SUBGROUP_REDUCE(add) QPEL_SUBGROUP_REDUCE(min) QPEL_SUBGROUP_REDUCE(max)
+QPEL_SUBGROUP_REDUCE(and) QPEL_SUBGROUP_REDUCE(or) QPEL_SUBGROUP_REDUCE(xor)
+#endif

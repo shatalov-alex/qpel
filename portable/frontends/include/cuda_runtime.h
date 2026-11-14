@@ -10,6 +10,7 @@
 #define __launch_bounds__(...) __attribute__((launch_bounds(__VA_ARGS__)))
 #define __forceinline__ __attribute__((always_inline)) inline
 struct uint3 { unsigned int x, y, z; };
+static constexpr int warpSize = 32;  // a constant on every NVIDIA GPU so far
 // Vector types (vector_types.h in the SDK), as plain aggregates.
 struct int2 { int x, y; };
 struct int3 { int x, y, z; };

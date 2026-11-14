@@ -22,6 +22,8 @@ BUILTIN_AXES = {'ThreadIndex': 'thread', 'GroupIndex': 'group', 'LocalIndex': 'l
                 'GroupCount': 'group_count'}
 ATOMICS = {'AtomicLoad': 'load', 'AtomicStore': 'store', 'AtomicAdd': 'add', 'AtomicMin': 'min',
            'AtomicCompareExchange': 'cas'}
+SUBGROUP_BUILTINS = {'SubgroupLane': 'subgroup_lane', 'SubgroupIndex': 'subgroup_index', 'SubgroupSize': 'subgroup_size'}
+SHUFFLES = {'index': 'shuffle', 'xor': 'shuffle_xor', 'down': 'shuffle_down', 'up': 'shuffle_up'}
 DOMAINS = {'Grid1D': 'grid1d', 'Grid3D': 'grid3d', 'Groups': 'groups'}
 PRECEDENCE = [('||',), ('&&',), ('|',), ('^',), ('&',), ('==', '!='), ('<', '>', '<=', '>='), ('<<', '>>'),
               ('+', '-'), ('*', '/', '%')]
@@ -160,6 +162,12 @@ class Printer:
             return f'qpel.barrier_count({e("value")})'
         if k == 'GridIndex':
             return 'qpel.index'
+        if k in SUBGROUP_BUILTINS:
+            return f'qpel.{SUBGROUP_BUILTINS[k]}'
+        if k == 'SubgroupShuffle':
+            return f'qpel.{SHUFFLES[a["mode"]]}({e("value")}, {e("operand")})'
+        if k == 'SubgroupReduce':
+            return f'qpel.subgroup_{a["operator"]}({e("value")})'
         if k in BUILTIN_AXES:
             return f'qpel.{BUILTIN_AXES[k]}.{a["axis"]}'
         if k == 'AtomicCompareExchange':
@@ -626,6 +634,19 @@ class Parser:
                 return self.add('Barrier')
             if what == 'barrier_count':
                 return self.add('BarrierCount', children={'value': self.arguments()[0]})
+            if what in SUBGROUP_BUILTINS.values():
+                return self.add({v: k for k, v in SUBGROUP_BUILTINS.items()}[what])
+            if what in SHUFFLES.values():
+                args = self.arguments()
+                if len(args) != 2:
+                    self.fail(f'qpel.{what} takes a value and a lane, mask or delta')
+                mode = {v: k for k, v in SHUFFLES.items()}[what]
+                return self.add('SubgroupShuffle', {'mode': mode}, {'value': args[0], 'operand': args[1]})
+            if what.startswith('subgroup_') and what[9:] in ('add', 'min', 'max', 'and', 'or', 'xor'):
+                args = self.arguments()
+                if len(args) != 1:
+                    self.fail(f'qpel.{what} takes one value')
+                return self.add('SubgroupReduce', {'operator': what[9:]}, {'value': args[0]})
             if what in BUILTIN_AXES.values():
                 self.take('.')
                 axis = self.take(kind='name')

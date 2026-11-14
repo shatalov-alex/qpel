@@ -4,7 +4,27 @@ Notable changes to qpel, by milestone. Dates are when the milestone was reached 
 The IR has its own version (currently 4), recorded in every program and launch plan;
 older programs keep building.
 
-## [Unreleased] — Phase 4
+## [Unreleased] — Phase 5
+
+### Added
+- **Subgroup operations (IR version 5):** `qpel.subgroup_lane|index|size`; `qpel.shuffle`,
+  `shuffle_xor`, `shuffle_down` and `shuffle_up`; and `qpel.subgroup_add|min|max|and|or|xor`.
+  Reductions use one fixed butterfly order, so float sums have the same bits on every backend.
+  Every lane must take part; this is checked through helper functions. CUDA uses
+  `__shfl_*_sync`; Metal uses `simd_shuffle*` and the SIMD-group builtins.
+- The CUDA simulator runs warp operations (shuffles, `__ballot_sync`, `__any_sync`,
+  `__all_sync`, `__syncwarp`), and the Metal-on-CPU runner runs SIMD-group functions.
+- The importers read CUDA `__shfl_*_sync` (full mask, width 32) and `warpSize`, and Metal
+  `simd_shuffle*`, `simd_sum|min|max|and|or|xor` and the SIMD-group builtins.
+- Shared memory declared in an inner block is moved to the kernel's top.
+- llama.cpp `argmax_f32` is a corpus program and passes both behaviour rows.
+
+### Found
+- Apple's `simd_sum` on float32 adds in a different order from CUDA's shuffle-down sum, so
+  results differ in the last bits. A float `simd_sum` therefore imports as qpel's fixed-order sum,
+  and the import records the change (NUMERICS.md, Subgroups).
+
+## Phase 4 — 2026-11-14 (release steps pending)
 
 ### Added
 - **`qpel verify original port`:** a port (CUDA or Metal, hand-written or AI-generated) against

@@ -93,6 +93,28 @@ template <class T> bool atomic_compare_exchange_strong_explicit(_atomic<T>* a, T
   return atomic_compare_exchange_weak_explicit(a, expected, desired, s, f);
 }
 
+#ifdef QPEL_SIM_THREADED
+// SIMD-groups are the simulator's warps: 32 consecutive linear thread indices, every lane that
+// has not exited taking part. Apple does not document the order of its SIMD-group reductions;
+// here they combine in qpel's butterfly order (xor 16, 8, 4, 2, 1), as qpel's own output does.
+template <class T> T simd_shuffle(T v, ushort lane) { return ::__shfl_sync(0xffffffffu, v, (int)lane); }
+template <class T> T simd_broadcast(T v, ushort lane) { return ::__shfl_sync(0xffffffffu, v, (int)lane); }
+template <class T> T simd_shuffle_xor(T v, ushort m) { return ::__shfl_xor_sync(0xffffffffu, v, (int)m); }
+template <class T> T simd_shuffle_down(T v, ushort d) { return ::__shfl_down_sync(0xffffffffu, v, (unsigned)d); }
+template <class T> T simd_shuffle_up(T v, ushort d) { return ::__shfl_up_sync(0xffffffffu, v, (unsigned)d); }
+#define QPEL_METAL_SIMD_REDUCE(name, combine)                                                   \
+  template <class T> T name(T v) {                                                              \
+    for (ushort m = 16; m > 0; m >>= 1) { T o = simd_shuffle_xor(v, m); v = combine; }          \
+    return v; }
+QPEL_METAL_SIMD_REDUCE(simd_sum, v + o) QPEL_METAL_SIMD_REDUCE(simd_min, (o < v ? o : v))
+QPEL_METAL_SIMD_REDUCE(simd_max, (v < o ? o : v)) QPEL_METAL_SIMD_REDUCE(simd_and, v & o)
+QPEL_METAL_SIMD_REDUCE(simd_or, v | o) QPEL_METAL_SIMD_REDUCE(simd_xor, v ^ o)
+#undef QPEL_METAL_SIMD_REDUCE
+inline bool simd_all(bool p) { return ::__all_sync(0xffffffffu, p); }
+inline bool simd_any(bool p) { return ::__any_sync(0xffffffffu, p); }
+inline void simdgroup_barrier(mem_flags) { ::__syncwarp(); }
+#endif
+
 template <class T, class U> T as_type(U u) {
   static_assert(sizeof(T) == sizeof(U), "as_type needs types of one size");
   T t; std::memcpy(&t, &u, sizeof t); return t; }

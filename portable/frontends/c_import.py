@@ -412,6 +412,15 @@ GROUP_BUILTINS = {'MetalThreadGroupPosGridAttr': 'group', 'MetalThreadPosGroupAt
 CUDA_BUILTINS = {'blockIdx': 'group', 'threadIdx': 'local', 'blockDim': 'size', 'gridDim': 'count'}
 GROUP_NODES = {'group': 'GroupIndex', 'local': 'LocalIndex', 'size': 'GroupSize', 'count': 'GroupCount'}
 GROUPS_BLOCK = 64  # group size of a Groups kernel without a launch plan
+# IR version 5 subgroup operations: Metal's SIMD-group builtins, and the calls of both languages.
+SUBGROUP_BUILTINS = {'MetalThreadIndexSIMDGroupAttr': 'SubgroupLane', 'MetalSIMDGroupIndexGroupAttr': 'SubgroupIndex',
+                     'MetalThreadsPerSIMDGroupAttr': 'SubgroupSize'}
+SHUFFLE_CALLS = {'__shfl_sync': 'index', '__shfl_xor_sync': 'xor', '__shfl_down_sync': 'down', '__shfl_up_sync': 'up',
+                 'simd_shuffle': 'index', 'simd_shuffle_xor': 'xor', 'simd_shuffle_down': 'down', 'simd_shuffle_up': 'up',
+                 'qpel_shuffle_index': 'index', 'qpel_shuffle_xor': 'xor', 'qpel_shuffle_down': 'down', 'qpel_shuffle_up': 'up'}
+REDUCE_CALLS = {'simd_sum': 'add', 'simd_min': 'min', 'simd_max': 'max', 'simd_and': 'and', 'simd_or': 'or', 'simd_xor': 'xor',
+                **{f'qpel_subgroup_{op}': op for op in ('add', 'min', 'max', 'and', 'or', 'xor')}}
+SUBGROUP_CALLS = set(SHUFFLE_CALLS) | set(REDUCE_CALLS) | {'qpel_subgroup_lane', 'qpel_subgroup_index', 'qpel_subgroup_size'}
 QPEL_GROUP_SUM_PARAMS = {'qpel_lane', 'qpel_group_size'}  # builtins backends/metal.h adds for a workgroup sum
 ATOMIC_ELEMENTS = {'u32': 'atomic', 'i32': 'atomic_i32'}  # element -> scalar of its atomic buffer
 LOCAL_ARRAY = re.compile(r'(.*\S)\s*\[([0-9]+)\]')  # `unsigned int [3]`: a local array's type
@@ -985,6 +994,9 @@ class Importer:
             if builtin == 'grid' and self.groups:
                 self.scope[p['id']] = ('position',) if is_position_vector(p) else ('grid', 'x')
                 continue
+            if builtin in SUBGROUP_BUILTINS:
+                self.scope[p['id']] = ('subgroup-builtin', SUBGROUP_BUILTINS[builtin], scalar_of(p))
+                continue
             if builtin == 'grid':
                 vector = is_position_vector(p)
                 self.scope[p['id']] = ('position',) if vector else ('grid', 'x')
@@ -1046,10 +1058,11 @@ class Importer:
         if result[0] != 'scalar' or result[1] not in SCALAR_TERMS | {'void'} and not (is_vector(result[1]) and not kernel):
             self.attempt(lambda: self.reject(Unsupported(decl, 'result-type', 'unsupported result type ' + decl['type']['qualType'])))
             result = ('scalar', 'void')
+        self.hoisted, self.depth = [], 0
         body = self.block(body_of(decl))
         statements = self.graph.nodes[body]['children'].get('statements', [])
-        shared = [x for x in statements if self.graph.nodes[x]['kind'] == 'Variable' and
-                  self.graph.nodes[self.graph.nodes[x]['children']['type'][0]]['kind'] == 'SharedType']
+        shared = self.hoisted + [x for x in statements if self.graph.nodes[x]['kind'] == 'Variable' and
+                                 self.graph.nodes[self.graph.nodes[x]['children']['type'][0]]['kind'] == 'SharedType']
         rest = [x for x in statements if x not in shared]
         if len(rest) == 1 and self.graph.nodes[rest[0]]['kind'] == 'Block':
             # `{ { ... } }`, the shape qpel's own output has (shared memory declared before the inner block)
@@ -1230,6 +1243,8 @@ class Importer:
         threadIdx, or a Metal threadgroup position, thread position in the group, group size
         or group count."""
         names = {p['name'] for p in params_of(decl)}
+        if any(self.dialect.builtin(p) in SUBGROUP_BUILTINS for p in params_of(decl)) or self.uses_subgroups(decl):
+            return True  # subgroup operations need whole groups
         if any(self.dialect.builtin(p) in GROUP_NODES and p['name'] not in QPEL_GROUP_SUM_PARAMS for p in params_of(decl)) \
                 or 'qpel_group' in names:
             return True  # (qpel_lane and qpel_group_size alone belong to qpel's own workgroup sum)
@@ -1246,6 +1261,21 @@ class Importer:
                 idiom.update(id(n) for n in walk(node))  # the global index, or qpel's own backend helpers
         return any(n.get('kind') == 'MemberExpr' and id(n) not in idiom and decl_name(n['inner'][0]) in CUDA_BUILTINS
                    for n in walk(body))
+
+    def uses_subgroups(self, decl, seen=None):
+        """The function calls a subgroup operation, itself or through the functions it calls."""
+        seen = set() if seen is None else seen
+        for node in walk(body_of(decl)):
+            if node.get('kind') != 'CallExpr' or not node.get('inner'):
+                continue
+            name = decl_name(node['inner'][0])
+            if name in SUBGROUP_CALLS:
+                return True
+            if name in self.functions and name not in seen:
+                seen.add(name)
+                if self.uses_subgroups(self.functions[name][0], seen):
+                    return True
+        return False
 
     def uses_grid3d(self, decl):
         """A kernel is 2D/3D when it uses a y or z thread index, or a Metal uint2/uint3 position."""
@@ -1294,8 +1324,12 @@ class Importer:
 
     def block(self, node):
         statements = []
-        for child in node.get('inner', ()):
-            statements.extend(self.statement(child))
+        self.depth = getattr(self, 'depth', 0) + 1
+        try:
+            for child in node.get('inner', ()):
+                statements.extend(self.statement(child))
+        finally:
+            self.depth -= 1
         return self.graph.add('Block', children={'statements': statements})
 
     def as_block(self, node):
@@ -1506,6 +1540,12 @@ class Importer:
         ir = self.graph.add('Variable', {'name': self.unique_name(name)},
                             {'type': self.graph.add('SharedType', {'element': item, 'length': length})})
         self.scope[decl['id']] = ('local', ir, f'shared<{item}, {length}>')
+        if getattr(self, 'depth', 1) > 1:  # declared in an inner block: the group's memory all the same
+            self.hoisted.append(ir)
+            message = f'{self.current}: shared memory {name}, declared in an inner block, was moved to the kernel\'s top'
+            if message not in self.adaptations:
+                self.adaptations.append(message)
+            return []
         return [ir]
 
     def vector_local(self, decl, name, vtype):
@@ -1966,6 +2006,8 @@ class Importer:
             if entry is None and ref['id'] in self.globals:
                 raise Unsupported(n, 'global-variable', f'{self.globals[ref["id"]]} is a program-scope variable; '
                                                         'qpel has no global data yet')
+            if entry is None and ref.get('name') == 'warpSize' and self.dialect.name == 'cuda':
+                return self.literal({'value': '32'}, scalar_of(n))  # 32 lanes on every NVIDIA GPU so far
             if entry is None:
                 if ref.get('name') in ('threadIdx', 'blockIdx', 'blockDim', 'gridDim'):
                     raise Unsupported(n, 'thread-builtin', 'only blockIdx.x * blockDim.x + threadIdx.x is supported')
@@ -1992,6 +2034,9 @@ class Importer:
                 if entry[2]:
                     raise Unsupported(n, 'thread-builtin', 'use the .x, .y and .z components of a thread builtin')
                 return add(GROUP_NODES[entry[1]], {'axis': 'x'})
+            if entry[0] == 'subgroup-builtin':
+                node = add(entry[1])
+                return self.convert_types(node, 'u32', entry[2], n) if entry[2] in INTEGER_TERMS and entry[2] != 'u32' else node
             if entry[0] == 'builtin':
                 raise Unsupported(n, 'thread-builtin', f'{entry[1]} is only supported as qpel uses it')
             return self.name(entry[1])
@@ -2199,6 +2244,37 @@ class Importer:
             return self.instances.get(target['referencedDecl']['id'], target['referencedDecl'].get('name'))
         return decl_name(call['inner'][0])
 
+    def subgroup_call(self, n, callee, args):
+        """A shuffle, a subgroup reduction or qpel's own lane, index and size (IR version 5)."""
+        add = self.graph.add
+        if callee in ('qpel_subgroup_lane', 'qpel_subgroup_index', 'qpel_subgroup_size'):
+            return add({'lane': 'SubgroupLane', 'index': 'SubgroupIndex', 'size': 'SubgroupSize'}[callee[14:]])
+        if callee.startswith('__shfl'):  # CUDA: (mask, value, lane or delta[, width])
+            if len(args) not in (3, 4):
+                raise Unsupported(n, 'call', f'{callee} takes a mask, a value, a lane and a width')
+            mask = integer_constant(args[0])
+            if mask is None or mask % 2**32 != 0xffffffff:
+                raise Unsupported(n, 'subgroup-mask', f'{callee}: only the full mask 0xffffffff is portable '
+                                                      '(Metal SIMD-group functions take every active lane)')
+            if len(args) == 4 and args[3].get('kind') != 'CXXDefaultArgExpr' and integer_constant(args[3]) != 32:
+                raise Unsupported(n, 'subgroup-width', f'{callee}: only the width 32 (a whole warp) is supported')
+            args = args[1:3]
+        if callee in SHUFFLE_CALLS:
+            if len(args) != 2:
+                raise Unsupported(n, 'call', f'{callee} takes a value and a lane, mask or delta')
+            operand, kind = self.expr(args[1]), scalar_of(args[1])
+            if kind in INTEGER_TERMS and kind != 'u32':  # the lane, mask or delta is taken as u32 (NUMERICS.md)
+                operand = self.convert_types(operand, kind, 'u32', args[1])
+            return add('SubgroupShuffle', {'mode': SHUFFLE_CALLS[callee]}, {'value': self.expr(args[0]), 'operand': operand})
+        if len(args) != 1:
+            raise Unsupported(n, 'call', f'{callee} takes one value')
+        if callee == 'simd_sum' and scalar_of(args[0]) == 'f32':
+            message = ('simd_sum of float32 was read as qpel.subgroup_add, which adds in a fixed order (xor 16, 8, 4, '
+                       '2, 1); Apple does not document the order of simd_sum')
+            if message not in self.adaptations:
+                self.adaptations.append(message)
+        return add('SubgroupReduce', {'operator': REDUCE_CALLS[callee]}, {'value': self.expr(args[0])})
+
     def call(self, n, statement):
         add = self.graph.add
         callee = self.callee(n)
@@ -2207,6 +2283,9 @@ class Importer:
             return add('Barrier')
         if callee in ('__syncthreads_count', 'qpel_barrier_count'):
             return add('BarrierCount', children={'value': self.expr(predicate(args[0]))})
+        template = decl_name(n['inner'][0])  # the template's own name: instances may be renamed (_f32, _i32)
+        if template in SUBGROUP_CALLS:
+            return self.subgroup_call(n, template, args)
         if callee and callee.startswith('make_') and callee[5:] in VECTOR_NAMES:  # CUDA's make_float3(x, y, z)
             return self.vector_elements(n, args, VECTOR_NAMES[callee[5:]])
         if callee in self.functions:

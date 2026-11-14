@@ -9,7 +9,7 @@ import struct
 from qpel_types import INTEGER_TERMS, INTEGERS_BITS, MATH, SCALAR_TERMS, array, buffer, is_valid, vector, shared
 
 TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType StructType ArrayType VectorType SharedType'.split())
-EXPRESSIONS = set('ArrayValue VectorValue Barrier BarrierCount Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange'.split())
+EXPRESSIONS = set('ArrayValue VectorValue Barrier BarrierCount Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce'.split())
 STATEMENTS = set('Block Variable Assign Evaluate If While DoWhile For Break Continue Return'.split())
 
 # Child role -> (allowed concepts, minimum count, maximum count or None).
@@ -72,6 +72,9 @@ for kind in ('AtomicLoad', 'AtomicStore', 'AtomicAdd', 'AtomicMin'):
         CHILDREN[kind]['value'] = one(EXPRESSIONS)
 # IR version 4: compare-and-swap, with CUDA's atomicCAS result (the value found)
 CHILDREN['AtomicCompareExchange'] = {role: one(EXPRESSIONS) for role in ('address', 'expected', 'value')}
+# IR version 5: SIMD-group (warp) operations over the 32 lanes of a subgroup
+CHILDREN['SubgroupShuffle'] = {'value': one(EXPRESSIONS), 'operand': one(EXPRESSIONS)}
+CHILDREN['SubgroupReduce'] = {'value': one(EXPRESSIONS)}
 
 # Links are required except Resource.extent (shape resources have no extent).
 LINKS = {
@@ -101,7 +104,12 @@ ATTRIBUTES = {
     'ArrayType': {'element': str, 'length': int},
     'VectorType': {'element': str, 'length': int}, 'VectorValue': {'element': str, 'length': int},
     'SharedType': {'element': str, 'length': int},
+    # IR version 5
+    'SubgroupShuffle': {'mode': str}, 'SubgroupReduce': {'operator': str},
 }
+SHUFFLE_MODES = ('index', 'xor', 'down', 'up')
+REDUCE_OPERATORS = ('add', 'min', 'max', 'and', 'or', 'xor')
+SUBGROUP_SIZE = 32  # lanes per subgroup on every backend qpel targets (NVIDIA warps, Apple SIMD-groups)
 MAX_SCALE = 4096  # elements per element of a buffer's extent: `in M * 4` for an [M, 4] tensor
 DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer', 'reference'}, 'Resource': {'scale', 'length'},
              'Dispatch': {'blockHeight', 'blockDepth', 'groupsX', 'groupsY', 'groupsZ'}}
@@ -301,5 +309,9 @@ def validate_structure(nodes):
             for axis in 'XYZ':
                 if 'groups' + axis in a and not is_group_count(a['groups' + axis]):
                     fail(f"groups{axis} must be an integer expression of W, H and N: {a['groups' + axis]!r}")
+        if kind == 'SubgroupShuffle' and a['mode'] not in SHUFFLE_MODES:
+            fail('A shuffle mode is ' + ', '.join(SHUFFLE_MODES))
+        if kind == 'SubgroupReduce' and a['operator'] not in REDUCE_OPERATORS:
+            fail('A subgroup reduction is ' + ', '.join(REDUCE_OPERATORS))
         if kind == 'Parameter' and a.get('binding', 0) < 0:
             fail('Binding must be nonnegative')

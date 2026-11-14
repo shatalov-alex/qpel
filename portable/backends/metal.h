@@ -231,3 +231,36 @@ inline int qpel_atomic_cas(device atomic_int* address, int expected, int value) 
 }
 #define QPEL_CAS(address, expected, value) qpel_atomic_cas((address), (expected), (value))
 #endif
+
+#ifdef QPEL_SUBGROUPS_ENABLED
+// SIMD-group operations, IR version 5 (NUMERICS.md, Subgroups): the same definitions as
+// backends/cuda.h. Apple forms SIMD-groups of 32 from consecutive linear thread indices.
+#undef QPEL_GROUPS_PARAM
+#define QPEL_GROUPS_PARAM , uint3 qpel_group [[threadgroup_position_in_grid]], uint3 qpel_local [[thread_position_in_threadgroup]], uint3 qpel_group_size [[threads_per_threadgroup]], uint3 qpel_group_count [[threadgroups_per_grid]], uint qpel_simd_lane [[thread_index_in_simdgroup]], uint qpel_simd_group [[simdgroup_index_in_threadgroup]]
+#define QPEL_SUBGROUP_LANE() qpel_simd_lane
+#define QPEL_SUBGROUP_INDEX() qpel_simd_group
+inline uint qpel_subgroup_size() { return 32u; }
+#define QPEL_SUBGROUP_SIZE() qpel_subgroup_size()
+template <class T> inline T qpel_shuffle_index(T v, uint lane) { return simd_shuffle(v, (ushort)(lane & 31u)); }
+template <class T> inline T qpel_shuffle_xor(T v, uint m) { T r = simd_shuffle_xor(v, (ushort)(m & 31u)); return m < 32u ? r : v; }
+template <class T> inline T qpel_shuffle_down(T v, uint d) { T r = simd_shuffle_down(v, (ushort)(d & 31u)); return d < 32u ? r : v; }
+template <class T> inline T qpel_shuffle_up(T v, uint d) { T r = simd_shuffle_up(v, (ushort)(d & 31u)); return d < 32u ? r : v; }
+inline uint qpel_combine_add(uint a, uint b) { return a + b; }
+inline int qpel_combine_add(int a, int b) { return (int)((uint)a + (uint)b); }
+inline float qpel_combine_add(float a, float b) { return a + b; }
+inline uint qpel_combine_min(uint a, uint b) { return b < a ? b : a; }
+inline int qpel_combine_min(int a, int b) { return b < a ? b : a; }
+inline float qpel_combine_min(float a, float b) { return metal::fmin(a, b); }
+inline uint qpel_combine_max(uint a, uint b) { return a < b ? b : a; }
+inline int qpel_combine_max(int a, int b) { return a < b ? b : a; }
+inline float qpel_combine_max(float a, float b) { return metal::fmax(a, b); }
+template <class T> inline T qpel_combine_and(T a, T b) { return a & b; }
+template <class T> inline T qpel_combine_or(T a, T b) { return a | b; }
+template <class T> inline T qpel_combine_xor(T a, T b) { return a ^ b; }
+#define QPEL_SUBGROUP_REDUCE(op) \
+  template <class T> inline T qpel_subgroup_##op(T v) { \
+    for (ushort m = 16; m > 0; m >>= 1) v = qpel_combine_##op(v, simd_shuffle_xor(v, m)); \
+    return v; }
+QPEL_SUBGROUP_REDUCE(add) QPEL_SUBGROUP_REDUCE(min) QPEL_SUBGROUP_REDUCE(max)
+QPEL_SUBGROUP_REDUCE(and) QPEL_SUBGROUP_REDUCE(or) QPEL_SUBGROUP_REDUCE(xor)
+#endif

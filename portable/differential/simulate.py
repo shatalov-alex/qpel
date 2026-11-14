@@ -102,7 +102,8 @@ def geometry(stage, shape):
     return (-(-volume(shape) // block), 1, 1), (block, 1, 1)
 
 
-BARRIERS = ('__syncthreads', '.sync()', 'QPEL_BARRIER', 'QPEL_GROUP_SUM_F32(', 'threadgroup_barrier')
+BARRIERS = ('__syncthreads', '.sync()', 'QPEL_BARRIER', 'QPEL_GROUP_SUM_F32(', 'threadgroup_barrier', '__shfl', '__ballot_sync',
+            '__any_sync', '__all_sync', '__syncwarp', '__activemask', 'qpel_shuffle_', 'qpel_subgroup_', 'simd_', 'simdgroup_barrier')
 GENERATED = '// Generated from qpel IR. Do not edit.'
 
 

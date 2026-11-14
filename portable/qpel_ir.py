@@ -16,10 +16,10 @@ LEGACY_MACROS={'void':'void','bool':'bool','u8':'QPEL_U8','u32':'QPEL_U32','i32'
        'buffer<i32, write>':'QPEL_WRITE_I32','buffer<f32, read>':'QPEL_READ_F32','buffer<f32, write>':'QPEL_WRITE_F32',
        'buffer<f16, read>':'QPEL_READ_F16','buffer<f16, write>':'QPEL_WRITE_F16'}
 TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType','StructType','ArrayType','VectorType','SharedType'}
-KINDS=TYPE_KINDS|set('ArrayValue VectorValue Barrier BarrierCount View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange Pipeline Resource Dispatch Binding'.split())
-COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage','groups','math_exact','math_bounded'}
+KINDS=TYPE_KINDS|set('ArrayValue VectorValue Barrier BarrierCount View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce Pipeline Resource Dispatch Binding'.split())
+COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage','groups','math_exact','math_bounded','subgroups'}
 PROFILES={'metal':COMMON_FEATURES,'cuda':COMMON_FEATURES}
-SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3',4:'qpel-portable-core-v4'}
+SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3',4:'qpel-portable-core-v4',5:'qpel-portable-core-v5'}
 # Version 2 adds else, for/do/break/continue, signed 32-bit integers and their atomics,
 # shifts, ~, conversion to u8, scalar arguments and 2D/3D kernels.
 V2_KINDS={'Grid3D','ThreadIndex','For','DoWhile','Break','Continue','I32Type','ReadOnlyI32BufferType','I32BufferType','AtomicI32BufferType','I32Literal','I32Cast','U32Cast','U8Cast'}
@@ -29,6 +29,8 @@ V3_KINDS={'ScalarType','BufferType','Cast','Constant','Math','View','StructDecl'
 # Version 4 adds thread-private local arrays (array<T, N>, ArrayValue), compare-and-swap and
 # inout resources (filled by the caller, updated by the kernels, returned).
 V4_KINDS={'ArrayType','ArrayValue','AtomicCompareExchange','VectorType','VectorValue','SharedType','Barrier','BarrierCount'}
+# Version 5 adds SIMD-group (warp) operations: lane and subgroup indices, shuffles and reductions.
+V5_KINDS={'SubgroupLane','SubgroupIndex','SubgroupSize','SubgroupShuffle','SubgroupReduce'}
 def type_macro(t):
     """Backend macro spelling a type term."""
     if t in LEGACY_MACROS:return LEGACY_MACROS[t]
@@ -82,9 +84,13 @@ def version_4_features(nodes):
     return used
 
 
+def version_5_features(nodes):
+    return {n['kind'] for n in nodes if n['kind'] in V5_KINDS}
+
+
 def minimum_version(program):
     nodes=program['nodes']
-    return 4 if version_4_features(nodes) else 3 if version_3_features(nodes) else 2 if version_2_features(nodes) else 1
+    return 5 if version_5_features(nodes) else 4 if version_4_features(nodes) else 3 if version_3_features(nodes) else 2 if version_2_features(nodes) else 1
 
 
 def validate(program, backend=None):
@@ -97,6 +103,8 @@ def validate(program, backend=None):
         raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_3_features(program['nodes'])))+'; declare version 3')
     if program['version']<4 and version_4_features(program['nodes']):
         raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_4_features(program['nodes'])))+'; declare version 4')
+    if program['version']<5 and version_5_features(program['nodes']):
+        raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_5_features(program['nodes'])))+'; declare version 5')
     nodes={n['id']:n for n in program['nodes']}
     if len(nodes)!=len(program['nodes']):raise ValueError('Duplicate IR node id')
     required={'integer_buffers','grid_1d'}
@@ -112,6 +120,7 @@ def validate(program, backend=None):
         if n['kind'] in INT32_KINDS:required.add('int32')
         if n['kind']=='Grid3D':required.add('grid_3d')
         if n['kind']=='Groups':required.add('groups')
+        if n['kind'] in V5_KINDS:required.add('subgroups')
         if n['kind']=='Math':required.add('math_exact' if n['attributes']['function'] in EXACT_MATH else 'math_bounded')
         if n['kind'] in TYPE_KINDS|{'Cast','Constant'}:
             used=term(n) if n['kind'] in TYPE_KINDS else n['attributes'].get('to') or n['attributes'].get('scalar')
@@ -297,6 +306,13 @@ class Lowering:
         if k=='Continue':return 'continue;\n'
         if k=='While':return 'while ('+e('condition')+') '+e('body')+'\n'
         if k=='DoWhile':return 'do '+e('body')+' while ('+e('condition')+');\n'
+        if k in ('SubgroupLane','SubgroupIndex','SubgroupSize'):
+            return {'SubgroupLane':'QPEL_SUBGROUP_LANE()','SubgroupIndex':'QPEL_SUBGROUP_INDEX()','SubgroupSize':'QPEL_SUBGROUP_SIZE()'}[k]
+        if k=='SubgroupShuffle':
+            operand=e('operand')
+            if self.expression_types[self.child(n,'operand')['id']]!='u32':operand='(QPEL_U32)('+operand+')'
+            return 'qpel_shuffle_'+a['mode']+'('+e('value')+', '+operand+')'
+        if k=='SubgroupReduce':return 'qpel_subgroup_'+a['operator']+'('+e('value')+')'
         if k=='AtomicCompareExchange':return 'QPEL_CAS('+e('address')+', '+e('expected')+', '+e('value')+')'
         if k in ('AtomicLoad','AtomicStore','AtomicAdd','AtomicMin'):
             macro={'AtomicLoad':'QPEL_LOAD','AtomicStore':'QPEL_STORE','AtomicAdd':'QPEL_ADD','AtomicMin':'QPEL_MIN'}[k]
@@ -353,6 +369,7 @@ class Lowering:
         if 'Groups' in kinds:found.add('groups')
         if 'Math' in kinds:found.add('math')
         if 'AtomicCompareExchange' in kinds:found.add('atomic_cas')
+        if kinds&V5_KINDS:found.add('subgroups')
         for n in nodes:
             if n['kind']=='Parameter' and n['attributes'].get('isBuffer'):
                 t=term(self.child(n,'type'))

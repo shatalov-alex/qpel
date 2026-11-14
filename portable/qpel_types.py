@@ -452,6 +452,21 @@ class TypeChecker:
                 self.require(item, fits(array_element(expected), actual), 'ARRAY_VALUE',
                              f'Expected {array_element(expected)}, got {actual}')
             return expected
+        if k in ('SubgroupLane', 'SubgroupIndex', 'SubgroupSize'):  # IR version 5
+            check(function['attributes'].get('isKernel', False) and self.domain(function) == 'Groups', 'GRID_CONTEXT',
+                  k + ' requires a Groups kernel')
+            return 'u32'
+        if k == 'SubgroupShuffle':
+            value = e('value')
+            check(value in ('u32', 'i32', 'f32'), 'SUBGROUP_TYPE', 'Shuffles move u32, i32 or f32 values')
+            check(e('operand') in INTEGER_TERMS, 'SUBGROUP_TYPE', 'A shuffle lane, mask or delta is an integer')
+            return value
+        if k == 'SubgroupReduce':
+            value = e('value')
+            bitwise = a['operator'] in ('and', 'or', 'xor')
+            check(value in (('u32', 'i32') if bitwise else ('u32', 'i32', 'f32')), 'SUBGROUP_TYPE',
+                  f"subgroup_{a['operator']} takes {'u32 or i32' if bitwise else 'u32, i32 or f32'} values")
+            return value
         if k in ('Barrier', 'BarrierCount'):
             check(function['attributes'].get('isKernel', False) and self.domain(function) == 'Groups', 'BARRIER_CONTEXT',
                   'Barriers are in Groups kernels (the threads of a group wait for each other)')

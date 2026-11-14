@@ -90,6 +90,30 @@ Metal has no `erf`, `expm1` or `log1p`; qpel will define them itself rather than
 - **Views**: a local of buffer type is a pointer into a buffer; it may start without a value and be assigned later. `View {element}` reads a buffer's bytes as another element type (`(device float*)(src0 + offset)`); `buffer + integer` offsets in elements of the buffer's type, so on an `i8` buffer it offsets in bytes. As in C, a view must be aligned for its element type and stay inside the buffer. A writable buffer may be read through a read view. Pipeline effects follow views and buffer locals (initializer and every assignment) back to their parameters.
 - **Function constants** (Metal) are not part of the IR: the importer specialises a kernel to given values (`constants=`), folding the branches they decide, as Metal does when it builds the pipeline. Each specialisation is its own qpel program.
 
+## Subgroups (IR version 5)
+- **Lanes.** A subgroup is the 32 threads of a group with consecutive linear indices
+  (`x + size.x * (y + size.y * z)`). `subgroup_lane` is that index mod 32, and
+  `subgroup_index` is that index / 32. Every lane takes part in every operation (checked).
+- **Shuffles** read the value another lane holds. The operand is taken as u32:
+  - `shuffle(v, lane)` reads lane `lane mod 32`;
+  - `shuffle_xor(v, m)` reads lane `l xor m`;
+  - `shuffle_down(v, d)` reads lane `l + d`;
+  - `shuffle_up(v, d)` reads lane `l - d`.
+  A lane whose source would fall outside 0..31, or whose mask or delta is 32 or more, keeps its
+  own value. That is CUDA's rule and Apple's for deltas below 32, and the generated code makes
+  it hold for every operand.
+- **Reductions** combine in one fixed order, the butterfly. For m = 16, 8, 4, 2, 1, each lane
+  combines its value with lane `l xor m`'s. Every lane ends with the same bits.
+  - Integer `add` wraps.
+  - `min` and `max` on f32 are `fmin` and `fmax`, so NaN is ignored unless every value is NaN.
+  - The f32 `add` is defined by that order. Lane 0's result equals the common CUDA idiom
+    (`v += __shfl_down_sync(full, v, 16, 8, 4, 2, 1)`).
+- **Apple's `simd_sum` is not that order.** On an M4 Pro, a Metal port using `simd_sum` on
+  float32 differs from the CUDA shuffle-down original in the last bits (tests/test_subgroups.py,
+  Verify). An explicit xor butterfly agrees bit for bit. The Metal importer therefore reads a
+  float `simd_sum` as `subgroup_add` and records an adaptation. qpel's own Metal output never
+  calls `simd_sum`. Integer `simd_sum`, min and max are exact.
+
 ## Features
 
 Each program's features (`float16_storage`, `int64`, `groups`, `math`, `scalar_arguments`, ...) come from its IR: `qpel_ir.Lowering.features()` reads its types and nodes. The launch plan and the build manifest record them, and the build enables exactly the matching support blocks of `backends/cuda.h` and `backends/metal.h` (`build_backends.FEATURE_DEFINES`); a backend profile adds what a feature needs on that target (`METAL_STANDARD`: bf16 needs Metal 3.1). Before 2026-11-11 the build searched the generated text for macro names; the switch left every generated source byte-identical.

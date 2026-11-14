@@ -21,6 +21,7 @@
 #define __constant__ static
 
 struct uint3 { unsigned int x, y, z; };
+static constexpr int warpSize = 32;  // a constant on every NVIDIA GPU so far
 struct dim3 {
   unsigned int x, y, z;
   dim3(unsigned int x = 1, unsigned int y = 1, unsigned int z = 1) : x(x), y(y), z(z) {}
@@ -46,7 +47,30 @@ struct QpelBlockBarrier {
 };
 inline QpelBlockBarrier qpel_barrier;
 inline std::mutex qpel_atomic_lock;
-inline void qpel_block_start(int threads) { qpel_barrier.active = threads; qpel_barrier.waiting = 0; qpel_barrier.count = 0; }
+// One warp's barrier and exchange slots: shuffles, ballots and __syncwarp wait for the warp's
+// threads that have not exited. Warps are 32 consecutive linear thread indices, as on NVIDIA.
+struct QpelWarp {
+  std::mutex m; std::condition_variable cv;
+  int active = 0, waiting = 0, generation = 0;
+  unsigned long long slot[32]; unsigned int ballot = 0;
+};
+inline QpelWarp qpel_warps[32];  // 1024 threads at most
+inline unsigned int qpel_linear() { return threadIdx.x + blockDim.x * (threadIdx.y + blockDim.y * threadIdx.z); }
+inline void qpel_block_start(int threads) {
+  qpel_barrier.active = threads; qpel_barrier.waiting = 0; qpel_barrier.count = 0;
+  for (int w = 0; w < 32; ++w) {
+    int left = threads - 32 * w;
+    qpel_warps[w].active = left < 0 ? 0 : left > 32 ? 32 : left; qpel_warps[w].waiting = 0;
+  }
+}
+template <class F> inline void qpel_warp_sync(F arrive) {
+  QpelWarp& w = qpel_warps[qpel_linear() >> 5];
+  std::unique_lock<std::mutex> lock(w.m);
+  int generation = w.generation;
+  arrive(w);
+  if (++w.waiting == w.active) { w.waiting = 0; ++w.generation; w.cv.notify_all(); }
+  else w.cv.wait(lock, [&] { return w.generation != generation; });
+}
 inline int qpel_sync(int predicate) {  // the number of waiting threads whose predicate is nonzero
   std::unique_lock<std::mutex> lock(qpel_barrier.m);
   int generation = qpel_barrier.generation;
@@ -56,6 +80,11 @@ inline int qpel_sync(int predicate) {  // the number of waiting threads whose pr
   return qpel_barrier.result;
 }
 inline void qpel_thread_exit() {
+  {
+    QpelWarp& w = qpel_warps[qpel_linear() >> 5];
+    std::lock_guard<std::mutex> lock(w.m);
+    if (--w.active == w.waiting && w.waiting > 0) { w.waiting = 0; ++w.generation; w.cv.notify_all(); }
+  }
   std::lock_guard<std::mutex> lock(qpel_barrier.m);
   if (--qpel_barrier.active == qpel_barrier.waiting && qpel_barrier.waiting > 0) qpel_barrier.open();
 }
@@ -142,6 +171,43 @@ inline char4 make_char4(signed char x, signed char y, signed char z, signed char
   std::fprintf(stderr, "qpel simulator: %s needs threads that run together\n", what);
   std::abort();
 }
+#ifdef QPEL_SIM_THREADED
+// Warp operations: every thread of the warp that has not exited takes part (the full mask).
+// A source lane outside the thread's width segment gives the thread its own value, as on NVIDIA.
+template <class T> inline T qpel_warp_exchange(T v, unsigned int source) {
+  static_assert(sizeof(T) <= 8, "the simulator shuffles values of up to 8 bytes");
+  unsigned long long bits = 0; std::memcpy(&bits, &v, sizeof v);
+  unsigned int lane = qpel_linear() & 31u;
+  unsigned long long found = 0;
+  qpel_warp_sync([&](QpelWarp& w) { w.slot[lane] = bits; });
+  found = qpel_warps[qpel_linear() >> 5].slot[source & 31u];
+  qpel_warp_sync([](QpelWarp&) {});  // nobody overwrites a slot before every thread has read
+  T r; std::memcpy(&r, &found, sizeof r); return r;
+}
+template <class T> T __shfl_sync(unsigned, T v, int src, int width = 32) {
+  unsigned int lane = qpel_linear() & 31u, base = lane & ~(unsigned)(width - 1);
+  return qpel_warp_exchange(v, base + ((unsigned)src & (unsigned)(width - 1))); }
+template <class T> T __shfl_xor_sync(unsigned, T v, int mask, int width = 32) {
+  unsigned int lane = qpel_linear() & 31u, j = lane ^ (unsigned)mask;
+  return qpel_warp_exchange(v, j / width == lane / width && j < 32u ? j : lane); }
+template <class T> T __shfl_up_sync(unsigned, T v, unsigned d, int width = 32) {
+  unsigned int lane = qpel_linear() & 31u;
+  return qpel_warp_exchange(v, lane % width >= d ? lane - d : lane); }
+template <class T> T __shfl_down_sync(unsigned, T v, unsigned d, int width = 32) {
+  unsigned int lane = qpel_linear() & 31u;
+  return qpel_warp_exchange(v, lane % width + d < (unsigned)width ? lane + d : lane); }
+inline unsigned __ballot_sync(unsigned, int p) {
+  unsigned int lane = qpel_linear() & 31u, found = 0;
+  qpel_warp_sync([&](QpelWarp& w) { if (w.waiting == 0) w.ballot = 0; if (p) w.ballot |= 1u << lane; });
+  found = qpel_warps[qpel_linear() >> 5].ballot;
+  qpel_warp_sync([](QpelWarp&) {});
+  return found;
+}
+inline int __any_sync(unsigned m, int p) { return __ballot_sync(m, p) != 0; }
+inline int __all_sync(unsigned m, int p) { return __ballot_sync(m, !p) == 0; }
+inline void __syncwarp(unsigned = 0xffffffffu) { qpel_warp_sync([](QpelWarp&) {}); }
+inline unsigned __activemask() { return __ballot_sync(0xffffffffu, 1); }
+#else
 template <class T> T __shfl_sync(unsigned, T, int, int = 32) { qpel_simulator_needs_threads("__shfl_sync"); }
 template <class T> T __shfl_xor_sync(unsigned, T, int, int = 32) { qpel_simulator_needs_threads("__shfl_xor_sync"); }
 template <class T> T __shfl_up_sync(unsigned, T, unsigned, int = 32) { qpel_simulator_needs_threads("__shfl_up_sync"); }
@@ -151,6 +217,7 @@ inline int __all_sync(unsigned, int) { qpel_simulator_needs_threads("__all_sync"
 inline unsigned __ballot_sync(unsigned, int) { qpel_simulator_needs_threads("__ballot_sync"); }
 inline void __syncwarp(unsigned = 0xffffffffu) { qpel_simulator_needs_threads("__syncwarp"); }
 inline unsigned __activemask() { qpel_simulator_needs_threads("__activemask"); }
+#endif
 #ifdef QPEL_SIM_THREADED
 inline int __syncthreads_count(int p) { return qpel_sync(p); }
 inline int __syncthreads_or(int p) { return qpel_sync(p) != 0; }

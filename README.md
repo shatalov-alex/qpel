@@ -95,8 +95,8 @@ qpel is in active development. Phase 3 of the [roadmap](portable/ROADMAP.md) is 
 | 6 | Matrix tiles and performance | planned |
 | 7 | Library mapping (cuBLAS/CUB → MPS/Accelerate), Triton | later |
 
-The corpus coverage report (`python3 -m frontends.corpus`) currently counts 101 of 691
-llama.cpp and SAM 2 kernels as importable. Most of the rest need Phase 5 features (shared memory, warp operations).
+The corpus coverage report (`python3 -m frontends.corpus`) currently counts 126 of 719
+kernels (llama.cpp, SAM 2, TRELLIS.2) as importable. Most of the rest need Phase 5 features (shared memory, warp operations).
 
 ## Repository layout
 

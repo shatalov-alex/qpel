@@ -12,30 +12,66 @@ at a uniform index. Not uniform: the thread's own index (GridIndex, ThreadIndex,
 atomics, shared-memory reads, and anything computed from them. A local is uniform when every
 value it is given is uniform and given under uniform control; this is a fixed point over the
 kernel and its loops.
+
+SIMD-group operations (IR version 5: shuffles and reductions) need all 32 lanes of a subgroup,
+so the same check runs one level down: such an operation, or a call to a function that uses
+one, only runs under control flow that is the same for every lane of a subgroup. Uniform there,
+besides everything uniform in the group: the subgroup's index and size, reduction results, and
+a thread index divided by a multiple of 32 or compared with one (the pipeline requires groups
+whose x size is a multiple of 32). Helper functions are checked with their parameters taken as
+varying, and a kernel using subgroup operations, directly or through calls, is a Groups kernel.
 """
 from qpel_types import TypeChecker, is_shared, term
 
-THREAD_OWN = {'GridIndex', 'ThreadIndex', 'LocalIndex'}
+THREAD_OWN = {'GridIndex', 'ThreadIndex', 'LocalIndex', 'SubgroupLane'}
+SUBGROUP_OPS = {'SubgroupShuffle', 'SubgroupReduce'}
+SUBGROUP_WIDE = {'SubgroupIndex', 'SubgroupSize', 'SubgroupReduce'}
+LANE_ROWS = {'LocalIndex', 'ThreadIndex', 'GridIndex'}  # x / 32 is the same for the 32 lanes of a subgroup
 GROUP_WIDE = {'GroupIndex', 'GroupSize', 'GroupCount', 'BarrierCount', 'Literal', 'I32Literal', 'Constant',
               'F32Literal', 'WorkgroupSumF32'}
 
 
 class Uniformity(TypeChecker):
-    def __init__(self, program):
+    def __init__(self, program, level='group', parameters_uniform=True):
         super().__init__(program)
+        self.level, self.parameters_uniform = level, parameters_uniform
+        self.ops = {'Barrier', 'BarrierCount'} if level == 'group' else SUBGROUP_OPS
+        self.using = set()  # functions that use an operation of this level, directly or through calls
         self.varying = set()  # Variable ids whose value can differ between the threads of a group
         self.divergent = set()  # loop ids that some threads of a group leave (or skip ahead in) early
         self.changed = False
 
+    def is_op(self, node):
+        return node['kind'] in self.ops or (node['kind'] == 'Call' and self.target(node, 'function')['id'] in self.using)
+
+    def per_subgroup(self, node):
+        """x / 32k, x >> (5 or more), or x compared with 32k, for a thread's x index."""
+        if node['kind'] != 'Binary':
+            return False
+        left, right = self.child(node, 'left'), self.child(node, 'right')
+        if left['kind'] not in LANE_ROWS or left['attributes'].get('axis', 'x') != 'x':
+            return False
+        if right['kind'] not in ('Literal', 'I32Literal', 'Constant'):
+            return False
+        value = int(right['attributes']['value'].rstrip('uU'))
+        op = node['attributes']['operator']
+        if op == '>>':
+            return value >= 5
+        return op in ('/', '<', '>=') and value > 0 and value % 32 == 0
+
     def uniform(self, node):
         k = node['kind']
-        if k in THREAD_OWN or k.startswith('Atomic'):
+        if self.level == 'subgroup' and (k in SUBGROUP_WIDE or self.per_subgroup(node)):
+            return True  # one value for the 32 lanes, whatever its operands
+        if k in THREAD_OWN or k.startswith('Atomic') or k == 'SubgroupShuffle':
             return False
         if k in GROUP_WIDE:
             return True
         if k == 'Name':
             declaration = self.target(node, 'declaration')
-            return declaration['kind'] == 'Parameter' or declaration['id'] not in self.varying
+            if declaration['kind'] == 'Parameter':
+                return self.parameters_uniform
+            return declaration['id'] not in self.varying
         if k == 'Index':
             base = self.child(node, 'base')
             if base['kind'] == 'Name' and is_shared(self.declared(self.target(base, 'declaration'))):
@@ -86,7 +122,7 @@ class Uniformity(TypeChecker):
         if k == 'Block':
             return self.statements(s, control, loop, report)
         for n in self.walk(s) if k not in ('If', 'While', 'DoWhile', 'For') else ():
-            if n['kind'] in ('Barrier', 'BarrierCount') and report is not None and not control:
+            if self.is_op(n) and report is not None and not control:
                 report.append(n)
         if k == 'Variable':
             self.calls(s, control)
@@ -126,15 +162,28 @@ class Uniformity(TypeChecker):
     def check_condition(self, s, role, control, report):
         for c in self.children(s, role):
             for n in self.walk(c):
-                if n['kind'] == 'BarrierCount' and report is not None and not control:
+                if self.is_op(n) and report is not None and not control:
                     report.append(n)
 
+    def find_using(self):
+        for function in self.functions:  # helpers precede their callers
+            if any(self.is_op(n) for n in self.walk(self.child(function, 'body'))):
+                self.using.add(function['id'])
+
     def check(self):
+        self.find_using()
         for function in self.functions:
             body = self.child(function, 'body')
-            if not function['attributes'].get('isKernel') or not any(
-                    n['kind'] in ('Barrier', 'BarrierCount') for n in self.walk(body)):
+            if function['id'] not in self.using:
                 continue
+            kernel = function['attributes'].get('isKernel')
+            if self.level == 'subgroup' and kernel:
+                self.require(function, self.domain(function) == 'Groups', 'SUBGROUP_CONTEXT',
+                             'Subgroup operations (shuffles, reductions) are in Groups kernels and the functions they call')
+            if self.level == 'group' and not kernel:
+                continue
+            self.parameters_uniform = bool(kernel)
+            self.varying, self.divergent = set(), set()
             self.changed = True
             while self.changed:  # a fixed point: locals and loops only ever become varying
                 self.changed = False
@@ -142,12 +191,33 @@ class Uniformity(TypeChecker):
             report = []
             self.statements(body, True, None, report)
             for node in report:
+                if node['kind'] == 'Return' and self.level == 'subgroup':
+                    self.require(node, False, 'SUBGROUP_UNIFORM', 'In a function with subgroup operations, a return taken '
+                                                                  'by some lanes of a subgroup and not others leaves them '
+                                                                  'without partners')
                 if node['kind'] == 'Return':
                     self.require(node, False, 'BARRIER_UNIFORM', 'In a kernel with barriers, a return taken by some threads '
                                                                  'of a group and not others leaves them waiting')
+                if self.level == 'subgroup':
+                    self.require(node, False, 'SUBGROUP_UNIFORM', 'A shuffle or subgroup reduction must be reached by all 32 '
+                                                                  'lanes of a subgroup: it is under a condition or in a loop '
+                                                                  'that differs between them')
                 self.require(node, False, 'BARRIER_UNIFORM', 'A barrier must be reached by every thread of the group: it is '
                                                              'under a condition or in a loop that differs between threads')
 
 
+def check_subgroup_dispatch(program, using):
+    """A kernel with subgroup operations runs in groups whose x size is a multiple of 32: every
+    subgroup is then full, and x / 32 names one subgroup."""
+    for n in program['nodes']:
+        if n['kind'] == 'Dispatch' and n['links'].get('kernel') in using and n['attributes']['blockSize'] % 32:
+            raise ValueError(f"{n['id']} (Dispatch) SUBGROUP_BLOCK: a kernel with subgroup operations needs a block "
+                             f"whose x size is a multiple of 32, not {n['attributes']['blockSize']}")
+
+
 def check_barriers(program):
     Uniformity(program).check()
+    subgroups = Uniformity(program, 'subgroup')
+    subgroups.check()
+    check_subgroup_dispatch(program, {f for f in subgroups.using
+                                      if subgroups.nodes[f]['attributes'].get('isKernel')})

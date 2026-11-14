@@ -333,7 +333,17 @@
     ],
     "origin": "https://github.com/ggml-org/llama.cpp, commit 91d2fc387529940230555abd297a8b5e99737d3f, ggml/src/ggml-cuda/argmax.cu (unmodified)",
     "license": "MIT (llama.cpp/LICENSE)",
-    "sha256": "1a9219bb25c3dfbbd2f8757dfdd9c92c9ede74e8406539138d72678f9ac89280"
+    "sha256": "1a9219bb25c3dfbbd2f8757dfdd9c92c9ede74e8406539138d72678f9ac89280",
+    "programs": [
+      {
+        "kernels": ["argmax_f32"],
+        "fixture": "llama_argmax_f32",
+        "geometry": {"groups": ["H", "1", "1"], "block": [64, 1, 1]},
+        "values": {"ncols": "W"},
+        "resources": {"dst": "inout"},
+        "shapes": [[5, 3, 1], [64, 4, 1], [100, 7, 1], [33, 2, 1], [1000, 2, 1]]
+      }
+    ]
   },
   {
     "source": "llama.cpp/ggml/src/ggml-cuda/sumrows.cu",
