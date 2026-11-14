@@ -15,6 +15,7 @@ from qpel_types import (SCALAR_TERMS, VALUE_TERMS, access, buffer as type_buffer
                         is_signed, node_spec, normalize_plan, term as type_term)
 from qpel_types import access as type_access, bits as type_bits, INTEGER_TERMS, MATH, is_struct, is_array
 from qpel_types import arithmetic as type_arithmetic, element as element_of, is_vector, vector_element, vector_length, is_shared
+from qpel_types import is_shared_view, view_element, shared_bytes
 from . import clang_ast
 from .clang_ast import position
 
@@ -56,6 +57,13 @@ SHAPES = {'uint3', 'QpelShape', 'dim3'}
 VECTOR_NAMES = {f'{c}{n}': f'vec<{t}, {n}>' for c, t in (('int', 'i32'), ('uint', 'u32'), ('float', 'f32'))
                 for n in (2, 3, 4) if f'{c}{n}' != 'uint3'}
 SCALARS.update(VECTOR_NAMES)
+
+
+def view_spelling(decl):
+    """The type of a declaration as describe() reads it: qpel's CUDA spells a shared view
+    `qpel_shared_view<float>` (an alias of float*, backends/cuda.h), which clang desugars."""
+    t = decl['type']
+    return t.get('desugaredQualType', t['qualType']) if 'qpel_shared_view<' in t['qualType'] else t['qualType']
 
 
 def is_reference(qual_type):
@@ -731,7 +739,7 @@ class Importer:
         if kind == 'VarDecl' and 'MetalFunctionConstantAttr' in attributes(node):
             self.function_constants[node['id']] = node['name']  # resolved at import, see constant_value()
             return []
-        if kind in ('CXXRecordDecl', 'RecordDecl', 'TypedefDecl', 'EnumDecl', 'TypeAliasDecl'):
+        if kind in ('CXXRecordDecl', 'RecordDecl', 'TypedefDecl', 'EnumDecl', 'TypeAliasDecl', 'TypeAliasTemplateDecl'):
             return []  # types are read where parameters use them
         if kind == 'VarDecl':
             t = describe(node['type']['qualType'])
@@ -801,7 +809,12 @@ class Importer:
         return types
 
     def parameter_type(self, decl, i, p, find, atomic_groups):
-        t = describe(p['type']['qualType'])
+        t = describe(view_spelling(p))
+        if t[0] == 'pointer' and ('threadgroup' in p['type']['qualType'].replace('*', ' ').split()
+                                  or 'qpel_shared_view<' in p['type']['qualType']) and not self.dialect.is_kernel(decl):
+            if t[2] not in SCALAR_TERMS - {'bool'} and not is_vector(t[2]):
+                raise Unsupported(p, 'parameter-type', f'parameter type {p["type"]["qualType"]} is not in qpel yet')
+            return f'shared<{t[2]}>'  # a helper's view into the caller's group memory (IR version 5)
         if t[0] == 'pointer':
             if find((decl['name'], i)) in atomic_groups or t[2] in ATOMIC_ELEMENTS.values():
                 scalar = t[2] if t[2] in ATOMIC_ELEMENTS else ATOMIC_SCALARS.get(t[2])
@@ -1005,7 +1018,7 @@ class Importer:
                 self.scope[p['id']] = ('position',) if vector else ('grid', 'x')
                 continue
             if builtin == 'MetalLocalIndexAttr':  # threadgroup T* p [[threadgroup(n)]]: sized by the host
-                self.threadgroup_parameter(p)
+                self.threadgroup_parameter(p, decl)
                 continue
             if builtin:
                 self.scope[p['id']] = ('builtin', p['name'])
@@ -1140,7 +1153,7 @@ class Importer:
             out.append(item)
         return out
 
-    def threadgroup_parameter(self, p):
+    def threadgroup_parameter(self, p, kernel):
         """A Metal `threadgroup T* p [[threadgroup(n)]]` kernel parameter: group memory whose length
         the host sets at the launch (setThreadgroupMemoryLength). qpel's shared memory has a fixed
         length, so the import specialises it: import_source(shared={'p': N}) makes it shared<T, N>,
@@ -1159,6 +1172,17 @@ class Importer:
                                      f'shared={{{name!r}: N}} to give its length in elements')))
             return
         length = int(self.shared_lengths[name])
+        if item in ('i8', 'u8'):  # untyped memory (threadgroup char*) that every use reads as one type
+            typed = self.typed_bytes(p, kernel)
+            if typed and typed != item:
+                size = shared_bytes(f'shared<{typed}, 1>')
+                if length % size:
+                    self.attempt(lambda: self.reject(Unsupported(
+                        p, 'shared', f'{name} has {length} bytes, not a whole number of {typed}')))
+                    return
+                self.adaptations.append(f'{self.current}: threadgroup memory {name} of {length} bytes is only read as '
+                                        f'{typed}, so it became {length // size} elements of {typed}')
+                item, length = typed, length // size
         self.names.discard(self.safe_name(name))  # the parameter's name passes to the shared array
         ir = self.graph.add('Variable', {'name': self.unique_name(name)},
                             {'type': self.graph.add('SharedType', {'element': item, 'length': length})})
@@ -1166,6 +1190,26 @@ class Importer:
         self.dynamic_shared.append(ir)
         self.adaptations.append(f'{self.current}: threadgroup parameter {name}, sized by the host, became shared '
                                 f'memory of {length} elements declared in the kernel')
+
+    def typed_bytes(self, p, kernel):
+        """The one element type every use of a `threadgroup char*` parameter casts it to
+        (`(threadgroup uint16_t *) shmem + k`), or None when it has uses of several types or uncast uses."""
+        found, uses, cast = set(), 0, 0
+        for node in walk(body_of(kernel)):
+            if node.get('kind') == 'DeclRefExpr' and node.get('referencedDecl', {}).get('id') == p['id']:
+                uses += 1
+            if node.get('castKind') == 'BitCast' and scalar_of(node) == 'pointer':
+                inner = node['inner'][0]
+                while inner.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and inner.get('castKind') != 'BitCast' \
+                        and inner.get('inner'):
+                    inner = inner['inner'][0]
+                if inner.get('kind') == 'DeclRefExpr' and inner.get('referencedDecl', {}).get('id') == p['id']:
+                    cast += 1
+                    found.add(describe(node['type']['qualType'])[2])
+        if len(found) != 1 or cast != uses:
+            return None
+        typed = found.pop()
+        return typed if typed in SCALAR_TERMS - {'bool'} or is_vector(typed or '') else None
 
     def builtin_component(self, node):
         """(scope entry, 'x'|'y'|'z') for `v[0]`, `v[1]`, `v[2]` of a Metal thread-position or group
@@ -1488,7 +1532,9 @@ class Importer:
             self.scope[decl['id']] = ('cg-block',)  # cg::this_thread_block(): the group, read through its methods
             return []
         self.scope[decl['id']] = ('untyped', name)  # until it is read, so later uses are not reported again
-        t = describe(decl['type']['qualType'])
+        t = describe(view_spelling(decl))
+        if t[0] == 'pointer' and self.into_shared(decl):
+            return self.shared_view_local(decl, name, t[2])
         if t[0] == 'pointer' and t[2] in SCALAR_TERMS - {'bool'} and \
                 not {'threadgroup', 'constant', 'thread'} & set(decl['type']['qualType'].replace('*', ' ').split()):
             return self.buffer_local(decl, name, type_buffer(t[2], 'read' if t[1] else 'write'))
@@ -1747,7 +1793,8 @@ class Importer:
         if core.get('kind') != 'DeclRefExpr':
             return None
         entry = self.scope.get(core['referencedDecl']['id'])
-        return entry[1] if entry and entry[0] == 'local' and (is_array(entry[2]) or is_shared(entry[2])) else None
+        group = entry and entry[0] in ('local', 'param') and (is_shared(entry[2]) or is_shared_view(entry[2]))
+        return entry[1] if entry and (entry[0] == 'local' and is_array(entry[2]) or group) else None
 
     def safe_name(self, name):
         """A C name that qpel or a backend reserves (min, max, kernel, half, ...) gets a trailing _."""
@@ -1762,6 +1809,49 @@ class Importer:
         if message not in self.adaptations:
             self.adaptations.append(message)
         return renamed
+
+    def into_shared(self, decl):
+        """True for a pointer local into the group's memory: Metal `threadgroup T* p`, or a CUDA
+        `T* p` whose value starts from a shared array or view (`float* row = tile + k`)."""
+        if 'threadgroup' in decl['type']['qualType'].replace('*', ' ').split() or 'qpel_shared_view<' in decl['type']['qualType']:
+            return True
+        init = decl['inner'][0] if 'init' in decl and decl.get('inner') else None
+        while init is not None:
+            core = peel(init)
+            if core.get('kind') == 'BinaryOperator' and core['opcode'] in ('+', '-'):
+                init = core['inner'][0]
+                continue
+            entry = self.scope.get(core.get('referencedDecl', {}).get('id')) if core.get('kind') == 'DeclRefExpr' else None
+            return bool(entry and entry[0] in ('local', 'param') and (is_shared(entry[2]) or is_shared_view(entry[2])))
+        return False
+
+    def shared_view_local(self, decl, name, item):
+        """`threadgroup float * ss = shmem + k` (CUDA `float* ss = tile + k`): a view into shared
+        memory, shared<T> (IR version 5), indexed as the array it points into."""
+        if item not in SCALAR_TERMS - {'bool'} and not is_vector(item or ''):
+            raise Unsupported(decl, 'local-type', f'local {name} of type {decl["type"]["qualType"]} is not in qpel yet')
+        if 'init' not in decl:
+            raise Unsupported(decl, 'local-type', f'pointer {name} into shared memory needs a value')
+        kind = f'shared<{item}>'
+        root = decl['inner'][0]
+        while True:  # the shared array or view the value starts from, through offsets and casts
+            core = peel(root)
+            if core.get('kind') == 'BinaryOperator' and core['opcode'] in ('+', '-'):
+                root = core['inner'][0]
+            elif core.get('kind') in ('CStyleCastExpr', 'CXXStaticCastExpr', 'CXXReinterpretCastExpr', 'ImplicitCastExpr') \
+                    and core.get('inner'):
+                root = core['inner'][0]
+            else:
+                break
+        entry = self.scope.get(core.get('referencedDecl', {}).get('id')) if core.get('kind') == 'DeclRefExpr' else None
+        if entry and entry[0] in ('local', 'param') and (is_shared(entry[2]) or is_shared_view(entry[2])) \
+                and view_element(entry[2]) != item:
+            raise Unsupported(decl, 'shared', f'{name} reads shared memory of {view_element(entry[2])} as {item}; '
+                                              'reinterpreting shared memory is not in qpel yet')
+        value = self.expr(decl['inner'][0], address=True)
+        ir = self.graph.add('Variable', {'name': self.unique_name(name)}, {'type': self.type_node(kind), 'value': value})
+        self.scope[decl['id']] = ('local', ir, kind)
+        return [ir]
 
     def buffer_local(self, decl, name, kind):
         """A pointer local into a device buffer (a view): `device float* row = (device float*)(dst + off)`."""
@@ -2149,6 +2239,11 @@ class Importer:
             raise Unsupported(n, 'operator', f'operator {op} is not supported here')
         if n.get('castKind') == 'BitCast':  # (device float*)(src + off): the bytes read as another type
             target = describe(n['type']['qualType'])
+            root = peel(n['inner'][0]) if n.get('inner') else {}
+            entry = self.scope.get(root.get('referencedDecl', {}).get('id')) if root.get('kind') == 'DeclRefExpr' else None
+            if entry and entry[0] in ('local', 'param') and (is_shared(entry[2]) or is_shared_view(entry[2])) \
+                    and target[0] == 'pointer' and target[2] == view_element(entry[2]):
+                return self.expr(n['inner'][0], address=True)  # (threadgroup T*) of memory already of T
             if target[0] != 'pointer' or target[2] not in SCALAR_TERMS - {'bool'}:
                 raise Unsupported(n, 'conversion', f'reinterpreting as {n["type"]["qualType"]} is not in qpel')
             return add('View', {'element': target[2]}, {'base': self.expr(n['inner'][0], address=True)})

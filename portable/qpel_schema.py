@@ -6,9 +6,9 @@ import re
 import math
 import struct
 
-from qpel_types import INTEGER_TERMS, INTEGERS_BITS, MATH, SCALAR_TERMS, array, buffer, is_valid, vector, shared
+from qpel_types import INTEGER_TERMS, INTEGERS_BITS, MATH, SCALAR_TERMS, array, buffer, is_valid, vector, shared, shared_view
 
-TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType StructType ArrayType VectorType SharedType'.split())
+TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType StructType ArrayType VectorType SharedType SharedViewType'.split())
 EXPRESSIONS = set('ArrayValue VectorValue Barrier BarrierCount Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce'.split())
 STATEMENTS = set('Block Variable Assign Evaluate If While DoWhile For Break Continue Return'.split())
 
@@ -104,6 +104,7 @@ ATTRIBUTES = {
     'ArrayType': {'element': str, 'length': int},
     'VectorType': {'element': str, 'length': int}, 'VectorValue': {'element': str, 'length': int},
     'SharedType': {'element': str, 'length': int},
+    'SharedViewType': {'element': str},
     # IR version 5
     'SubgroupShuffle': {'mode': str}, 'SubgroupReduce': {'operator': str},
 }
@@ -276,6 +277,8 @@ def validate_structure(nodes):
             fail(f"Invalid array type array<{a['element']}, {a['length']}>: a scalar element and 1 to 1024 of them")
         if kind == 'SharedType' and not is_valid(shared(a['element'], a['length'])):
             fail(f"Invalid shared type shared<{a['element']}, {a['length']}>: scalars or vectors, at most 16384 bytes")
+        if kind == 'SharedViewType' and not is_valid(shared_view(a['element'])):
+            fail(f"Invalid shared view shared<{a['element']}>: a scalar or vector element")
         if kind in ('VectorType', 'VectorValue') and not is_valid(vector(a['element'], a['length'])):
             fail(f"Invalid vector type vec<{a['element']}, {a['length']}>: i32, u32 or f32 and 2 to 4 of them")
         if kind == 'Math' and a['function'] not in MATH:

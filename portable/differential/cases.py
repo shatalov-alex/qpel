@@ -341,6 +341,16 @@ def raster_cases(plan, seed):
 PREFIXES['trellis2_raster_'] = raster_cases
 
 
+def input_spec(spec):
+    """(element type, None or (low, high)) of a program's input spec: 'f32', or 'i32 0..7' for
+    integers drawn from that inclusive range (indices that must be in range to mean anything)."""
+    element, _, bounds = spec.partition(' ')
+    if not bounds:
+        return element, None
+    low, high = bounds.split('..')
+    return element, (int(low), int(high))
+
+
 def for_program(name, plan, seed=20261111, values=None, shapes=None, inputs=None):
     """Cases for a program. `values` constrains scalar arguments: 'volume' is the number of
     elements of the dispatch shape (a count the buffers must hold), an integer is used as is,
@@ -352,12 +362,15 @@ def for_program(name, plan, seed=20261111, values=None, shapes=None, inputs=None
         family = next((f for prefix, f in PREFIXES.items() if name.startswith(prefix)), None)
         cases = SPECIAL.get(name, family or generic)(plan, seed)
     rng = np.random.default_rng(seed + 1)
-    for buffer_name, element in (inputs or {}).items():  # byte buffers holding values of another type
+    for buffer_name, spec in (inputs or {}).items():  # byte buffers holding values of another type
+        element, bounds = input_spec(spec)
         dtype = DTYPES[element]
         for case in cases:
             raw = case.inputs[buffer_name]
             count = raw.size*raw.itemsize // np.dtype(dtype).itemsize
-            case.inputs[buffer_name] = random_array(rng, dtype, count).view(raw.dtype)
+            drawn = (random_array(rng, dtype, count) if bounds is None else
+                     rng.integers(bounds[0], bounds[1], count, dtype=dtype, endpoint=True))
+            case.inputs[buffer_name] = drawn.view(raw.dtype)
     for rule_name, rule in (values or {}).items():
         for case in cases:
             shape = case.shapes[next(iter(s['grid'] for s in plan['stages']))]
@@ -540,7 +553,7 @@ def scaled_case(name, plan, options, size):
     if options.get('shapes'):
         if not typed:
             return None
-        element = max(np.dtype(DTYPES[t]).itemsize for t in typed.values())
+        element = max(np.dtype(DTYPES[input_spec(t)[0]]).itemsize for t in typed.values())
         size = (size[0] * element,) + tuple(size[1:])
     return for_program(name, plan, values=options.get('values'), shapes=[tuple(size)],
                        inputs=options.get('inputs'))[0]

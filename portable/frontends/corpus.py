@@ -103,6 +103,10 @@ def report(result):
             blocked_by.update(codes)
             lines.append(f'  {"ok     " if not blockers else "blocked"} {kernel}' + (f': {", ".join(codes)}' if codes else ''))
     lines.append(f'{importable} of {total} kernels importable')
+    sized = sum(1 for found in result.values() for blockers in found.values()
+                if blockers and {b.split(' ')[0] for b in blockers} == {'dynamic-shared'})
+    if sized:
+        lines.append(f'{sized} more need only the length of their threadgroup memory (shared={{...}})')
     if blocked_by:
         lines.append('blockers, by number of kernels they block:')
         lines.extend(f'  {count:3} {code}' for code, count in blocked_by.most_common())

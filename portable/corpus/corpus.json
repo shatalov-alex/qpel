@@ -2048,6 +2048,20 @@
         },
         "shapes": [[12, 3, 1], [20, 5, 1], [28, 9, 2], [44, 6, 4]],
         "outputs": {"dst": "f32"}
+      },
+      {
+        "kernels": ["kernel_mul_mm_id_map0_ne20_4"],
+        "fixture": "llama_metal_mul_mm_id_map0_ne20_4",
+        "shared": {"shmem": 64},
+        "geometry": {"groups": ["1", "1", "1"], "block": [8, 1, 1]},
+        "values": {
+          "args.ne02": 8, "args.ne10": 1, "args.ne11": 1, "args.nb11": 0, "args.nb12": 0,
+          "args.ne21": "H", "args.ne20": 4, "args.nb21": 16
+        },
+        "resources": {"htpe": "inout", "hids": "inout"},
+        "inputs": {"src2": "i32 0..7"},
+        "shapes": [[32, 1, 1], [32, 5, 1], [32, 8, 1], [32, 33, 1]],
+        "outputs": {"htpe": "u32", "hids": "i32"}
       }
     ]
   },

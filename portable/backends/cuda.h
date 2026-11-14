@@ -24,6 +24,10 @@ static_assert(sizeof(QpelShape) == 16, "qpel shape ABI must be 16 bytes");
 #define QPEL_F32 float
 // IR version 4 reference parameters: the caller's local, read and written in place.
 #define QPEL_REF(T) T&
+// A view into shared memory (IR version 5): T*, under a name that keeps it a view when the
+// importer reads qpel's own output back (CUDA pointers carry no address space).
+template <class T> using qpel_shared_view = T*;
+#define QPEL_SHARED_VIEW(T) qpel_shared_view<T>
 // IR version 4 vectors: vec<T, N> is the platform vector type, built by its constructor.
 #define QPEL_VEC2_I32 int2
 #define QPEL_MAKE_VEC2_I32 make_int2

@@ -35,6 +35,16 @@ older programs keep building.
   qpel's CUDA on the simulator and qpel's Metal, bit for bit.
 - The Metal-on-CPU runner runs explicit template instantiations (`template [[host_name("x")]]
   kernel void f<float>(...)`).
+- **Shared views (IR version 5):** `shared<T>`, a thread's pointer into its group's shared memory
+  (CUDA `T*`, Metal `threadgroup T*`): locals (`let row: shared<f32> = tile + 32u;`) and helper
+  parameters, indexed like the array. Reads through a view count as varying for the barrier and
+  subgroup checks. The importers read Metal `threadgroup T*` locals and helper parameters and
+  CUDA pointers that start from shared memory.
+- Untyped threadgroup memory (`threadgroup char*`) that every use casts to one type imports as
+  shared memory of that type. llama.cpp `kernel_mul_mm_id_map0_ne20_4` (MoE expert routing:
+  views into it, barriers in a loop) is a corpus program and passes both rows on the Apple GPU.
+  The corpus report counts 16 more kernels that need only a threadgroup length.
+- Corpus program inputs can be integers in a range (`"i32 0..7"`).
 
 ### Fixed
 - Metal kernels instantiated from templates got numbered names (`kernel_argsort_f32_i32_0`)
@@ -43,6 +53,7 @@ older programs keep building.
 - The Metal-on-CPU runner gave every thread its own copy of qpel's shared memory
   (`QPEL_SHARED`), the barrier counter and the workgroup-sum scratch, so a qpel Metal kernel
   using them ran wrong on the CPU (never on the GPU).
+- The Metal-on-CPU runner can run kernels with a shape argument (`constant uint3&`).
 
 ### Found
 - Apple's `simd_sum` on float32 adds in a different order from CUDA's shuffle-down sum, so

@@ -21,7 +21,7 @@ a thread index divided by a multiple of 32 or compared with one (the pipeline re
 whose x size is a multiple of 32). Helper functions are checked with their parameters taken as
 varying, and a kernel using subgroup operations, directly or through calls, is a Groups kernel.
 """
-from qpel_types import TypeChecker, is_shared, term
+from qpel_types import TypeChecker, is_shared, is_shared_view, term
 
 THREAD_OWN = {'GridIndex', 'ThreadIndex', 'LocalIndex', 'SubgroupLane'}
 SUBGROUP_OPS = {'SubgroupShuffle', 'SubgroupReduce'}
@@ -74,9 +74,15 @@ class Uniformity(TypeChecker):
             return declaration['id'] not in self.varying
         if k == 'Index':
             base = self.child(node, 'base')
-            if base['kind'] == 'Name' and is_shared(self.declared(self.target(base, 'declaration'))):
+            while base['kind'] == 'Binary':  # (tile + k)[i]
+                base = self.child(base, 'left')
+            if base['kind'] == 'Name' and self.group_memory(self.declared(self.target(base, 'declaration'))):
                 return False  # another thread may have written it
         return all(self.uniform(self.nodes[c]) for values in node['children'].values() for c in values)
+
+    @staticmethod
+    def group_memory(t):
+        return is_shared(t) or is_shared_view(t)
 
     def mark(self, variable):
         if variable['id'] not in self.varying:
@@ -85,11 +91,14 @@ class Uniformity(TypeChecker):
 
     def assigned(self, target):
         """The local a store changes (x, x.y, x[i]), or None (buffers and shared memory)."""
+        original = target
         while target['kind'] in ('Member', 'Index'):
             target = self.child(target, 'base')
         if target['kind'] == 'Name':
             declaration = self.target(target, 'declaration')
             if declaration['kind'] == 'Variable' and not is_shared(self.declared(declaration)):
+                if is_shared_view(self.declared(declaration)) and original['kind'] == 'Index':
+                    return None  # p[i] = v writes shared memory, not the view p
                 return declaration
         return None
 

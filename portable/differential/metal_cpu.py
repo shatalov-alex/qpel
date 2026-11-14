@@ -128,7 +128,7 @@ def cuda_source(path, report, include, text, work):
             raise ValueError(f'{Path(path).name}: kernel {qualified} is not at namespace scope, so it cannot run on the CPU')
         params = [p for p in params_of(decl) if not ('MetalLocalIndexAttr' in attributes(p) and p['name'] in sized)]
         by_name = {a['name']: a for a in report['arguments'][kernel]}
-        passed, call = [], []
+        passed, call, locals_ = [], [], []
         for p in params:
             attrs = attributes(p)
             builtin = next((k for k in attrs if k.startswith('Metal') and k != 'MetalBufferIndexAttr'), None)
@@ -142,12 +142,19 @@ def cuda_source(path, report, include, text, work):
             else:
                 if qual.endswith('&'):  # constant T& arrives by value; the kernel binds its reference to the copy
                     qual = re.sub(r'\bconst\b', '', qual.rstrip(' &')).strip()
+                if re.fullmatch(r'(constant\s+)?uint3', qual.strip()):
+                    # a shape: the simulator passes its own uint3, which converts to Metal's here
+                    name = p['name']
+                    passed.append((by_name[name]['binding'], '::uint3', name))
+                    locals_.append(f'  uint3 {name}_metal{{{name}.x, {name}.y, {name}.z}};')
+                    call.append(f'{name}_metal')
+                    continue
                 passed.append((by_name[p['name']]['binding'], qual, p['name']))
                 call.append(p['name'])
         passed.sort()
         wrapper = 'qpel_cpu_' + qualified.replace('::', '_')
         lines += [f'__global__ void {wrapper}({", ".join(f"{t} {n}" for _, t, n in passed)}) {{',
-                  f'  if ({UNLAUNCHED}) return;  // dispatchThreads launches no such thread',
+                  f'  if ({UNLAUNCHED}) return;  // dispatchThreads launches no such thread', *locals_,
                   f'  {callee}({", ".join(call)});', '}']
         wrappers[kernel] = 'qpel_metal::' + wrapper
         arguments[kernel] = sorted(report['arguments'][kernel], key=lambda a: a['binding'])

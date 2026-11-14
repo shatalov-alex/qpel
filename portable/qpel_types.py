@@ -38,6 +38,9 @@ VECTOR_FIELDS = 'xyzw'
 # declared at the top of a Groups kernel; its elements are scalars or vectors.
 SHARED = re.compile(r'shared<(\w+|vec<\w+, [234]>), ([1-9][0-9]{0,4})>')
 MAX_SHARED_BYTES = 16384  # within Metal's 32 KiB and CUDA's 48 KiB, with room for the backends' own
+# IR version 5: a thread's view into its group's shared memory (CUDA T*, Metal threadgroup T*): a
+# shared array or another view, offset by an integer. It is indexed like the array it points into.
+SHARED_VIEW = re.compile(r'shared<(\w+|vec<\w+, [234]>)>')
 COMPARISONS = {'==', '!=', '<', '>', '<=', '>='}
 # Math functions on float32: name -> arity. EXACT ones give the same bits on every backend;
 # the others are within MATH_ULPS of the exact result (NUMERICS.md, math functions).
@@ -63,6 +66,8 @@ def term(t):
             return vector(t['attributes']['element'], t['attributes']['length'])
         if t['kind'] == 'SharedType':
             return shared(t['attributes']['element'], t['attributes']['length'])
+        if t['kind'] == 'SharedViewType':
+            return shared_view(t['attributes']['element'])
         return LEGACY.get(t['kind'], t['kind'])
     return LEGACY.get(t, t)
 
@@ -131,6 +136,19 @@ def shared_length(t):
     return int(SHARED.fullmatch(term(t)).group(2))
 
 
+def shared_view(element):
+    return f'shared<{element}>'
+
+
+def is_shared_view(t):
+    return SHARED_VIEW.fullmatch(term(t)) is not None
+
+
+def view_element(t):
+    """The element type of a shared array or a shared view."""
+    return (SHARED_VIEW.fullmatch(term(t)) or SHARED.fullmatch(term(t))).group(1)
+
+
 def shared_bytes(t):
     """Bytes of a shared array on the larger backend (Metal's 3-vectors take 16 bytes)."""
     item = shared_element(t)
@@ -156,6 +174,9 @@ def is_valid(t):
     if m:
         return (m.group(1) in SCALAR_TERMS - {'bool'} or is_valid(m.group(1)) and is_vector(m.group(1))) \
             and shared_bytes(t) <= MAX_SHARED_BYTES
+    m = SHARED_VIEW.fullmatch(t)
+    if m:
+        return m.group(1) in SCALAR_TERMS - {'bool'} or is_valid(m.group(1)) and is_vector(m.group(1))
     m = BUFFER.fullmatch(t)
     return bool(m) and m.group(1) in SCALAR_TERMS - {'bool'} and (m.group(2) != 'atomic' or m.group(1) in ATOMIC_ELEMENTS)
 
@@ -191,6 +212,8 @@ def fits(expected, actual):
         return True
     if is_buffer(expected) and is_buffer(actual):  # a writable buffer can be read through a read view
         return element(expected) == element(actual) and access(expected) == 'read' and access(actual) == 'write'
+    if is_shared_view(expected) and is_shared(actual):  # a shared array is a view of its first element
+        return view_element(expected) == view_element(actual)
     if expected in INTEGER_TERMS and actual in INTEGER_TERMS:
         (eb, es), (ab, a_signed) = INTEGERS_BITS[expected], INTEGERS_BITS[actual]
         if a_signed:
@@ -286,8 +309,14 @@ class TypeChecker:
             declared = self.declared(target)
             if is_array(declared) or is_shared(declared):  # not values: they are only indexed (IR version 4)
                 parent = self.parents.get(node['id'])
-                check(parent is not None and parent['kind'] == 'Index' and parent['children']['base'] == [node['id']],
-                      'ARRAY_USE', 'A local or shared array can only be indexed')
+                indexed = parent is not None and parent['kind'] == 'Index' and parent['children']['base'] == [node['id']]
+                # IR version 5: a shared array is also where a view starts (shared<T> = tile, tile + k)
+                viewed = is_shared(declared) and parent is not None and (
+                    parent['kind'] == 'Binary' and parent['children']['left'] == [node['id']] or
+                    parent['kind'] in ('Variable', 'Call', 'Select') or
+                    parent['kind'] == 'Assign' and parent['children']['value'] == [node['id']])
+                check(indexed or viewed, 'ARRAY_USE', 'A local or shared array can only be indexed' +
+                      (' or viewed (shared<T>)' if is_shared(declared) else ''))
             return declared
         if k == 'Literal':
             return 'bool' if a['value'] in ('true', 'false') else 'u32'
@@ -374,6 +403,8 @@ class TypeChecker:
         if k == 'Index':
             base, index = e('base'), e('index')
             check(index in INTEGER_TERMS, 'INDEX_TYPE', 'Index must be an integer')
+            if is_shared_view(base):
+                return view_element(base)
             if is_shared(base):
                 at = self.child(node, 'index')
                 if at['kind'] in ('Literal', 'I32Literal', 'Constant'):
@@ -434,6 +465,8 @@ class TypeChecker:
                     return 'bool'
             if op in {'+', '-'} and is_buffer(left) and right in INTEGER_TERMS:
                 return left  # an element offset
+            if op in {'+', '-'} and (is_shared(left) or is_shared_view(left)) and right in INTEGER_TERMS:
+                return shared_view(view_element(left))  # a view further into shared memory (IR version 5)
             if op in {'&&', '||'} and left in CONDITIONS and right in CONDITIONS:
                 return 'bool'
             if op in {'==', '!='} and left == right == 'bool':
@@ -528,7 +561,8 @@ class TypeChecker:
                 e('value')
             elif self.children(node, 'value'):
                 actual = e('value')
-                check((expected in SCALAR_TERMS or pointer or is_vector(expected)) and fits(expected, actual), 'VARIABLE_TYPE', f'Invalid initializer {expected} <- {actual}')
+                check((expected in SCALAR_TERMS or pointer or is_vector(expected) or is_shared_view(expected))
+                      and fits(expected, actual), 'VARIABLE_TYPE', f'Invalid initializer {expected} <- {actual}')
             else:
                 check(pointer, 'VARIABLE_TYPE', 'Only buffer locals may start without a value')
             env.add(node['id'])
@@ -536,12 +570,14 @@ class TypeChecker:
             target = self.child(node, 'target')
             expected, actual = e('target'), e('value')
             writable = target['kind'] == 'Name' and (expected in SCALAR_TERMS or is_vector(expected) or
-                                                      is_buffer(expected) and self.target(target, 'declaration')['kind'] == 'Variable')
+                                                      (is_buffer(expected) or is_shared_view(expected))
+                                                      and self.target(target, 'declaration')['kind'] == 'Variable')
             if target['kind'] == 'Member' and self.child(target, 'base')['kind'] == 'Name':
                 writable = is_vector(self.expr(self.child(target, 'base'), env, function))  # v.x = ...
             if target['kind'] == 'Index':
                 base = self.expr(self.child(target, 'base'), env, function)
-                writable = is_buffer(base) and access(base) == 'write' or is_array(base) or is_shared(base)
+                writable = is_buffer(base) and access(base) == 'write' or is_array(base) or is_shared(base) \
+                    or is_shared_view(base)
             check(writable, 'READ_ONLY', 'Assignment target is not writable')
             check(fits(expected, actual), 'ASSIGN_TYPE', f'Incompatible assignment {expected} <- {actual}')
         elif k == 'Evaluate':
@@ -663,6 +699,8 @@ def node_spec(t):
         return 'VectorType', {'element': vector_element(t), 'length': vector_length(t)}
     if is_shared(t):
         return 'SharedType', {'element': shared_element(t), 'length': shared_length(t)}
+    if is_shared_view(t):
+        return 'SharedViewType', {'element': view_element(t)}
     if is_array(t):
         return 'ArrayType', {'element': array_element(t), 'length': array_length(t)}
     return 'ScalarType', {'scalar': t}

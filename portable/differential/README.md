@@ -44,7 +44,9 @@ kernel leaves unwritten (`Case.defined`) are not compared.
   constant the program specialises into a constant with that value, as Metal does when building the pipeline.
   Apple's `round` gives +0 where C gives -0 (NUMERICS.md), so zero results compare without their sign when the
   original is Metal source. Byte buffers are filled and compared as the element type they hold (`inputs`,
-  `outputs` in corpus.json).
+  `outputs` in corpus.json); an input may give an inclusive range for its integers (`"i32 0..7"`, indices that
+  mean something only in range). Threadgroup memory the host sizes (`"shared"`) becomes a kernel-scope array of
+  that length in the original's text (`metal_text.sized_threadgroups`), as `setThreadgroupMemoryLength` would.
 - **Metal originals** (`metal.py`) run through `torch.mps.compile_shader`, one thread per shape element in the
   plan's threadgroups (whole groups for Groups kernels), which is how qpel's generated Metal host dispatches,
   with `#pragma clang fp contract(off)`: as written, like the simulator's `-ffp-contract=off`.

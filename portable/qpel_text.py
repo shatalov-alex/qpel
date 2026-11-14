@@ -16,7 +16,7 @@ import re
 import sys
 from pathlib import Path
 
-from qpel_types import LEGACY_CASTS, MATH, term
+from qpel_types import LEGACY_CASTS, MATH, is_shared_view, term
 
 BUILTIN_AXES = {'ThreadIndex': 'thread', 'GroupIndex': 'group', 'LocalIndex': 'local', 'GroupSize': 'group_size',
                 'GroupCount': 'group_count'}
@@ -333,6 +333,8 @@ class Parser:
         if name == 'shared':
             self.take('<')
             element = self.type_term()
+            if self.accept('>'):
+                return f'shared<{element}>'  # a view into shared memory (IR version 5)
             self.take(',')
             length = self.take(kind='number')
             self.take('>')
@@ -363,6 +365,8 @@ class Parser:
             return self.add('BufferType', {'element': element, 'access': access})
         if t.startswith('struct '):
             return self.add('StructType', {'name': t[len('struct '):]})
+        if t.startswith('shared<') and is_shared_view(t):
+            return self.add('SharedViewType', {'element': t[len('shared<'):-1]})
         if t.startswith('shared<'):
             element, length = t[len('shared<'):-1].rsplit(', ', 1)
             return self.add('SharedType', {'element': element, 'length': int(length)})
