@@ -564,6 +564,13 @@ def edge_values(dtype, subnormals=True):
     return np.array(values, dtype)
 
 
+def structured(name):
+    """True for programs whose inputs hold structure the cases build (hash tables, images of
+    components, a rasteriser's scene): edge values mixed into them would make inputs the
+    original never meets, such as a hash table with no free slot, whose lookups never end."""
+    return name == 'sam2_cc' or any(name.startswith(prefix) for prefix in PREFIXES)
+
+
 def with_edges(cases, plan, seed, subnormals=True):
     """Copies of the cases with at least 17 elements per buffer whose input buffers mix edge
     values (edge_values) into their random ones: about one element in three, at random places."""

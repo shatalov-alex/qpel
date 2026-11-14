@@ -83,13 +83,30 @@ python3 portable/qpel.py verify original.cu port.metal --map scale_offset=affine
 - **The original is the reference.** It is imported to qpel, which gives the launch plan, the
   cases and the numeric tolerance.
 - **The port is only read for its kernel signatures.** It need not import to qpel, so it can use
-  constructs qpel does not cover. Its kernel (same name, or `--map ORIGINAL=PORT`) takes the
-  original's arguments in the same order, builtins such as `[[thread_position_in_grid]]` aside.
-  The element types must match, or the port is refused with the argument that differs.
+  constructs qpel does not cover. Its kernel is the one with the same name, or `--map ORIGINAL=PORT`.
+- **Arguments are matched by name, then by position.** Each port argument (builtins such as
+  `[[thread_position_in_grid]]` aside) takes, in this order: the expression `--arg PORT=EXPR`
+  gives it; the original's argument of the same name, or a field of the original's argument
+  struct; otherwise the original's next unclaimed argument of the same kind (buffer, scalar).
+  A Metal `constant Args& args` is filled field by field the same way (`--arg args.ne0=N`);
+  fields left unmatched are zero and listed. Buffers must have the original's element type or be
+  byte buffers; integer scalars of another width are converted; floats and integers are not
+  mixed. When the argument counts differ, the port is refused with the arguments that match
+  nothing. `--value NAME=RULE` sets an original scalar (`volume`, a number, or an expression of
+  W, H, N), and `--constant NAME=VALUE` a Metal function constant, for whichever side declares it.
+- **Dispatch.** A Metal port gets an exact thread count (dispatchThreads), so its last
+  threadgroup may be partial. `--dispatch groups` launches whole threadgroups instead, as CUDA
+  launches blocks and as ggml's Metal host does (its kernels index with `threads_per_threadgroup`).
 - **Both sides run the same cases.** These are the behaviour matrix's cases, plus copies whose
   input buffers mix in edge values: NaN, infinities, signed zeros, type limits, and subnormals
-  where neither side is Metal (Apple GPUs flush subnormals). CUDA runs on the CPU simulator,
-  Metal on the Apple GPU.
+  where neither side is Metal (Apple GPUs flush subnormals). CUDA runs on the CPU simulator, or
+  with `--nvidia` on GPGPU-Sim (a simulated NVIDIA GPU, in Docker). Metal runs on the Apple GPU,
+  or with `--metal cpu` in the same CPU simulator (`differential/metal_cpu.py`).
+- **Ports whose loops may not end: use `--metal preflight`.** A Metal kernel that never ends (a
+  hash-table probe or a compare-and-swap retry loop given a wrong size) cannot be stopped on an
+  Apple GPU: killing the process leaves the GPU work running, and repeated hangs can restart the
+  machine. `--metal preflight` runs every case on the CPU first, where a case is stopped after
+  `--timeout` seconds (60 by default), and uses the GPU only if every case finished there.
 - **Outputs are compared under NUMERICS.md.** They must be bit-exact, or within twice the ulp
   bound where the original calls bounded math functions. Each failing case reports its first
   difference, for example `z[0]: original -7, port -8`.
@@ -97,10 +114,25 @@ python3 portable/qpel.py verify original.cu port.metal --map scale_offset=affine
   value used as an index, say) is skipped, not counted against the port.
 
 Exit status is 0 when every case agrees, 1 when one differs, and 2 when the port cannot be run.
-`--json` writes the machine-readable report, for an AI porting agent to call in its loop. The 14
-example pairs (`cuda_examples/` and `metal_examples/`) agree in both directions on all 10 cases
-each. A one-character bug, or a port that turns NaN into 0, is caught. Not yet covered: running
-the CUDA side on NVIDIA (GPGPU-Sim or hardware) instead of the CPU simulator.
+`--json` writes the machine-readable report. The 14 example pairs (`cuda_examples/` and
+`metal_examples/`) agree in both directions on all 10 cases each. A one-character bug, or a port
+that turns NaN into 0, is caught.
+
+**For AI porting agents: `qpel mcp`.** It serves `verify` and `translate` as MCP tools on stdin
+and stdout (JSON-RPC), so an agent can check a port inside its own loop:
+
+```sh
+claude mcp add qpel -- qpel mcp        # or: python3 portable/qpel.py mcp
+```
+
+**Ports written outside qpel (`corpus/ports.json`).** `python3 -m differential.ports` (from
+`portable/`) verifies every listed port against its original; `--kind hand|ai`, `--only TEXT`,
+`--json FILE`. Results on 2026-11-14:
+
+| Port | Kind | Result |
+|---|---|---|
+| llama.cpp's own Metal backend (`ggml-metal.metal`) against its CUDA backend: 23 unary and element-wise operations | hand-written | 21 agree. `leaky_relu` gives NaN for ±inf where CUDA gives ±inf (Metal computes `0 * inf`); `hardswish` differs in the last bit (CUDA `(x + 3) / 6`, Metal `x / 6 + 0.5`) |
+| TRELLIS.2 o-voxel: Z-order and Hilbert encode/decode, the five 32-bit hash-table kernels (`ports/trellis2/`) | AI-generated from the CUDA alone, without qpel | 9/9 agree bit for bit on the CPU and on the Apple GPU (hash ports with `--metal preflight`) |
 
 ## Installing with pip
 

@@ -12,6 +12,8 @@ from qpel_ir import validate, Lowering
 from build_backends import build
 
 
+VERSION = '0.5.0'  # the pip package's version (packaging/build_wheel.py reads it)
+
 def save(path, value):
     path.write_text(json.dumps(value, indent=2) + '\n')
 
@@ -127,11 +129,20 @@ def main(argv=None):
     check_port = commands.add_parser('verify', add_help=False,
                                      help='Check a port against its original on the same cases (qpel verify -h)')
     check_port.add_argument('arguments', nargs=argparse.REMAINDER)
+    commands.add_parser('mcp', help='Serve verify and translate to AI agents over MCP (stdio)')
+    commands.add_parser('version', help='Print the version')
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ['verify']:  # its own options and help: differential/verify.py
         from differential import verify
         raise SystemExit(verify.main(argv[1:]))
     args = parser.parse_args(argv)
+    if args.command == 'mcp':
+        import qpel_mcp
+        qpel_mcp.serve()
+        return
+    if args.command == 'version':
+        print(VERSION)
+        return
     try:
         if args.command == 'print':
             from qpel_text import print_program

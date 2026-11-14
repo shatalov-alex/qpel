@@ -28,12 +28,12 @@ import tempfile
 HERE = Path(__file__).resolve().parent
 PORTABLE = HERE.parent
 ROOT = PORTABLE.parent
-VERSION = '0.4.0.dev0'
+VERSION = re.search(r"^VERSION = '([^']+)'", (PORTABLE/'qpel.py').read_text(), re.M).group(1)
 
 MODULES = ['qpel_bounds', 'qpel_ir', 'qpel_pipeline', 'qpel_schema', 'qpel_text', 'qpel_types', 'qpel_uniform',
-           'build_backends', 'generate_cuda_host', 'generate_metal_host']
+           'build_backends', 'generate_cuda_host', 'generate_metal_host', 'qpel_mcp']
 FRONTENDS = ['__init__', 'c_import', 'clang_ast', 'torch_op']  # roundtrip and corpus need the repository's corpus
-DIFFERENTIAL = ['__init__', 'cases', 'compare', 'metal', 'simulate', 'verify']  # what `qpel verify` runs
+DIFFERENTIAL = ['__init__', 'cases', 'compare', 'metal', 'metal_cpu', 'metal_text', 'simulate', 'verify']  # what `qpel verify` runs
 FLAT = '|'.join(MODULES)
 IMPORTS = [
     (re.compile(rf'^(\s*)from ({FLAT}) import ', re.M), r'\1from qpel.\2 import '),
@@ -95,6 +95,7 @@ qpel translate kernels.cu --out translated/      # needs clang on the PATH
 qpel torch-op translated/ --launches extension_api.cu
 pip install "qpel[verify]"       # NumPy, for checking ports
 qpel verify original.cu port.metal               # a port against its original, on the same cases
+qpel mcp                                         # verify and translate as MCP tools for AI agents
 ```
 
 Importing CUDA needs clang (Xcode's or LLVM's); importing Metal needs Xcode's Metal toolchain.
@@ -164,6 +165,12 @@ def smoke_test(wheel, work):
         result = subprocess.run([str(venv/'bin/qpel'), 'verify', source, source], cwd=work, capture_output=True, text=True)
         if result.returncode or 'cases agree' not in result.stdout:
             raise SystemExit('smoke test: qpel verify failed:\n' + result.stdout[-1500:] + result.stderr[-1500:])
+        if shutil.which('xcrun'):  # a Metal port on the CPU simulator, without PyTorch
+            port = str(PORTABLE/'metal_examples/scale_offset.metal')
+            result = subprocess.run([str(venv/'bin/qpel'), 'verify', source, port, '--metal', 'cpu'], cwd=work,
+                                    capture_output=True, text=True)
+            if result.returncode or 'CPU simulator (Metal)' not in result.stdout:
+                raise SystemExit('smoke test: qpel verify --metal cpu failed:\n' + result.stdout[-1500:] + result.stderr[-1500:])
     if shutil.which('clang'):  # import a CUDA source through the installed package (clang stub headers)
         result = subprocess.run([str(venv/'bin/qpel'), 'translate', str(PORTABLE/'cuda_examples/scale_offset.cu'),
                                  '--out', str(work/'translated')], cwd=work, capture_output=True, text=True)

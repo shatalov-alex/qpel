@@ -82,15 +82,15 @@ module saxpy {
 
 ## Status
 
-qpel is in active development. Phase 2 of the [roadmap](portable/ROADMAP.md) is complete; Phase 3 is in progress.
+qpel is in active development. Phase 3 of the [roadmap](portable/ROADMAP.md) is complete; Phase 4 is in progress.
 
 | Phase | Scope | State |
 |---|---|---|
 | 0 | Consolidation: one compiler, IR as the source of truth | done |
 | 1 | Offline Clang-based CUDA and Metal importers, round-trip matrix | done |
 | 2 | IR v3, real-world corpus (llama.cpp), text syntax, fuzzing, NVIDIA gate | done |
-| 3 | First real port: PyTorch extensions, header stubs, PyTorch op host, benchmarks | in progress |
-| 4 | `qpel verify`: check any port (hand-written or AI-generated) against its original | planned |
+| 3 | First real port: PyTorch extensions, header stubs, PyTorch op host, benchmarks | done |
+| 4 | `qpel verify`: check any port (hand-written or AI-generated) against its original | done, except the public release |
 | 5 | Shared memory, atomics, warp/simdgroup ops, block scans | planned |
 | 6 | Matrix tiles and performance | planned |
 | 7 | Library mapping (cuBLAS/CUB → MPS/Accelerate), Triton | later |

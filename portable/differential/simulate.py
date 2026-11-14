@@ -169,7 +169,10 @@ class Program:
 
     def build(self):
         threads = ['-pthread', '-DQPEL_SIM_THREADED'] if self.threaded else []
-        build = subprocess.run(['clang++', '-std=c++17', '-O1', '-ffp-contract=off', '-fsanitize=undefined', *threads,
+        # -fno-finite-loops: C++ lets the optimiser assume a loop without side effects ends; a GPU
+        # kernel's loop that never ends must hang here (and time out), not vanish.
+        build = subprocess.run(['clang++', '-std=c++17', '-O1', '-ffp-contract=off', '-fno-finite-loops',
+                                '-fsanitize=undefined', *threads,
                                 '-fno-sanitize-recover=all', '-w', '-I', str(INCLUDE),
                                 *[arg for folder in self.include for arg in ('-I', str(folder))],
                                 # The importer's library stand-ins (PyTorch, ATen, c10, pybind11, cuBLAS).
@@ -303,7 +306,12 @@ class Program:
         with tempfile.TemporaryDirectory(dir=self.work) as folder:
             folder = Path(folder)
             self.write_case(case, folder)
-            result = subprocess.run([str(self.binary), str(folder)], capture_output=True, text=True, timeout=300)
+            seconds = getattr(self, 'timeout', 300)
+            try:
+                result = subprocess.run([str(self.binary), str(folder)], capture_output=True, text=True, timeout=seconds)
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(f'simulator failed on {case.label}: it did not finish within {seconds} s '
+                                   '(a loop that never ends?)') from None
             if result.returncode in (-10, -11) or 'DEADLYSIGNAL' in result.stderr:  # SIGBUS/SIGSEGV at a guard page
                 raise RuntimeError(f'simulator failed on {case.label}: an access past the end of a buffer, or another invalid address')
             if result.returncode:

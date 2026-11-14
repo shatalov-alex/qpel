@@ -13,6 +13,33 @@ older programs keep building.
   subnormals where neither side is Metal). It reports the first difference per case, writes a
   JSON report, and exits 0, 1 or 2. Ships in the wheel (`qpel[verify]`).
   `differential/compare.py` holds the comparison shared with the behaviour rows.
+- **Argument mapping in `qpel verify`:** port arguments match the original's by name, by a
+  field of the original's argument struct, or by position within buffers and scalars. A Metal
+  `constant Args&` struct is filled from separate CUDA scalars. `--arg PORT=EXPR` sets one
+  explicitly, and `--value` and `--constant` set original scalars and Metal function constants.
+  Byte buffers are accepted for any element type, and integer widths are converted. Unused and
+  zeroed arguments are listed.
+- **`--dispatch groups`:** a Metal port gets whole threadgroups, as ggml's Metal host launches them.
+- **`--nvidia` in `qpel verify`:** CUDA sides run on GPGPU-Sim, all cases in one container.
+- **Metal on the CPU (`differential/metal_cpu.py`, `--metal cpu|preflight`):** a Metal source
+  runs in the CUDA simulator through generated wrappers (Metal types, atomics and math in
+  `include/metal_cpu.h`), where each case has a timeout (`--timeout`). `preflight` uses the Apple
+  GPU only after every case finished on the CPU: a Metal kernel that never ends cannot be stopped
+  on the GPU, and repeated hangs can restart the machine. The simulator builds with
+  `-fno-finite-loops`, so a loop that never ends times out instead of being optimised away.
+- **`qpel mcp`:** an MCP server (JSON-RPC on stdio) with `verify` and `translate` tools, for AI
+  porting agents. `qpel version`.
+- **Ports written outside qpel (`corpus/ports.json`, `python3 -m differential.ports`):**
+  - llama.cpp's hand-written Metal backend against its CUDA backend: 21 of 23 operations agree.
+    `leaky_relu` gives NaN for ±inf inputs on Metal, and `hardswish` differs in the last bit.
+  - Metal ports of nine TRELLIS.2 o-voxel kernels, written by an AI model from the CUDA alone
+    (`ports/trellis2/`): all agree bit for bit, on the CPU and on the Apple GPU.
+
+### Fixed
+- The Metal runner sent element counts as 32 bits whatever the argument's type; a
+  `constant ulong& N` read garbage, and a hash-table probe on it never ended.
+- A case on the CPU simulator that runs too long is reported as a failed case (it did not
+  finish within N s), not as an exception that stopped the run.
 
 ## Phase 3 — 2026-11-14
 

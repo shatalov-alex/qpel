@@ -16,6 +16,7 @@ import torch
 
 from .simulate import DTYPES, VALUE_TYPES, volume
 from qpel_types import buffer_length, is_struct, pack_struct
+from .metal_text import inline_includes, instantiating_only, specialise  # noqa: F401 (re-exported)
 
 TORCH = {np.uint8: torch.uint8, np.uint32: torch.int32, np.int32: torch.int32, np.float32: torch.float32,
          np.float16: torch.float16}
@@ -56,57 +57,13 @@ def _compiled(text):
     return _LIBRARIES[text]
 
 
-def inline_includes(path, include=(), done=None):
-    """Source text with its quoted #includes from the library's folders pasted in, once each
-    (compile_shader takes one string; ggml embeds its headers the same way)."""
-    import re
-    from pathlib import Path
-    done = set() if done is None else done
-    path = Path(path)
-    out = []
-    for line in path.read_text().splitlines():
-        found = re.match(r'\s*#\s*include\s+"([^"]+)"', line)
-        if found:
-            for folder in [path.parent] + [Path(f) for f in include]:
-                candidate = (folder/found.group(1)).resolve()
-                if candidate.exists():
-                    if candidate not in done:
-                        done.add(candidate)
-                        out.append(inline_includes(candidate, include, done))
-                    break
-            else:
-                out.append(line)
-            continue
-        out.append(line)
-    return '\n'.join(out)
+def run_original(source, plan, report, case, include=(), constants=None, whole_groups=False):
+    """{data resource: output array} after running every stage of `plan` with the original kernels.
 
-
-def specialise(text, constants):
-    """Give function constants their values, as pipeline creation would: compile_shader cannot
-    pass constant values, and Metal will not build a pipeline for an unspecialised kernel."""
-    import re
-    for name, value in (constants or {}).items():
-        literal = ('true' if value else 'false') if isinstance(value, bool) else repr(value)
-        text, count = re.subn(r'constant\s+(\w+)\s+' + re.escape(name) + r'\s*\[\[\s*function_constant\([^]]*\)\s*\]\]\s*;',
-                              lambda m: f'constant {m.group(1)} {name} = {literal};', text)
-        if count != 1:
-            raise ValueError(f'function constant {name}: found {count} declarations')
-    return text
-
-
-INSTANTIATION = re.compile(r'template\s*\[\[\s*host_name\("([^"]+)"\)\s*\]\][^;{]*;')
-
-
-def instantiating_only(text, names):
-    """The source without the explicit template instantiations (`template [[host_name("x")]]
-    kernel ... f<T>;`) of kernels other than `names`. Nothing else changes, so the kernels that
-    run are the original's; ggml-metal.metal has 544 such instantiations, and compiling them
-    all for every specialisation is most of the cost of running one of its kernels."""
-    return INSTANTIATION.sub(lambda m: m.group(0) if m.group(1) in names else '', text)
-
-
-def run_original(source, plan, report, case, include=(), constants=None):
-    """{data resource: output array} after running every stage of `plan` with the original kernels."""
+    One thread per element is dispatched as an exact thread count, so the last threadgroup may
+    be partial (dispatchThreads), unless whole_groups: then whole threadgroups covering the
+    elements (dispatchThreadgroups, as CUDA launches blocks and as ggml's Metal host does), and
+    the kernels must check their bounds."""
     needed = {report['qualified'][s['kernel']] for s in plan['stages']}
     # Run the original as written: no FMA contraction, as the CPU simulator (-ffp-contract=off).
     text = instantiating_only(specialise(inline_includes(source, include), constants), needed)
@@ -129,10 +86,12 @@ def run_original(source, plan, report, case, include=(), constants=None):
         args = []
         for a in arguments:
             name = params.get(a.get('parameter'))
+            # A count goes at the argument's own width: a `constant ulong& N` reads 8 bytes.
+            width = SCALAR.get(a.get('type'), torch.int32)
             if a['source'] == 'extent':
-                args.append(torch.tensor([case.shapes[name]['xyz'.index(a['axis'])]], device='mps', dtype=torch.int32))
+                args.append(torch.tensor([case.shapes[name]['xyz'.index(a['axis'])]], device='mps', dtype=width))
             elif a['source'] == 'volume':
-                args.append(torch.tensor([volume(case.shapes[name])], device='mps', dtype=torch.int32))
+                args.append(torch.tensor([volume(case.shapes[name])], device='mps', dtype=width))
             elif a['source'] == 'parameter' and resources[name]['kind'] == 'shape':
                 args.append(torch.tensor([*case.shapes[name], 0], device='mps', dtype=torch.int32))
             elif a['source'] == 'parameter' and resources[name]['kind'] == 'value' and is_struct(resources[name]['type']):
@@ -155,9 +114,12 @@ def run_original(source, plan, report, case, include=(), constants=None):
             threads = tuple(group_count(g, shape)*b for g, b in zip(s['groups'], block))
             function(*args, threads=threads, group_size=block)
         elif s.get('domain') == 'grid3d':
-            function(*args, threads=tuple(shape), group_size=tuple(s['blockShape']))
+            block = tuple(s['blockShape'])
+            threads = tuple(-(-n // b) * b for n, b in zip(shape, block)) if whole_groups else tuple(shape)
+            function(*args, threads=threads, group_size=block)
         else:
-            function(*args, threads=volume(shape), group_size=s['blockSize'])
+            block = s['blockSize']
+            function(*args, threads=-(-volume(shape) // block) * block if whole_groups else volume(shape), group_size=block)
         torch.mps.synchronize()
     return {name: numpy(t, DTYPES[resources[name]['type']]) for name, t in buffers.items()}
 
