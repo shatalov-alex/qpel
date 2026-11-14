@@ -367,7 +367,21 @@
     ],
     "origin": "https://github.com/ggml-org/llama.cpp, commit 91d2fc387529940230555abd297a8b5e99737d3f, ggml/src/ggml-cuda/cumsum.cu (unmodified)",
     "license": "MIT (llama.cpp/LICENSE)",
-    "sha256": "75e37c9febac23c6fb103ac18914a154bfe34cbaadb862b177f46f63441b0d1e"
+    "sha256": "75e37c9febac23c6fb103ac18914a154bfe34cbaadb862b177f46f63441b0d1e",
+    "programs": [
+      {
+        "kernels": ["cumsum_kernel"],
+        "fixture": "llama_cumsum_f32",
+        "shared": {"smem": 68},
+        "geometry": {"groups": ["H", "N", "1"], "block": [64, 1, 1]},
+        "values": {
+          "ne00": "W", "ne01": "H", "ne02": "N", "ne03": 1,
+          "s00": 1, "s01": "W", "s02": "W*H", "s03": "W*H*N",
+          "s0": 1, "s1": "W", "s2": "W*H", "s3": "W*H*N"
+        },
+        "shapes": [[1, 1, 1], [5, 3, 1], [64, 2, 1], [257, 3, 2], [1000, 2, 1]]
+      }
+    ]
   },
   {
     "source": "llama.cpp/ggml/src/ggml-metal/ggml-metal.metal",

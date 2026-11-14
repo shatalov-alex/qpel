@@ -151,7 +151,9 @@ class CudaIdioms(Sources):
             'conversion': THRESHOLD_CU.replace('1u :', '(unsigned int)(unsigned long long)binary :'),
             'for-init': THRESHOLD_CU.replace('binary[i] =', 'for (unsigned j = 0, k = 1; j < 2u; ++j) {} binary[i] ='),
             'double': THRESHOLD_CU.replace('intensity[i] >= cutoff[i]', '0.5 > 0.25'),
-            'thread-builtin': '__device__ unsigned int lane() { return threadIdx.x; }\n' + THRESHOLD_CU,
+            # (a helper reading threadIdx.x is passed it; the whole builtin as a value is not portable)
+            'thread-builtin': '__device__ unsigned int lane(uint3 t) { return t.x; }\n' +
+                              THRESHOLD_CU.replace('binary[i] =', 'lane(threadIdx); binary[i] ='),
             'call': THRESHOLD_CU.replace('binary[i] =', '__syncwarp(); binary[i] ='),
             'buffer-type': THRESHOLD_CU.replace('unsigned int* binary', 'double* binary'),
             'local-type': THRESHOLD_CU.replace('binary[i] =', 'char4 packed; binary[i] ='),

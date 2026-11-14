@@ -59,6 +59,17 @@ VECTOR_NAMES = {f'{c}{n}': f'vec<{t}, {n}>' for c, t in (('int', 'i32'), ('uint'
 SCALARS.update(VECTOR_NAMES)
 
 
+def has_effects(node):
+    """True when evaluating node could change anything: a call, an assignment, ++ or --.
+    The operand of sizeof is never evaluated."""
+    if node.get('kind') == 'UnaryExprOrTypeTraitExpr':
+        return False
+    if node.get('kind') in ('CallExpr', 'CXXMemberCallExpr', 'CXXOperatorCallExpr', 'CompoundAssignOperator') or \
+            node.get('kind') in ('BinaryOperator', 'UnaryOperator') and node.get('opcode') in ('=', '++', '--'):
+        return True
+    return any(has_effects(c) for c in node.get('inner', ()) if isinstance(c, dict))
+
+
 def view_spelling(decl):
     """The type of a declaration as describe() reads it: qpel's CUDA spells a shared view
     `qpel_shared_view<float>` (an alias of float*, backends/cuda.h), which clang desugars."""
@@ -418,6 +429,7 @@ DIALECT = {'cuda': Cuda(), 'metal': Metal()}
 GROUP_BUILTINS = {'MetalThreadGroupPosGridAttr': 'group', 'MetalThreadPosGroupAttr': 'local',
                   'MetalThreadsPerGroupAttr': 'size', 'MetalThreadGroupsPerGridAttr': 'count'}
 CUDA_BUILTINS = {'blockIdx': 'group', 'threadIdx': 'local', 'blockDim': 'size', 'gridDim': 'count'}
+HIDDEN_NAMES = {'group': 'block_idx', 'local': 'thread_idx', 'size': 'block_dim', 'count': 'grid_dim'}  # helper parameters
 GROUP_NODES = {'group': 'GroupIndex', 'local': 'LocalIndex', 'size': 'GroupSize', 'count': 'GroupCount'}
 GROUPS_BLOCK = 64  # group size of a Groups kernel without a launch plan
 # IR version 5 subgroup operations: Metal's SIMD-group builtins, and the calls of both languages.
@@ -553,6 +565,7 @@ class Importer:
         self.constants = {}  # name -> value, set by import_source(constants=...)
         self.shared_lengths = {}  # threadgroup parameter -> elements, set by import_source(shared=...)
         self.files = {}  # path -> text, for reading attributes clang's JSON leaves out
+        self.function_decls = {d['id']: d for d in walk(unit) if d.get('kind') == 'FunctionDecl' and body_of(d)}
         main = list(clang_ast.main_file_decls(unit, path))
         # Device functions defined in the library's own headers (llama.cpp's common.cuh) are
         # imported when the file's GPU code reaches them; system headers never reach here.
@@ -1045,6 +1058,17 @@ class Importer:
             ir = self.graph.add('Parameter', attrs, {'type': self.type_node(kind)})
             self.scope[p['id']] = ('param', ir, kind)
             params.append(ir)
+        self.hidden_params = {}
+        if not kernel:
+            for role, axis in self.builtin_reads(name):
+                hidden = self.unique_name(HIDDEN_NAMES[role] + '_' + axis)
+                ir = self.graph.add('Parameter', {'name': hidden}, {'type': self.type_node('u32')})
+                self.hidden_params[(role, axis)] = ir
+                params.append(ir)
+            if self.hidden_params:
+                self.adaptations.append(f'{name} reads thread builtins, which a qpel helper is passed: it takes '
+                                        + ', '.join(self.graph.nodes[p]['attributes']['name'] for p in
+                                                    self.hidden_params.values()) + ' as parameters')
         if kernel and self.groups:
             shape_param = True  # sizes stay ordinary arguments; the plan sizes the buffers
         if kernel and self.grid3d and shape_param is None and not any(
@@ -1338,6 +1362,8 @@ class Importer:
         names = {p['name'] for p in params_of(decl)}
         if any(self.dialect.builtin(p) in SUBGROUP_BUILTINS for p in params_of(decl)) or self.uses_subgroups(decl):
             return True  # subgroup operations need whole groups
+        if self.dialect.name == 'cuda' and self.calls_builtin_helpers(decl):
+            return True  # it passes thread builtins to helpers
         if any(self.dialect.builtin(p) in GROUP_NODES and p['name'] not in QPEL_GROUP_SUM_PARAMS
                or self.dialect.builtin(p) == 'MetalLocalIndexAttr' for p in params_of(decl)) or 'qpel_group' in names:
             return True  # (qpel_lane and qpel_group_size alone belong to qpel's own workgroup sum)
@@ -1354,6 +1380,40 @@ class Importer:
                 idiom.update(id(n) for n in walk(node))  # the global index, or qpel's own backend helpers
         return any(n.get('kind') == 'MemberExpr' and id(n) not in idiom and decl_name(n['inner'][0]) in CUDA_BUILTINS
                    for n in walk(body))
+
+    def builtin_reads(self, name, seen=None):
+        """[(role, axis)] of the CUDA thread builtins (threadIdx, blockIdx, blockDim, gridDim
+        components) a device function reads, itself or through the functions it calls. A qpel
+        helper cannot read them, so the import passes each as a u32 parameter (thread_idx_x, ...)."""
+        cache = self.__dict__.setdefault('_builtin_reads', {})
+        if name in cache:
+            return cache[name]
+        seen = set() if seen is None else seen
+        seen.add(name)
+        decl = self.functions[name][0]
+        found = set()
+        if self.dialect.name == 'cuda' and body_of(decl) is not None:
+            for node in walk(body_of(decl)):
+                if node.get('kind') == 'MemberExpr' and decl_name(node['inner'][0]) in CUDA_BUILTINS:
+                    field = member_name(node, self.source)
+                    if field in ('x', 'y', 'z'):
+                        found.add((CUDA_BUILTINS[decl_name(node['inner'][0])], field))
+                if node.get('kind') == 'CallExpr' and node.get('inner'):
+                    callee = self.callee(node)
+                    if callee in self.functions and callee not in seen and not self.functions[callee][2]:
+                        found.update(self.builtin_reads(callee, seen))
+        result = sorted(found, key=lambda ra: (list(GROUP_NODES).index(ra[0]), ra[1]))
+        cache[name] = result
+        return result
+
+    def calls_builtin_helpers(self, decl):
+        """A kernel that calls a helper reading thread builtins (it passes them, so it is a Groups kernel)."""
+        for node in walk(body_of(decl)):
+            if node.get('kind') == 'CallExpr' and node.get('inner'):
+                callee = self.callee(node)
+                if callee in self.functions and not self.functions[callee][2] and self.builtin_reads(callee):
+                    return True
+        return False
 
     def uses_subgroups(self, decl, seen=None):
         """The function calls a subgroup operation, itself or through the functions it calls."""
@@ -1440,8 +1500,15 @@ class Importer:
             return [self.block(node)]
         if kind == 'NullStmt':
             return []
-        if kind == 'CStyleCastExpr' and node.get('castKind') == 'ToVoid' and peel_void(node)['kind'] == 'DeclRefExpr':
-            return []  # (void)x; marks a local as unused and does nothing
+        if kind == 'CStyleCastExpr' and node.get('castKind') == 'ToVoid' and (
+                peel_void(node)['kind'] == 'DeclRefExpr' or not has_effects(node)):
+            return []  # (void)x; or ggml's (void)sizeof((a, b, 0)): marks locals as unused and does nothing
+        if kind == 'IfStmt' and node.get('isConstexpr') and node['inner'][0].get('kind') == 'ConstantExpr' \
+                and node['inner'][0].get('value') in ('true', 'false'):
+            # if constexpr in a template instance: clang has chosen the branch; the other is not code
+            if node['inner'][0]['value'] == 'true':
+                return self.read_statement(node['inner'][1])
+            return self.read_statement(node['inner'][-1]) if node.get('hasElse') else []
         if kind == 'AttributedStmt':  # [[unroll]], likely/unlikely: hints that do not change meaning
             return self.read_statement(node['inner'][-1])
         if kind == 'DeclStmt':
@@ -1498,7 +1565,10 @@ class Importer:
             return [add('While', children={'condition': self.expr(cond), 'body': self.as_block(body)})]
         if kind == 'DoStmt':
             body, cond = node['inner']
-            return [add('DoWhile', children={'body': self.as_block(body), 'condition': self.expr(cond)})]
+            block = self.as_block(body)
+            if not self.graph.nodes[block]['children'].get('statements') and integer_constant(cond) == 0:
+                return []  # do { } while (0): what is left of a macro such as GGML_UNUSED_VARS
+            return [add('DoWhile', children={'body': block, 'condition': self.expr(cond)})]
         if kind == 'ReturnStmt':
             value = [self.expr(node['inner'][0])] if node.get('inner') else []
             return [add('Return', children={'value': value})]
@@ -1541,6 +1611,9 @@ class Importer:
         array = LOCAL_ARRAY.fullmatch(decl['type']['qualType'].strip())
         if array:
             return self.array_local(decl, name, array)
+        unsized = re.fullmatch(r'(.+?)\s*\[\]', decl['type']['qualType'].strip())
+        if unsized and 'CUDASharedAttr' in attributes(decl):
+            return self.dynamic_shared_local(decl, name, describe(unsized.group(1)))
         if t[0] == 'scalar' and is_vector(t[1]):
             return self.vector_local(decl, name, t[1])
         if t[0] == 'scalar' and t[1] in self.records:
@@ -1618,6 +1691,18 @@ class Importer:
                              'value': self.graph.add('ArrayValue', children={'elements': values})})
         self.scope[decl['id']] = ('local', ir, f'array<{scalar}, {length}>')
         return [ir]
+
+    def dynamic_shared_local(self, decl, name, element):
+        """`extern __shared__ float smem[];`: shared memory whose length the launch gives (its third
+        <<<>>> argument, in bytes). As for Metal threadgroup parameters, the import specialises it to
+        import_source(shared={'smem': N}) elements."""
+        if name not in self.shared_lengths:
+            raise Unsupported(decl, 'dynamic-shared', f'{name} is shared memory sized by the launch; import with '
+                                                      f'shared={{{name!r}: N}} to give its length in elements')
+        length = int(self.shared_lengths[name])
+        self.adaptations.append(f'{self.current}: dynamic shared memory {name}, sized by the launch, became '
+                                f'{length} elements declared in the kernel')
+        return self.shared_local(decl, name, element, length)
 
     def shared_local(self, decl, name, element, length):
         """`__shared__ float3 collected[64]` (Metal `threadgroup float3 ...`): memory of the group
@@ -1935,6 +2020,11 @@ class Importer:
             if self.vector_element_ref(core):
                 raise Unsupported(node, 'vector-buffer', 'a whole vector buffer element is stored by `p[i] = v;`')
             return self.index(core)
+        if core['kind'] == 'UnaryOperator' and core['opcode'] == '*' and scalar_of(core['inner'][0]) == 'pointer' \
+                and scalar_of(core) in SCALAR_TERMS:
+            # *p = v is p[0] = v (a buffer or shared view; atomics keep their own calls)
+            return self.graph.add('Index', children={'base': self.expr(core['inner'][0], address=True),
+                                                     'index': self.int_value('u32', 0)})
         if core['kind'] in ('MemberExpr', 'ExtVectorElementExpr') and is_vector(scalar_of(core['inner'][0])):
             ref = self.vector_element_ref(core['inner'][0])
             if ref and member_name(core, self.source) in VECTOR_FIELDS:  # ranges[t].x = ...
@@ -2204,7 +2294,8 @@ class Importer:
         if cooperative_rank(n) and (self.groups or self.grid3d or cooperative_rank(n) == 'block'):
             raise Unsupported(n, 'thread-builtin', 'cooperative groups thread_rank() is supported as the grid rank '
                                                    'of a one-dimensional kernel')
-        if grid_axis(n) and not self.groups:  # a Groups kernel reads it literally: group * size + local
+        if grid_axis(n) and not self.groups and (self.kernel or not getattr(self, 'hidden_params', None)):
+            # (a Groups kernel, or a helper given the builtins, reads it literally: group * size + local)
             if not self.kernel:
                 raise Unsupported(n, 'thread-builtin', 'the thread index is only available in kernels')
             return self.thread_index(grid_axis(n), n)
@@ -2290,6 +2381,9 @@ class Importer:
                 return add(kind, {'axis': field})
             if entry and entry[0] == 'group-builtin' and field in ('x', 'y', 'z'):
                 return add(GROUP_NODES[entry[1]], {'axis': field})
+            if not self.kernel and decl_name(base) in CUDA_BUILTINS and (CUDA_BUILTINS[decl_name(base)], field) \
+                    in getattr(self, 'hidden_params', {}):
+                return self.name(self.hidden_params[(CUDA_BUILTINS[decl_name(base)], field)])
             if self.groups and decl_name(base) in CUDA_BUILTINS and field in ('x', 'y', 'z'):
                 return add(GROUP_NODES[CUDA_BUILTINS[decl_name(base)]], {'axis': field})
             if is_vector(scalar_of(n['inner'][0])) and not (entry and entry[0] in ('position', 'group-builtin')):
@@ -2428,6 +2522,9 @@ class Importer:
         add = self.graph.add
         callee = self.callee(n)
         args = n['inner'][1:]
+        folded = constexpr_call(n, self.function_decls)
+        if folded is not None and scalar_of(n) in INTEGER_TERMS:
+            return self.int_value(scalar_of(n), folded)  # ggml_cuda_get_physical_warp_size(): 32
         if callee in ('__syncthreads', 'threadgroup_barrier'):  # (Metal's flags: qpel's barrier orders both)
             return add('Barrier')
         if callee in ('__syncthreads_count', 'qpel_barrier_count'):
@@ -2441,8 +2538,11 @@ class Importer:
             decl, ident, kernel = self.functions[callee]
             if kernel:
                 raise Unsupported(n, 'call-kernel', 'kernels cannot be called from device code')
-            return add('Call', children={'arguments': [self.expr(a, address=True) for a in args]},
-                       links={'function': ident})
+            arguments = [self.expr(a, address=True) for a in args]
+            for role, axis in self.builtin_reads(callee):  # the thread builtins the helper reads
+                arguments.append(add(GROUP_NODES[role], {'axis': axis}) if self.kernel
+                                 else self.name(self.hidden_params[(role, axis)]))
+            return add('Call', children={'arguments': arguments}, links={'function': ident})
 
         def need(count):
             if len(args) != count:
@@ -2959,6 +3059,26 @@ def conversion_step(node):
     return chain[changes[0]]
 
 
+def constexpr_call(node, functions):
+    """The value of a call, without arguments, to a constexpr function whose body is one
+    `return <integer constant>;` (ggml's `ggml_cuda_get_physical_warp_size()` is 32), or None.
+    `functions` maps clang ids to the translation unit's function declarations."""
+    if node.get('kind') != 'CallExpr' or len(node.get('inner', ())) != 1:
+        return None
+    target = peel_void(node['inner'][0]) if node.get('inner') else {}
+    while target.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and target.get('inner'):
+        target = target['inner'][0]
+    decl = target.get('referencedDecl', {}) if target.get('kind') == 'DeclRefExpr' else {}
+    function = functions.get(decl.get('id'))
+    if not function or not function.get('constexpr'):
+        return None
+    body = body_of(function)
+    statements = (body or {}).get('inner', ())
+    if len(statements) != 1 or statements[0].get('kind') != 'ReturnStmt' or not statements[0].get('inner'):
+        return None
+    return integer_constant(statements[0]['inner'][0])
+
+
 def integer_constant(node):
     """The value of an integer expression made only of literals, + - * and casts, with C's
     conversions applied (wrapping), or None."""
@@ -2973,6 +3093,9 @@ def integer_constant(node):
         return v - 2**size if signed and v >= 2**(size - 1) else v
     if kind == 'IntegerLiteral':
         return fit(int(n['value']))
+    if kind == 'SubstNonTypeTemplateParmExpr' and n.get('inner'):  # a template's int argument (width = 32)
+        inner = integer_constant(n['inner'][-1])
+        return None if inner is None else fit(inner)
     if kind in PASSTHROUGH and n.get('inner'):
         inner = integer_constant(n['inner'][0])
         return None if inner is None else fit(inner)

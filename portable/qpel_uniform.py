@@ -49,15 +49,56 @@ class Uniformity(TypeChecker):
         if node['kind'] != 'Binary':
             return False
         left, right = self.child(node, 'left'), self.child(node, 'right')
-        if left['kind'] not in LANE_ROWS or left['attributes'].get('axis', 'x') != 'x':
+        if not self.thread_x(left):
             return False
-        if right['kind'] not in ('Literal', 'I32Literal', 'Constant'):
+        value = self.constant(right)
+        if value is None:
             return False
-        value = int(right['attributes']['value'].rstrip('uU'))
         op = node['attributes']['operator']
         if op == '>>':
             return value >= 5
         return op in ('/', '<', '>=') and value > 0 and value % 32 == 0
+
+    def constant(self, node):
+        """The integer a node always has: a literal, a conversion of one, or a local set to one and
+        never assigned again (`constexpr int warp_size = 32`); else None."""
+        while node['kind'] in ('Cast', 'I32Cast', 'U32Cast'):
+            node = self.child(node, 'operand')
+        if node['kind'] in ('Literal', 'I32Literal', 'Constant') and node['attributes']['value'] not in ('true', 'false'):
+            return int(node['attributes']['value'].rstrip('uU'))
+        if node['kind'] == 'Name':
+            declaration = self.target(node, 'declaration')
+            if declaration['kind'] == 'Variable' and self.children(declaration, 'value') \
+                    and declaration['id'] not in self.reassigned():
+                return self.constant(self.child(declaration, 'value'))
+        return None
+
+    def thread_x(self, node):
+        """True for a thread's x index: the builtin, a conversion of it, or a local set to one
+        and never assigned again (`const int tid = threadIdx.x`)."""
+        while node['kind'] in ('Cast', 'I32Cast', 'U32Cast'):
+            node = self.child(node, 'operand')
+        if node['kind'] in LANE_ROWS:
+            return node['attributes'].get('axis', 'x') == 'x'
+        if node['kind'] == 'Name':
+            declaration = self.target(node, 'declaration')
+            if declaration['kind'] == 'Variable' and self.children(declaration, 'value') \
+                    and declaration['id'] not in self.reassigned():
+                return self.thread_x(self.child(declaration, 'value'))
+        return False
+
+    def reassigned(self):
+        """Variable ids that an Assign changes (as a whole or in part)."""
+        if not hasattr(self, '_reassigned'):
+            self._reassigned = set()
+            for n in self.nodes.values():
+                if n['kind'] == 'Assign':
+                    target = self.child(n, 'target')
+                    while target['kind'] in ('Member', 'Index'):
+                        target = self.child(target, 'base')
+                    if target['kind'] == 'Name':
+                        self._reassigned.add(target['links']['declaration'])
+        return self._reassigned
 
     def uniform(self, node):
         k = node['kind']

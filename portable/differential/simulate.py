@@ -68,6 +68,17 @@ class Case:
         self.defined = defined or {}
 
 
+def sized_shared(text, lengths):
+    """Each `extern __shared__ T name[];` becomes `__shared__ T name[N];`, for {name: N}."""
+    import re
+    for name, length in lengths.items():
+        text, count = re.subn(r'extern\s+__shared__\s+((?:\w+\s+)*?\w+)\s+' + re.escape(name) + r'\s*\[\s*\]\s*;',
+                              lambda m: f'__shared__ {m.group(1)} {name}[{int(length)}];', text)
+        if not count:
+            raise ValueError(f'dynamic shared memory {name}: no extern __shared__ declaration found')
+    return text
+
+
 def volume(shape):
     return shape[0]*shape[1]*shape[2]
 
@@ -159,6 +170,13 @@ class Program:
             device.write_bytes(bytes(text))
             include = [source.parent] + include
             source = device
+        if original and original.get('shared') and original.get('dialect') == 'cuda':
+            # extern __shared__ T s[] gets its length from the launch (the third <<<>>> argument);
+            # the simulator and the NVIDIA hosts run it as __shared__ T s[N], the length the import had.
+            sized = self.work/('sized_' + source.name)
+            sized.write_text(sized_shared(source.read_text(), original['shared']))
+            include = [source.parent] + include
+            source = sized
         self.source, self.include = source, include
         self.threaded = needs_threads(source.read_text(errors='replace'))
         self.main = self.work/self.MAIN

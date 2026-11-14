@@ -45,6 +45,15 @@ older programs keep building.
   views into it, barriers in a loop) is a corpus program and passes both rows on the Apple GPU.
   The corpus report counts 16 more kernels that need only a threadgroup length.
 - Corpus program inputs can be integers in a range (`"i32 0..7"`).
+- **CUDA dynamic shared memory** (`extern __shared__ T s[];`) imports with a given length, and the
+  originals run with it on the simulator, GPGPU-Sim and NVIDIA hardware.
+- **CUDA helpers reading thread builtins** get them as parameters (`thread_idx_x`, ...), passed by
+  their callers. Also: constexpr calls returning a constant, `if constexpr` in template
+  instances, `(void)` statements, `*p = v` stores. 18 more llama.cpp Metal kernels import (158 of
+  719); 17 more need only a shared-memory length.
+- llama.cpp `cumsum_kernel` (dynamic shared memory, a warp scan helper, barriers in a loop) is a
+  corpus program and passes both rows: the unmodified CUDA on the simulator against qpel's CUDA
+  and qpel's Metal on the Apple GPU.
 
 ### Fixed
 - Metal kernels instantiated from templates got numbered names (`kernel_argsort_f32_i32_0`)

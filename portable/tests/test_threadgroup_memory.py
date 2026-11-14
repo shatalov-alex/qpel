@@ -108,3 +108,57 @@ class Import(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+CUDA_KERNEL = '''
+__global__ void reverse_blocks(const float* x, float* y, unsigned n) {
+  extern __shared__ float tile[];
+  unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
+  tile[threadIdx.x] = i < n ? x[i] : 0.0f;
+  __syncthreads();
+  if (i < n) y[i] = tile[blockDim.x - 1 - threadIdx.x];
+}
+'''
+
+
+@unittest.skipUnless(shutil.which('clang++'), 'clang++ required')
+class DynamicSharedCuda(unittest.TestCase):
+    def setUp(self):
+        self.folder = Path(tempfile.mkdtemp())
+        self.source = self.folder/'reverse.cu'
+        self.source.write_text(CUDA_KERNEL)
+
+    def test_needs_a_length(self):
+        from frontends.c_import import import_source
+        with self.assertRaisesRegex(ValueError, r"dynamic-shared.*shared=\{'tile': N\}"):
+            import_source(self.source)
+
+    def test_original_and_translation_on_the_simulator(self):
+        import numpy as np
+        from frontends.c_import import import_source
+        from qpel_ir import Lowering, validate
+        from qpel import compile_program
+        from differential.simulate import Case, Program
+        import json
+        geometry = {'groups': ['(W + 63)/64', '1', '1'], 'block': [64, 1, 1]}
+        program, report = import_source(self.source, shared={'tile': 64}, geometry=geometry)
+        for target in ('cuda', 'metal'):
+            validate(program, target)
+        self.assertEqual([(n['attributes']['element'], n['attributes']['length']) for n in program['nodes']
+                          if n['kind'] == 'SharedType'], [('f32', 64)])
+        plan = Lowering(program).plan()
+        (self.folder/'p.json').write_text(json.dumps(program))
+        compile_program(self.folder/'p.json', self.folder/'build')
+        for folder in ('original', 'qpel'):
+            (self.folder/folder).mkdir()
+        original = Program(self.source, plan, self.folder/'original', original=report)
+        ours = Program(self.folder/'build/package/generated/reverse.cu', plan, self.folder/'qpel')
+        n = 100
+        x = np.arange(n, dtype=np.float32)
+        padded = np.zeros(128, np.float32)
+        padded[:n] = x
+        expected = padded.reshape(2, 64)[:, ::-1].reshape(-1)[:n]
+        values = {name: n for name in [r['name'] for r in plan['resources'] if r['kind'] == 'value']}
+        case = Case({r['name']: (n, 1, 1) for r in plan['resources'] if r['kind'] == 'shape'}, {'x': x}, values, 'n')
+        for runner in (original, ours):
+            np.testing.assert_array_equal(runner.run(case)['y'], expected)

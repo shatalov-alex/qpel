@@ -163,7 +163,7 @@ def cuda_source(path, report, include, text, work):
     lines += ['#undef kernel', '#undef device', '#undef constant', '#undef thread', '#undef threadgroup']
     out = Path(work)/'metal_on_cpu.cu'
     out.write_text('\n'.join(lines) + '\n')
-    simulated = dict(report, dialect='cuda', qualified=wrappers, arguments=arguments, host_spans=[],
+    simulated = dict(report, dialect='cuda', qualified=wrappers, arguments=arguments, host_spans=[], shared={},
                      header_host_bodies={})
     return out, simulated
 
