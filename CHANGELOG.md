@@ -21,7 +21,28 @@ older programs keep building.
 
 - GPGPU-Sim image `qpel12` with `gpgpusim/qpel-shfl.patch`: two warp shuffle bugs fixed. Every
   `shfl.sync` read 0, and in functional mode every warp used warp 0's threads. The self-test now
-  covers idx, bfly, down and up.
+  covers idx, bfly, down and up. Submitted upstream as accel-sim PR #156.
+- **Threadgroup memory sized by the host:** a Metal kernel parameter
+  `threadgroup T* p [[threadgroup(n)]]` imports as shared memory of the length the import is
+  given (`import_source(shared={'p': N})`, `"shared"` in a corpus program), as function constants
+  are specialised. Without a length the import reports `dynamic-shared`. To run the unmodified
+  original, the parameter becomes a kernel-scope `threadgroup T p[N]` (`metal_text.sized_threadgroups`),
+  which is what the host's `setThreadgroupMemoryLength` gives it.
+- Metal thread builtins read by subscript (`tgpig[0]`, `ntg[1]`) import as `.x`, `.y`, `.z`.
+  14 more llama.cpp Metal kernels import (126 → 140 of 719).
+- llama.cpp `kernel_conv_transpose_2d_f32_f32` (threadgroup memory, a barrier) is a corpus
+  program and passes both behaviour rows: the unmodified original on the Apple GPU against
+  qpel's CUDA on the simulator and qpel's Metal, bit for bit.
+- The Metal-on-CPU runner runs explicit template instantiations (`template [[host_name("x")]]
+  kernel void f<float>(...)`).
+
+### Fixed
+- Metal kernels instantiated from templates got numbered names (`kernel_argsort_f32_i32_0`)
+  instead of their `host_name` after the first non-ASCII character of ggml-metal.metal: the
+  importer sliced the file by clang's byte offsets as characters. 471 kernel names changed.
+- The Metal-on-CPU runner gave every thread its own copy of qpel's shared memory
+  (`QPEL_SHARED`), the barrier counter and the workgroup-sum scratch, so a qpel Metal kernel
+  using them ran wrong on the CPU (never on the GPU).
 
 ### Found
 - Apple's `simd_sum` on float32 adds in a different order from CUDA's shuffle-down sum, so

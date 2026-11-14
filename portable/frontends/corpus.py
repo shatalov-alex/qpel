@@ -129,6 +129,7 @@ def main(argv=None):
                 imported, _ = import_source(CORPUS/entry['source'], include=[CORPUS/f for f in entry.get('include', ())],
                                             kernels=program['kernels'], module=program['fixture'], plan=program_plan(program),
                                             constants=program.get('constants'), geometry=program.get('geometry'),
+                                            shared=program.get('shared'),
                                             resources=program.get('resources'))
                 folder = fixtures/program['fixture']
                 folder.mkdir(exist_ok=True)

@@ -495,7 +495,8 @@ def verify(original, port, kernels=None, mapping=None, include=(), constants=Non
     if pinned:  # imported and launched exactly as the behaviour matrix does it
         from frontends import roundtrip
         program_options, corpus_include = pinned
-        options = {k: program_options.get(k) for k in ('values', 'constants', 'geometry', 'shapes', 'inputs', 'outputs')}
+        options = {k: program_options.get(k) for k in ('values', 'constants', 'geometry', 'shapes', 'inputs', 'outputs',
+                                                       'shared')}
         kernels, module = program_options['kernels'], program_options['fixture']
         fixture_plan = Lowering(roundtrip.fixture(module)).plan()
         include = list(include) + [f for f in corpus_include if f not in include]
@@ -504,7 +505,8 @@ def verify(original, port, kernels=None, mapping=None, include=(), constants=Non
     ours = {k: v for k, v in constants.items() if k in declared_constants(original, include)}
     theirs_constants = {k: v for k, v in constants.items() if k in declared_constants(port, include)}
     program, report = import_source(original, include=include, kernels=kernels, constants=ours, plan=fixture_plan,
-                                    module=module, geometry=None if fixture_plan else options.get('geometry'))
+                                    module=module, geometry=None if fixture_plan else options.get('geometry'),
+                                    shared=options.get('shared'))
     plan = fixture_plan or Lowering(program).plan()
     mapped = Port(port, report, plan, include, mapping, arguments)
     theirs = mapped.report

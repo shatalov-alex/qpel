@@ -543,6 +543,7 @@ class Importer:
         self.global_values = {}  # clang id -> (name, initializer) of a program-scope scalar constant
         self.taken = {}  # function name -> clang id of the declaration that has it
         self.constants = {}  # name -> value, set by import_source(constants=...)
+        self.shared_lengths = {}  # threadgroup parameter -> elements, set by import_source(shared=...)
         self.files = {}  # path -> text, for reading attributes clang's JSON leaves out
         main = list(clang_ast.main_file_decls(unit, path))
         # Device functions defined in the library's own headers (llama.cpp's common.cuh) are
@@ -637,8 +638,9 @@ class Importer:
                 begin = c['range']['begin']
                 file = begin.get('_file')
                 if file not in self.files:
-                    self.files[file] = Path(file).read_text()
-                found = re.match(r'host_name\s*\(\s*"([^"]+)"', self.files[file][begin['offset']:begin['offset'] + 300])
+                    self.files[file] = Path(file).read_bytes()  # clang's offsets count bytes, not characters
+                text = self.files[file][begin['offset']:begin['offset'] + 300].decode('utf-8', 'replace')
+                found = re.match(r'host_name\s*\(\s*"([^"]+)"', text)
                 if found:
                     return found.group(1)
         return None
@@ -982,6 +984,7 @@ class Importer:
         shape_param = None
         self.groups = kernel and self.uses_groups(decl)
         self.grid3d = kernel and not self.groups and self.uses_grid3d(decl)
+        self.dynamic_shared = []  # threadgroup parameters made shared memory (threadgroup_parameter)
         count = self.attempt(lambda: self.element_count(decl, types)) if kernel and not self.grid3d and not self.groups else None
         sizes = self.launch_sizes(decl, types) if count is not None else {}
         sized = {p['id']: p for p in params_of(decl) if p['name'] in sizes and p['id'] != count['id']}
@@ -1000,6 +1003,9 @@ class Importer:
             if builtin == 'grid':
                 vector = is_position_vector(p)
                 self.scope[p['id']] = ('position',) if vector else ('grid', 'x')
+                continue
+            if builtin == 'MetalLocalIndexAttr':  # threadgroup T* p [[threadgroup(n)]]: sized by the host
+                self.threadgroup_parameter(p)
                 continue
             if builtin:
                 self.scope[p['id']] = ('builtin', p['name'])
@@ -1058,7 +1064,7 @@ class Importer:
         if result[0] != 'scalar' or result[1] not in SCALAR_TERMS | {'void'} and not (is_vector(result[1]) and not kernel):
             self.attempt(lambda: self.reject(Unsupported(decl, 'result-type', 'unsupported result type ' + decl['type']['qualType'])))
             result = ('scalar', 'void')
-        self.hoisted, self.depth = [], 0
+        self.hoisted, self.depth = list(self.dynamic_shared), 0
         body = self.block(body_of(decl))
         statements = self.graph.nodes[body]['children'].get('statements', [])
         shared = self.hoisted + [x for x in statements if self.graph.nodes[x]['kind'] == 'Variable' and
@@ -1134,12 +1140,55 @@ class Importer:
             out.append(item)
         return out
 
+    def threadgroup_parameter(self, p):
+        """A Metal `threadgroup T* p [[threadgroup(n)]]` kernel parameter: group memory whose length
+        the host sets at the launch (setThreadgroupMemoryLength). qpel's shared memory has a fixed
+        length, so the import specialises it: import_source(shared={'p': N}) makes it shared<T, N>,
+        declared at the kernel's top, as function constants are specialised to their values."""
+        name = p['name']
+        self.scope[p['id']] = ('untyped', name)
+        t = describe(p['type']['qualType'])
+        item = t[2] if t[0] == 'pointer' else None
+        if item not in SCALAR_TERMS - {'bool'} and not is_vector(item or ''):
+            self.attempt(lambda: self.reject(Unsupported(
+                p, 'shared', f'threadgroup memory of {p["type"]["qualType"]} is not in qpel yet')))
+            return
+        if name not in self.shared_lengths:
+            self.attempt(lambda: self.reject(Unsupported(
+                p, 'dynamic-shared', f'{name} is threadgroup memory sized by the host; import with '
+                                     f'shared={{{name!r}: N}} to give its length in elements')))
+            return
+        length = int(self.shared_lengths[name])
+        self.names.discard(self.safe_name(name))  # the parameter's name passes to the shared array
+        ir = self.graph.add('Variable', {'name': self.unique_name(name)},
+                            {'type': self.graph.add('SharedType', {'element': item, 'length': length})})
+        self.scope[p['id']] = ('local', ir, f'shared<{item}, {length}>')
+        self.dynamic_shared.append(ir)
+        self.adaptations.append(f'{self.current}: threadgroup parameter {name}, sized by the host, became shared '
+                                f'memory of {length} elements declared in the kernel')
+
+    def builtin_component(self, node):
+        """(scope entry, 'x'|'y'|'z') for `v[0]`, `v[1]`, `v[2]` of a Metal thread-position or group
+        builtin vector (a subscript reads a vector element as .x .y .z do), else None."""
+        if node.get('kind') != 'ArraySubscriptExpr':
+            return None
+        base, index = peel(node['inner'][0]), peel(node['inner'][1])
+        if base['kind'] != 'DeclRefExpr' or index['kind'] != 'IntegerLiteral' or str(index.get('value')) not in ('0', '1', '2'):
+            return None
+        entry = self.scope.get(base['referencedDecl']['id'])
+        if not entry or not (entry[0] == 'position' or entry[0] == 'group-builtin' and entry[2]):
+            return None
+        return entry, 'xyz'[int(index['value'])]
+
     def axis_of(self, node):
         """'x', 'y' or 'z' when node is a thread-index axis (CUDA expression or Metal position member)."""
         node = peel(node)
         axis = grid_axis(node)
         if axis:
             return axis
+        component = self.builtin_component(node)
+        if component and component[0][0] == 'position':
+            return component[1]
         if node['kind'] in ('MemberExpr', 'ExtVectorElementExpr'):
             base = peel(node['inner'][0])
             entry = self.scope.get(base.get('referencedDecl', {}).get('id')) if base['kind'] == 'DeclRefExpr' else None
@@ -1245,8 +1294,8 @@ class Importer:
         names = {p['name'] for p in params_of(decl)}
         if any(self.dialect.builtin(p) in SUBGROUP_BUILTINS for p in params_of(decl)) or self.uses_subgroups(decl):
             return True  # subgroup operations need whole groups
-        if any(self.dialect.builtin(p) in GROUP_NODES and p['name'] not in QPEL_GROUP_SUM_PARAMS for p in params_of(decl)) \
-                or 'qpel_group' in names:
+        if any(self.dialect.builtin(p) in GROUP_NODES and p['name'] not in QPEL_GROUP_SUM_PARAMS
+               or self.dialect.builtin(p) == 'MetalLocalIndexAttr' for p in params_of(decl)) or 'qpel_group' in names:
             return True  # (qpel_lane and qpel_group_size alone belong to qpel's own workgroup sum)
         body = body_of(decl)
         for node in walk(body):  # a block of threads that work together: barriers, shared memory, a thread_block
@@ -1464,7 +1513,7 @@ class Importer:
             ir = self.graph.add('Variable', {'name': name}, {'type': self.type_node(t[1]), 'value': zero})
             self.scope[decl['id']] = ('local', ir, t[1])
             return [ir]
-        axis = grid_axis(init) or (self.axis_of(init) if peel(init)['kind'] in ('MemberExpr', 'ExtVectorElementExpr') else None)
+        axis = grid_axis(init) or (self.axis_of(init) if peel(init)['kind'] in ('MemberExpr', 'ExtVectorElementExpr', 'ArraySubscriptExpr') else None)
         if self.kernel and axis and decl['id'] not in self.assigned and not self.groups:
             self.scope[decl['id']] = ('grid', axis)  # a name for the thread index (CUDA expression or Metal position.y)
             return []
@@ -2127,6 +2176,11 @@ class Importer:
         if kind == 'ConditionalOperator':
             c, yes, no = n['inner']
             return add('Select', children={'condition': self.expr(c), 'yes': self.expr(yes), 'no': self.expr(no)})
+        if kind == 'ArraySubscriptExpr' and self.builtin_component(n):
+            entry, field = self.builtin_component(n)  # Metal vectors also read by subscript: tgpig[1] is tgpig.y
+            if entry[0] == 'position':
+                return self.thread_index(field, n)
+            return add(GROUP_NODES[entry[1]], {'axis': field})
         if kind == 'ArraySubscriptExpr':
             return self.index(n)
         if kind in ('MemberExpr', 'ExtVectorElementExpr'):
@@ -2891,7 +2945,7 @@ def assigned_decls(body):
 
 
 def import_source(path, dialect=None, module=None, plan=None, block_size=64, include=(), kernels=None,
-                  constants=None, geometry=None, resources=None):
+                  constants=None, geometry=None, resources=None, shared=None):
     """Import every kernel and device function in `path`. Returns (program, report).
 
     `plan` is an optional launch plan (the pipeline.json qpel writes); without one,
@@ -2901,7 +2955,9 @@ def import_source(path, dialect=None, module=None, plan=None, block_size=64, inc
     ({'groups': [x, y, z], 'block': [x, y, z]}) launches Groups kernels without a plan
     the way the original's host does. `resources` ({name: kind}) overrides the kind of
     resources the plan made without one gets, such as 'inout' for a buffer the caller fills
-    and the kernels update in place."""
+    and the kernels update in place. `shared` ({parameter: elements}) gives the length of
+    Metal threadgroup parameters (`threadgroup float* s [[threadgroup(0)]]`), which the
+    original's host sets at the launch."""
     path = Path(path)
     dialect = dialect or clang_ast.dialect_of(path)
     unit, source = clang_ast.parse(path, dialect, include)
@@ -2911,6 +2967,7 @@ def import_source(path, dialect=None, module=None, plan=None, block_size=64, inc
     plan = normalize_plan(plan) if plan else plan
     importer = Importer(unit, source, path, dialect, module)
     importer.constants = dict(constants or {})
+    importer.shared_lengths = dict(shared or {})
     importer.geometry = geometry
     importer.resource_kinds = dict(resources or {})
     program = importer.run(plan, block_size, kernels)
@@ -2919,7 +2976,8 @@ def import_source(path, dialect=None, module=None, plan=None, block_size=64, inc
               'helpers': [d['name'] for d in importer.decls if not importer.functions[d['name']][2]],
               'adaptations': importer.adaptations, 'warnings': unguarded_kernels(program),
               'qualified': {k: importer.qualified[k] for k in importer.arguments}, 'arguments': importer.arguments,
-              'host_spans': importer.host_spans, 'header_host_bodies': importer.header_host_bodies}
+              'host_spans': importer.host_spans, 'header_host_bodies': importer.header_host_bodies,
+              'shared': dict(importer.shared_lengths)}
     return program, report
 
 

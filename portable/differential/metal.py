@@ -66,7 +66,7 @@ def run_original(source, plan, report, case, include=(), constants=None, whole_g
     the kernels must check their bounds."""
     needed = {report['qualified'][s['kernel']] for s in plan['stages']}
     # Run the original as written: no FMA contraction, as the CPU simulator (-ffp-contract=off).
-    text = instantiating_only(specialise(inline_includes(source, include), constants), needed)
+    text = instantiating_only(specialise(inline_includes(source, include), constants, report.get('shared')), needed)
     lib = _compiled('#pragma clang fp contract(off)\n' + text)
     resources = {r['name']: r for r in plan['resources']}
     buffers = {}

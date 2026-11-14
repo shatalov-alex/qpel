@@ -29,16 +29,45 @@ def inline_includes(path, include=(), done=None):
     return '\n'.join(out)
 
 
-def specialise(text, constants):
+def specialise(text, constants, shared=None):
     """Give function constants their values, as pipeline creation would: compile_shader cannot
-    pass constant values, and Metal will not build a pipeline for an unspecialised kernel."""
+    pass constant values, and Metal will not build a pipeline for an unspecialised kernel.
+    `shared` ({parameter: elements}) sizes threadgroup parameters, see sized_threadgroups."""
     import re
+    text = sized_threadgroups(text, shared)
     for name, value in (constants or {}).items():
         literal = ('true' if value else 'false') if isinstance(value, bool) else repr(value)
         text, count = re.subn(r'constant\s+(\w+)\s+' + re.escape(name) + r'\s*\[\[\s*function_constant\([^]]*\)\s*\]\]\s*;',
                               lambda m: f'constant {m.group(1)} {name} = {literal};', text)
         if count != 1:
             raise ValueError(f'function constant {name}: found {count} declarations')
+    return text
+
+
+def sized_threadgroups(text, lengths):
+    """Each kernel parameter `threadgroup T * name [[threadgroup(n)]]` becomes the kernel-scope array
+    `threadgroup T name[N];`, for {name: N}. The original's host sets that memory's length at the
+    launch (setThreadgroupMemoryLength), which compile_shader cannot; the array is the same memory
+    with the length the qpel import was given (import_source(shared=...)), and nothing else changes."""
+    for name, length in (lengths or {}).items():
+        parameter = r'threadgroup\s+(\w+(?:\s+\w+)?)\s*\*\s*' + re.escape(name) + r'\s*\[\[\s*threadgroup\(\s*\d+\s*\)\s*\]\]'
+        found, at = 0, 0
+        while True:
+            m = re.compile(parameter + r'\s*,\s*').search(text, at) or re.compile(r',\s*' + parameter).search(text, at)
+            if not m:
+                break
+            text = text[:m.start()] + text[m.end():]
+            close, depth = m.start(), 0  # the parameter list's closing parenthesis
+            while depth or text[close] != ')':
+                depth += {'(': 1, ')': -1}.get(text[close], 0)
+                close += 1
+            after = re.compile(r'\s*(\{|;)').match(text, close + 1)
+            if after and after.group(1) == '{':  # a definition, not an explicit instantiation's declaration
+                body = after.end()
+                text = text[:body] + f'\n    threadgroup {m.group(1)} {name}[{int(length)}];' + text[body:]
+            found, at = found + 1, m.start()
+        if not found:
+            raise ValueError(f'threadgroup parameter {name}: not found')
     return text
 
 

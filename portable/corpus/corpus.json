@@ -2035,6 +2035,19 @@
         "outputs": {
           "dst": "f16"
         }
+      },
+      {
+        "kernels": ["kernel_conv_transpose_2d_f32_f32"],
+        "fixture": "llama_metal_conv_transpose_2d_f32_f32",
+        "shared": {"shared_sum": 9},
+        "geometry": {"groups": ["W/4", "H", "N"], "block": [3, 3, 1]},
+        "values": {
+          "args.IC": 2, "args.OC": "N", "args.KW": 3, "args.KH": 3, "args.s0": 2,
+          "args.IW": "(W/4 - 3)/2 + 1", "args.IH": "(H - 3)/2 + 1",
+          "args.nb0": 4, "args.nb1": "W", "args.nb2": "W*H"
+        },
+        "shapes": [[12, 3, 1], [20, 5, 1], [28, 9, 2], [44, 6, 4]],
+        "outputs": {"dst": "f32"}
       }
     ]
   },
