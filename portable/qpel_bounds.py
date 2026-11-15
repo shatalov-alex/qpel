@@ -4,7 +4,7 @@ Both generated hosts limit allocations to INT32_MAX elements. Only addresses
 rooted in a kernel parameter have a known allocation origin here. Helper
 parameters can be interior pointers and are deliberately not treated as origins.
 """
-from qpel_types import TypeChecker
+from qpel_types import TypeChecker, ATOMIC_KINDS
 MAX_ELEMENTS = 2**31 - 1
 MASK = 2**32 - 1
 
@@ -72,7 +72,7 @@ class BoundsChecker(TypeChecker):
                 index = self.constant(self.child(node, 'index'))
                 start = None if base is None or index is None else base + index
                 count = 1
-            elif kind in {'AtomicLoad', 'AtomicStore', 'AtomicAdd', 'AtomicMin', 'AtomicCompareExchange'}:
+            elif kind in ATOMIC_KINDS:
                 start = self.origin_offset(self.child(node, 'address')); count = 1
             elif kind == 'ReduceSumF32':
                 count = self.constant(self.child(node, 'count'))

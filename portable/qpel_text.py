@@ -21,7 +21,8 @@ from qpel_types import LEGACY_CASTS, MATH, is_shared_view, term
 BUILTIN_AXES = {'ThreadIndex': 'thread', 'GroupIndex': 'group', 'LocalIndex': 'local', 'GroupSize': 'group_size',
                 'GroupCount': 'group_count'}
 ATOMICS = {'AtomicLoad': 'load', 'AtomicStore': 'store', 'AtomicAdd': 'add', 'AtomicMin': 'min',
-           'AtomicCompareExchange': 'cas'}
+           'AtomicCompareExchange': 'cas', 'AtomicMax': 'max', 'AtomicAnd': 'and', 'AtomicOr': 'or',
+           'AtomicXor': 'xor', 'AtomicExchange': 'exchange'}  # max ... exchange: IR version 6
 SUBGROUP_BUILTINS = {'SubgroupLane': 'subgroup_lane', 'SubgroupIndex': 'subgroup_index', 'SubgroupSize': 'subgroup_size'}
 SHUFFLES = {'index': 'shuffle', 'xor': 'shuffle_xor', 'down': 'shuffle_down', 'up': 'shuffle_up'}
 DOMAINS = {'Grid1D': 'grid1d', 'Grid3D': 'grid3d', 'Groups': 'groups'}
@@ -144,6 +145,8 @@ class Printer:
             return v + ('' if '.' in v or 'e' in v.lower() else '.0') + 'f'
         if k == 'Cast' or k in LEGACY_CASTS:
             return f'cast<{a["to"] if k == "Cast" else LEGACY_CASTS[k]}>({e("operand")})'
+        if k == 'Bitcast':
+            return f'bitcast<{a["to"]}>({e("operand")})'
         if k == 'View':
             return f'view<{a["element"]}>({e("base")})'
         if k == 'Math':
@@ -591,13 +594,15 @@ class Parser:
                 self.fail('a vector length is 2, 3 or 4')
             return self.add('VectorValue', {'element': element, 'length': int(length)},
                             {'elements': self.arguments()})
-        if value in ('cast', 'view', 'const'):
+        if value in ('cast', 'bitcast', 'view', 'const'):
             self.take('<')
             target = self.take(kind='name')
             self.take('>')
             args = self.arguments()
             if value == 'cast':
                 return self.add('Cast', {'to': target}, {'operand': args[0]})
+            if value == 'bitcast':
+                return self.add('Bitcast', {'to': target}, {'operand': args[0]})
             if value == 'view':
                 return self.add('View', {'element': target}, {'base': args[0]})
             negative = self.graph.nodes[args[0]]
@@ -617,7 +622,9 @@ class Parser:
         if value == 'atomic':
             self.take('.')
             op = self.take(kind='name')
-            kind = {v: k for k, v in ATOMICS.items()}[op]
+            kind = {v: k for k, v in ATOMICS.items()}.get(op)
+            if kind is None:
+                self.fail('unknown atomic operation ' + op)
             args = self.arguments()
             children = {'address': args[0]}
             if kind == 'AtomicCompareExchange':

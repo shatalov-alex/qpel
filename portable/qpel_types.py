@@ -16,7 +16,21 @@ FLOATS = {'f32'}                        # arithmetic floats
 STORAGE_FLOATS = {'f16', 'bf16'}        # storage only: convert to f32 to compute
 SCALAR_TERMS = INTEGER_TERMS | FLOATS | STORAGE_FLOATS | {'bool'}
 ACCESSES = ('read', 'write', 'atomic')
-ATOMIC_ELEMENTS = {'u32', 'i32'}
+ATOMIC_ELEMENTS = {'u32', 'i32', 'f32', 'u64'}  # f32 and u64: IR version 6
+# The operations each atomic element has on both platforms (IR version 6 adds max, and, or, xor,
+# exchange, float32 and 64-bit). Metal's 64-bit atomics are min and max without a result and it
+# has no 64-bit add, which qpel's Metal makes of two 32-bit adds: a u64 operation is a statement.
+ATOMIC_OPERATIONS = {
+    'u32': {'AtomicLoad', 'AtomicStore', 'AtomicAdd', 'AtomicMin', 'AtomicMax', 'AtomicAnd', 'AtomicOr', 'AtomicXor',
+            'AtomicExchange', 'AtomicCompareExchange'},
+    'f32': {'AtomicLoad', 'AtomicStore', 'AtomicAdd', 'AtomicExchange'},
+    'u64': {'AtomicAdd', 'AtomicMin', 'AtomicMax'},
+}
+ATOMIC_OPERATIONS['i32'] = ATOMIC_OPERATIONS['u32']
+ATOMIC_STATEMENTS = {'u64'}  # elements whose atomic operations give no value
+ATOMIC_KINDS = set().union(*ATOMIC_OPERATIONS.values())
+# IR version 6 bitcasts: a 32-bit float's bits as an integer and back.
+BITCASTS = {('f32', 'u32'), ('f32', 'i32'), ('u32', 'f32'), ('i32', 'f32')}
 VALUE_TERMS = INTEGER_TERMS | {'f32', 'f16'}   # scalar kernel arguments
 LEGACY = {'VoidType': 'void', 'BoolType': 'bool', 'U8Type': 'u8', 'U32Type': 'u32', 'I32Type': 'i32',
           'F32Type': 'f32', 'F16Type': 'f16', 'Shape3DType': 'shape3',
@@ -424,11 +438,22 @@ class TypeChecker:
             address = e('address')
             check(is_buffer(address) and access(address) == 'atomic', 'ATOMIC_ADDRESS', 'Atomic buffer address required')
             item = element(address)
+            check(k in ATOMIC_OPERATIONS[item], 'ATOMIC_OPERATION',
+                  f"{k} is not an operation on {item} atomics; they have "
+                  + ', '.join(sorted(ATOMIC_OPERATIONS[item])))
+            if item in ATOMIC_STATEMENTS:
+                parent = self.parents.get(node['id'])
+                check(parent is not None and parent['kind'] == 'Evaluate', 'ATOMIC_RESULT',
+                      f'{item} atomics are statements: Metal gives no previous value')
             if k != 'AtomicLoad':
                 check(fits(item, e('value')), 'ATOMIC_VALUE', f'{item} value required')
             if k == 'AtomicCompareExchange':
                 check(fits(item, e('expected')), 'ATOMIC_VALUE', f'{item} expected value required')
-            return 'void' if k == 'AtomicStore' else item
+            return 'void' if k == 'AtomicStore' or item in ATOMIC_STATEMENTS else item
+        if k == 'Bitcast':
+            source = e('operand')
+            check((source, a['to']) in BITCASTS, 'BITCAST', f"bitcast from {source} to {a['to']}: bitcasts are between f32 and u32 or i32")
+            return a['to']
         if k == 'Unary':
             operand = e('operand')
             if a['operator'] == '!' and operand in CONDITIONS:
@@ -678,6 +703,29 @@ class TypeChecker:
                 self.require(function, not kinds & {'Return', 'While', 'DoWhile', 'For', 'Break', 'Continue'}, 'COLLECTIVE_FLOW', 'Kernels with group sum cannot contain returns or loops; mask input and guard writes instead')
             returns = self.block(self.child(function, 'body'), env, function, names)
             self.require(function, result == 'void' or returns, 'MISSING_RETURN', 'Non-void helper requires unconditional return')
+        self.wide_atomics()
+
+    def wide_atomics(self):
+        """A kernel (with the helpers it calls) adds to u64 atomics or takes their min and max, not
+        both: qpel's Metal adds in two 32-bit halves, which a concurrent min or max would see apart."""
+        def descendants(n):
+            yield n
+            for values in n['children'].values():
+                for ref in values:
+                    yield from descendants(self.nodes[ref])
+        uses = {}
+        for function in self.functions:  # helpers precede their callers
+            found = set()
+            for n in descendants(function):
+                if n['kind'] == 'Call':
+                    found |= uses.get(n['links']['function'], set())
+                elif n['kind'] in ATOMIC_KINDS:
+                    address = self.expression_types.get(self.child(n, 'address')['id'])
+                    if address and is_buffer(address) and element(address) in ATOMIC_STATEMENTS:
+                        found.add('add' if n['kind'] == 'AtomicAdd' else 'order')
+            uses[function['id']] = found
+            self.require(function, found != {'add', 'order'}, 'ATOMIC_MIX',
+                         'A kernel adds to 64-bit atomics or takes their min/max, not both')
 
 
 def validate_types(program):

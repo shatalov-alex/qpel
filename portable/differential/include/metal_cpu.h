@@ -80,6 +80,9 @@ template <class T> T atomic_fetch_or_explicit(_atomic<T>* a, T v, memory_order) 
   QPEL_SIM_ATOMIC T old = a->value; a->value = old | v; return old; }
 template <class T> T atomic_fetch_xor_explicit(_atomic<T>* a, T v, memory_order) {
   QPEL_SIM_ATOMIC T old = a->value; a->value = old ^ v; return old; }
+// Metal's 64-bit min and max (atomic_ulong) give no result.
+template <class T> void atomic_min_explicit(_atomic<T>* a, T v, memory_order) { QPEL_SIM_ATOMIC if (v < a->value) a->value = v; }
+template <class T> void atomic_max_explicit(_atomic<T>* a, T v, memory_order) { QPEL_SIM_ATOMIC if (v > a->value) a->value = v; }
 // A weak compare-exchange may fail spuriously on the GPU; here it never does (one valid behaviour).
 template <class T> bool atomic_compare_exchange_weak_explicit(_atomic<T>* a, T* expected, T desired, memory_order,
                                                               memory_order) {

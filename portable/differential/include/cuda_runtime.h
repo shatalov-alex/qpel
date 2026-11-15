@@ -263,6 +263,18 @@ inline unsigned long long atomicAdd(unsigned long long* a, unsigned long long v)
 inline int atomicCAS(int* a, int c, int v) { QPEL_SIM_ATOMIC int o = *a; if (o == c) *a = v; return o; }
 inline unsigned atomicCAS(unsigned* a, unsigned c, unsigned v) { QPEL_SIM_ATOMIC unsigned o = *a; if (o == c) *a = v; return o; }
 inline unsigned long long atomicCAS(unsigned long long* a, unsigned long long c, unsigned long long v) { QPEL_SIM_ATOMIC unsigned long long o = *a; if (o == c) *a = v; return o; }
+inline unsigned long long atomicMin(unsigned long long* a, unsigned long long v) { QPEL_SIM_ATOMIC unsigned long long o = *a; if (v < o) *a = v; return o; }
+inline unsigned long long atomicMax(unsigned long long* a, unsigned long long v) { QPEL_SIM_ATOMIC unsigned long long o = *a; if (v > o) *a = v; return o; }
+inline float atomicExch(float* a, float v) { QPEL_SIM_ATOMIC float o = *a; *a = v; return o; }
+inline unsigned int atomicSub(unsigned int* a, unsigned int v) { QPEL_SIM_ATOMIC unsigned int o = *a; *a = o - v; return o; }
+inline int atomicSub(int* a, int v) { QPEL_SIM_ATOMIC int o = *a; *a = (int)((unsigned int)o - (unsigned int)v); return o; }
+#define QPEL_SIM_BITWISE(name, op) \
+  inline unsigned int name(unsigned int* a, unsigned int v) { QPEL_SIM_ATOMIC unsigned int o = *a; *a = o op v; return o; } \
+  inline int name(int* a, int v) { QPEL_SIM_ATOMIC int o = *a; *a = o op v; return o; } \
+  inline unsigned long long name(unsigned long long* a, unsigned long long v) { QPEL_SIM_ATOMIC unsigned long long o = *a; *a = o op v; return o; }
+QPEL_SIM_BITWISE(atomicAnd, &)
+QPEL_SIM_BITWISE(atomicOr, |)
+QPEL_SIM_BITWISE(atomicXor, ^)
 
 // Runtime API: declarations only. Host code in library headers mentions them; the
 // simulator never calls them (host functions of the simulated file are blanked).

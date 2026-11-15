@@ -60,7 +60,7 @@ class Terms(unittest.TestCase):
             validate(program)
         program = fixture_program('int_widths')
         buffer = next(n for n in program['nodes'] if n['kind'] == 'BufferType')
-        buffer['attributes'].update(element='u64', access='atomic')
+        buffer['attributes'].update(element='i64', access='atomic')  # u64 and f32 atomics: IR version 6
         with self.assertRaisesRegex(ValueError, 'Invalid buffer type'):
             validate(program)
 

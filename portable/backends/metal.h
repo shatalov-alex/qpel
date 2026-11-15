@@ -233,6 +233,39 @@ inline int qpel_atomic_cas(device atomic_int* address, int expected, int value) 
 #define QPEL_CAS(address, expected, value) qpel_atomic_cas((address), (expected), (value))
 #endif
 
+#ifdef QPEL_ATOMICS_ENABLED
+// IR version 6 atomics (NUMERICS.md, Atomics), relaxed at device scope like the others.
+#define QPEL_ATOMIC_F32 device atomic_float*
+#define QPEL_ATOMIC_U64 device atomic_ulong*
+#define QPEL_MAX(address, value) atomic_fetch_max_explicit((address), (value), memory_order_relaxed)
+#define QPEL_AND(address, value) atomic_fetch_and_explicit((address), (value), memory_order_relaxed)
+#define QPEL_OR(address, value) atomic_fetch_or_explicit((address), (value), memory_order_relaxed)
+#define QPEL_XOR(address, value) atomic_fetch_xor_explicit((address), (value), memory_order_relaxed)
+#define QPEL_EXCHANGE(address, value) atomic_exchange_explicit((address), (value), memory_order_relaxed)
+#define QPEL_LOAD_F32(address) atomic_load_explicit((address), memory_order_relaxed)
+// Metal's 64-bit atomics are min and max (Apple GPU family 8 and later) without a result. It has no
+// 64-bit add, so the value is added in two 32-bit halves, the low half's carry going to the high
+// half. Once every addition is done the sum is exact (modulo 2^64); a kernel that adds to 64-bit
+// atomics takes no min or max of them (qpel_types.py), which would see the halves apart.
+inline void qpel_add_u64(device atomic_ulong* address, ulong value) {
+    device atomic_uint* halves = (device atomic_uint*)address;
+    uint low = (uint)value, high = (uint)(value >> 32);
+    uint before = atomic_fetch_add_explicit(halves, low, memory_order_relaxed);
+    high += (uint)(before + low < before);
+    if (high != 0u) atomic_fetch_add_explicit(halves + 1, high, memory_order_relaxed);
+}
+#define QPEL_ADD_U64(address, value) qpel_add_u64((address), (value))
+#define QPEL_MIN_U64(address, value) atomic_min_explicit((address), (value), memory_order_relaxed)
+#define QPEL_MAX_U64(address, value) atomic_max_explicit((address), (value), memory_order_relaxed)
+#endif
+
+#ifdef QPEL_BITCAST_ENABLED
+// IR version 6: a 32-bit value's bits read as another 32-bit type.
+#define QPEL_BITCAST_U32(x) as_type<uint>((x))
+#define QPEL_BITCAST_I32(x) as_type<int>((x))
+#define QPEL_BITCAST_F32(x) as_type<float>((x))
+#endif
+
 #ifdef QPEL_SUBGROUPS_ENABLED
 // SIMD-group operations, IR version 5 (NUMERICS.md, Subgroups): the same definitions as
 // backends/cuda.h. Apple forms SIMD-groups of 32 from consecutive linear thread indices.

@@ -585,10 +585,52 @@ def run_sort_bytes(name, host, plan):
     return cases
 
 
+# --- IR version 6 atomics: max/and/or/xor/exchange, float32 and 64-bit ---
+
+def test_module(name):
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).resolve().parents[1]/f'tests/{name}.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def run_atomics(name, host, plan):
+    """Every result is independent of the order of the atomics (tests/test_atomics_v6.py's oracle)."""
+    from differential import cases as case_sets
+    from differential.simulate import DTYPES
+    module = test_module('test_atomics_v6')
+    signed = {np.dtype(np.uint16): np.int16, np.dtype(np.uint32): np.int32, np.dtype(np.uint64): np.int64}
+    cases = case_sets.generic(plan, 6, shapes=[(1, 1, 1), (40, 1, 1), (17, 3, 2), (300, 1, 1)])
+    for case in cases:
+        inputs = {}
+        for r in plan['resources']:
+            if r['kind'] in ('input', 'inout'):
+                array = np.ascontiguousarray(case.inputs[r['name']], DTYPES[r['type']]).reshape(-1)
+                inputs[r['name']] = torch.from_numpy(array.view(signed.get(array.dtype, array.dtype)).copy()).to(DEVICE)
+        result = host.run(inputs, case.shapes, case.values)
+        for out, want in module.oracle(case).items():
+            got = result[out].cpu().numpy()
+            np.testing.assert_array_equal(got.view(want.dtype) if got.dtype != want.dtype else got, want, err_msg=f'{out} {case.label}')
+    return len(cases)
+
+
+def run_bitcast(name, host, plan):
+    """f32 bits as u32 and i32 and back (tests/test_bitcast.py's oracle)."""
+    from differential import cases as case_sets
+    module = test_module('test_bitcast')
+    cases = case_sets.generic(plan, 6, shapes=[(1, 1, 1), (40, 1, 1), (300, 1, 1)])
+    for case in cases:
+        result = host.run({'x': torch.from_numpy(case.inputs['x'].copy()).to(DEVICE)}, case.shapes, case.values)
+        y, z = module.oracle(case.inputs['x'])
+        np.testing.assert_array_equal(result['y'].cpu().numpy().view(np.uint32), y, err_msg=case.label)
+        np.testing.assert_array_equal(result['z'].cpu().numpy(), z, err_msg=case.label)
+    return len(cases)
+
+
 TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fma32': run_fma32,
          'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components,
          'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset, 'box_sum': run_box_sum,
-         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride, 'math_ops': run_math_ops, 'sort_bytes': run_sort_bytes}
+         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride, 'math_ops': run_math_ops, 'sort_bytes': run_sort_bytes, 'atomics': run_atomics, 'bitcast': run_bitcast}
 
 
 def main(argv=None):

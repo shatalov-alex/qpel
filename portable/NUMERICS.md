@@ -81,7 +81,7 @@ Metal has no `erf`, `expm1` or `log1p`; qpel will define them itself rather than
 
 ## Compare-and-swap and inout resources (IR version 4)
 
-- `AtomicCompareExchange` on a `u32` or `i32` atomic buffer is a relaxed compare-and-swap that returns the value it found, CUDA's `atomicCAS`. Metal's exchange is weak (it may fail although it found the expected value), so qpel's Metal retries until it either succeeds or finds another value, which gives CUDA's strong result. It needs the `atomic_cas` feature. Metal has no 64-bit compare-and-swap, so 64-bit atomics stay out of qpel; the importer says so.
+- `AtomicCompareExchange` on a `u32` or `i32` atomic buffer is a relaxed compare-and-swap that returns the value it found, CUDA's `atomicCAS`. Metal's exchange is weak (it may fail although it found the expected value), so qpel's Metal retries until it either succeeds or finds another value, which gives CUDA's strong result. It needs the `atomic_cas` feature. Metal has no 64-bit compare-and-swap, so qpel has none either; the importer says so. IR version 6 adds the 64-bit atomics Metal has (see Atomics).
 - An `inout` resource is filled by the caller and updated by the kernels. Both generated hosts update a copy and return it, so the caller's buffer is unchanged.
 
 ## Argument structs and buffer views
@@ -113,6 +113,49 @@ Metal has no `erf`, `expm1` or `log1p`; qpel will define them itself rather than
   Verify). An explicit xor butterfly agrees bit for bit. The Metal importer therefore reads a
   float `simd_sum` as `subgroup_add` and records an adaptation. qpel's own Metal output never
   calls `simd_sum`. Integer `simd_sum`, min and max are exact.
+
+## Atomics (IR version 6)
+Every atomic is relaxed at device scope, as before. Version 6 adds operations and two element types;
+each element has the operations both platforms give it:
+
+| element | operations |
+|---|---|
+| `u32`, `i32` | load, store, add, min, cas (earlier versions); max, and, or, xor, exchange |
+| `f32` | load, store, add, exchange |
+| `u64` | add, min, max, as statements |
+
+- **Results are the previous value**, as CUDA's `atomicMax` and Metal's `atomic_fetch_max_explicit`
+  return it; `exchange` stores its value and returns the one it replaced.
+- **Order.** Atomic operations from different threads happen in no defined order. Integer add, min,
+  max, and, or and xor give the same final value in any order. A float add does not: its rounding
+  depends on the order, so a sum is only reproducible when every partial sum is exact. The behaviour
+  rows give a program with a float atomic buffer quarter-integer float inputs of small size
+  (`cases.exact_sums`), so every order gives the same bits. The value an operation returns depends
+  on the order too, except for an operation on an address no other thread touches.
+- **Float add** rounds to nearest even. Subnormal operands and results may be flushed to zero:
+  CUDA's `atom.add.f32` on global memory does so. qpel's float atomic load reads the stored bits
+  (CUDA: an atomic or with 0), so it neither flushes nor turns -0 into +0, as an add of zero would.
+  There is no float min, max or compare-and-swap: Metal has none.
+- **64-bit atomics** are unsigned. Metal's are min and max without a result (Apple GPU family 8 and
+  later), and it has no 64-bit add. So a `u64` atomic operation gives no value, which the checker
+  enforces (`ATOMIC_RESULT`); there is no 64-bit load, store or compare-and-swap. qpel's Metal adds
+  a `u64` in two 32-bit halves, the low half's carry going to the high half. Once every addition is
+  done, the sum is exact modulo 2^64, but between two halves another thread would see the value
+  apart. A kernel, with the helpers it calls, therefore either adds to 64-bit atomics or takes
+  their min and max, never both (`ATOMIC_MIX`). Separate dispatches may do either.
+- Programs that use any of these need the `atomics` feature (`QPEL_ATOMICS_ENABLED`). Float atomic
+  buffers require `atomics_f32`, and 64-bit ones `atomics_u64`.
+- **Bitcasts** (`Bitcast {to}`, text `bitcast<T>(e)`) read the bits of an `f32` as `u32` or `i32`
+  and back, exactly: NaN payloads and the sign of zero are kept (CUDA `__float_as_uint` and the
+  others, Metal `as_type<T>`). They are how library code stores a float in an integer atomic.
+- **Metal compare-exchange loops.** `atomic_compare_exchange_weak_explicit(p, &expected, desired,
+  ...)` imports as qpel's compare-and-swap: before its statement,
+  `found = cas(p, expected, desired); exchanged = found == expected; expected = found;`, and the
+  call reads `exchanged`. As a `while` condition this runs at the top of every iteration
+  (`while (true) { ...; if (!condition) break; body }`); in a `do` loop at the end of the body.
+  qpel's exchange is strong, which a weak one is allowed to be. Exchanges that only some
+  evaluations reach (the right of `&&` or `||`, a branch of `?:`) are rejected, since moving them
+  would run them every time.
 
 ## Features
 

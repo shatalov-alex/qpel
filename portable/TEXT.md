@@ -61,6 +61,7 @@ Literals: `7u` (u32), `7` (i32), `7_i64` (any integer type; negative ones
 | Text | IR |
 |---|---|
 | `cast<T>(e)` | Cast (and the version 1/2 casts) |
+| `bitcast<T>(e)` | Bitcast: an f32's bits as u32 or i32 and back (IR version 6) |
 | `view<T>(buffer)` | View |
 | `math.exp(e)`, `math.fmin(a, b)`, ... | Math |
 | `min(a, b)`, `max(a, b)` | Minimum, Maximum |
@@ -73,6 +74,7 @@ Literals: `7u` (u32), `7` (i32), `7_i64` (any integer type; negative ones
 | `qpel.shuffle(v, lane)`, `qpel.shuffle_xor(v, m)`, `qpel.shuffle_down(v, d)`, `qpel.shuffle_up(v, d)` | SubgroupShuffle |
 | `qpel.subgroup_add(v)`, `qpel.subgroup_min(v)`, `qpel.subgroup_max(v)`, `qpel.subgroup_and(v)`, `qpel.subgroup_or(v)`, `qpel.subgroup_xor(v)` | SubgroupReduce |
 | `atomic.load(p)`, `atomic.store(p, v)`, `atomic.add(p, v)`, `atomic.min(p, v)`, `atomic.cas(p, expected, v)` | atomics on `buffer + offset`; `cas` returns the value found (IR version 4) |
+| `atomic.max(p, v)`, `atomic.and(p, v)`, `atomic.or(p, v)`, `atomic.xor(p, v)`, `atomic.exchange(p, v)` | IR version 6, also `buffer<f32, atomic>` and `buffer<u64, atomic>` (NUMERICS.md, Atomics) |
 | `b[i]`, `s.field`, `f(args)` | Index, Member, Call |
 
-`let fn module pipeline dispatch cast view math atomic qpel` are reserved names.
+`let fn module pipeline dispatch cast bitcast view math atomic qpel` are reserved names.

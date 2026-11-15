@@ -9,7 +9,7 @@ import struct
 from qpel_types import INTEGER_TERMS, INTEGERS_BITS, MATH, SCALAR_TERMS, array, buffer, is_valid, vector, shared, shared_view
 
 TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType StructType ArrayType VectorType SharedType SharedViewType'.split())
-EXPRESSIONS = set('ArrayValue VectorValue Barrier BarrierCount Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce'.split())
+EXPRESSIONS = set('ArrayValue VectorValue Barrier BarrierCount Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange AtomicMax AtomicAnd AtomicOr AtomicXor AtomicExchange Bitcast SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce'.split())
 STATEMENTS = set('Block Variable Assign Evaluate If While DoWhile For Break Continue Return'.split())
 
 # Child role -> (allowed concepts, minimum count, maximum count or None).
@@ -66,7 +66,9 @@ CHILDREN = {
 }
 for kind in ('Minimum', 'Maximum'):
     CHILDREN[kind] = CHILDREN['Binary']
-for kind in ('AtomicLoad', 'AtomicStore', 'AtomicAdd', 'AtomicMin'):
+# AtomicMax, AtomicAnd, AtomicOr, AtomicXor and AtomicExchange: IR version 6
+for kind in ('AtomicLoad', 'AtomicStore', 'AtomicAdd', 'AtomicMin', 'AtomicMax', 'AtomicAnd', 'AtomicOr', 'AtomicXor',
+             'AtomicExchange'):
     CHILDREN[kind] = {'address': one(EXPRESSIONS)}
     if kind != 'AtomicLoad':
         CHILDREN[kind]['value'] = one(EXPRESSIONS)
@@ -75,6 +77,8 @@ CHILDREN['AtomicCompareExchange'] = {role: one(EXPRESSIONS) for role in ('addres
 # IR version 5: SIMD-group (warp) operations over the 32 lanes of a subgroup
 CHILDREN['SubgroupShuffle'] = {'value': one(EXPRESSIONS), 'operand': one(EXPRESSIONS)}
 CHILDREN['SubgroupReduce'] = {'value': one(EXPRESSIONS)}
+# IR version 6: the bits of a 32-bit value read as another 32-bit type (f32 <-> u32, i32)
+CHILDREN['Bitcast'] = {'operand': one(EXPRESSIONS)}
 
 # Links are required except Resource.extent (shape resources have no extent).
 LINKS = {
@@ -97,7 +101,7 @@ ATTRIBUTES = {
     'ThreadIndex': {'axis': str},
     # IR version 3
     'ScalarType': {'scalar': str}, 'BufferType': {'element': str, 'access': str},
-    'Cast': {'to': str}, 'Constant': {'value': str, 'scalar': str}, 'Math': {'function': str},
+    'Cast': {'to': str}, 'Bitcast': {'to': str}, 'Constant': {'value': str, 'scalar': str}, 'Math': {'function': str},
     'StructDecl': {'name': str}, 'Field': {'name': str}, 'StructType': {'name': str}, 'View': {'element': str},
     'GroupIndex': {'axis': str}, 'LocalIndex': {'axis': str}, 'GroupSize': {'axis': str}, 'GroupCount': {'axis': str},
     # IR version 4
@@ -117,7 +121,7 @@ DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer', 'ref
 # Every qpel name is emitted verbatim into both CUDA C++ and Metal Shading Language, so it
 # must avoid qpel keywords, C++ keywords, CUDA built-ins and Metal keywords and type names.
 QPEL_KEYWORDS = set('void bool uint int float return if while for true false kernel device min max'.split()) | \
-    set('let fn module pipeline dispatch cast view math atomic qpel vec ref'.split())  # the text syntax (TEXT.md)
+    set('let fn module pipeline dispatch cast bitcast view math atomic qpel vec ref'.split())  # the text syntax (TEXT.md)
 CPP_KEYWORDS = set('''alignas alignof and and_eq asm auto bitand bitor bool break case catch char char8_t char16_t
     char32_t class compl concept const consteval constexpr constinit const_cast continue co_await co_return
     co_yield decltype default delete do double dynamic_cast else enum explicit export extern false float for

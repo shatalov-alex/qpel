@@ -30,24 +30,24 @@ class Survey(unittest.TestCase):
         codes, results = self.survey('''
 namespace lib {
 template <typename T> __device__ T twice(T v) { return v + v; }
-__device__ int lowest(float* s, int n) {
+__device__ int lowest(long long* s, int n) {
   double done[2];
-  switch (n) { default: atomicAdd(s + n, 0.5f); }
+  switch (n) { default: atomicAdd(s + n, 1ll); }
   return n;
 }
-__global__ void k(float* s, float* out, unsigned int n) {
+__global__ void k(long long* s, float* out, unsigned int n) {
   unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i < n) out[i] = twice(1) + twice(1u) + lowest(s, (int)i);
 }
 }
-void launch(float* s, unsigned int n) { lib::k<<<1, 1>>>(s, s, n); }
+void launch(long long* s, float* out, unsigned int n) { lib::k<<<1, 1>>>(s, out, n); }
 ''')
         self.assertEqual(results['launch']['kind'], 'host')
         # a template used with two types becomes one function per instantiation
         self.assertEqual((codes['twice_u32'], codes['twice_i32']), ([], []))
         # the switch is reported, and so is what is inside it
         self.assertEqual(sorted(set(codes['lowest'])), ['atomic-type', 'local-type', 'switch'])
-        # k's own blocker (float atomics, through lowest's parameter) and those of the functions it calls
+        # k's own blocker (signed 64-bit atomics, through lowest's parameter) and those of the functions it calls
         self.assertEqual(codes['k'], ['atomic-type'])
         self.assertTrue(any(b.startswith('switch at lowest') for b in corpus.kernels(results)['k']))
         self.assertEqual(results['k']['calls'], ['lowest', 'twice_i32', 'twice_u32'])

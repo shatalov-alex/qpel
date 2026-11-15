@@ -15,7 +15,7 @@ from qpel_types import (SCALAR_TERMS, VALUE_TERMS, access, buffer as type_buffer
                         is_signed, node_spec, normalize_plan, term as type_term)
 from qpel_types import access as type_access, bits as type_bits, INTEGER_TERMS, MATH, is_struct, is_array
 from qpel_types import arithmetic as type_arithmetic, element as element_of, is_vector, vector_element, vector_length, is_shared
-from qpel_types import is_shared_view, view_element, shared_bytes
+from qpel_types import is_shared_view, view_element, shared_bytes, BITCASTS
 from . import clang_ast
 from .clang_ast import position
 
@@ -41,7 +41,7 @@ SCALARS = {'unsigned int': 'u32', 'unsigned': 'u32', 'uint': 'u32', 'uint32_t': 
            'unsigned char': 'u8', 'uchar': 'u8', 'uint8_t': 'u8', 'bool': 'bool', 'float': 'f32',
            '__half': 'f16', 'half': 'f16', 'int': 'i32', 'signed int': 'i32', 'signed': 'i32', 'int32_t': 'i32',
            'void': 'void', 'double': 'f64',
-           'atomic_uint': 'atomic', 'atomic_int': 'atomic_i32',
+           'atomic_uint': 'atomic', 'atomic_int': 'atomic_i32', 'atomic_float': 'atomic_f32', 'atomic_ulong': 'atomic_u64',
            # IR version 3. Plain char is signed on every CUDA and Metal target.
            'signed char': 'i8', 'char': 'i8', 'int8_t': 'i8',
            'unsigned short': 'u16', 'ushort': 'u16', 'uint16_t': 'u16', 'unsigned short int': 'u16',
@@ -82,7 +82,7 @@ def is_reference(qual_type):
     if '&' not in qual_type:
         return False
     return 'const' not in qual_type.split('&')[0].split()
-ATOMIC_SCALARS = {'atomic': 'u32', 'atomic_i32': 'i32'}  # Metal atomic element -> qpel element
+ATOMIC_SCALARS = {'atomic': 'u32', 'atomic_i32': 'i32', 'atomic_f32': 'f32', 'atomic_u64': 'u64'}  # Metal atomic element -> qpel element
 NEW_INTEGERS = {'i8', 'u16', 'i16', 'u64', 'i64'}  # spelled with Constant and Cast (IR version 3)
 
 
@@ -352,6 +352,35 @@ def params_of(decl):
     return [c for c in decl.get('inner', ()) if c['kind'] == 'ParmVarDecl']
 
 
+BITCAST_CALLS = {'__float_as_uint': 'u32', '__float_as_int': 'i32', '__uint_as_float': 'f32', '__int_as_float': 'f32',
+                 'qpel_bits_as_f32': 'f32'}
+METAL_EXCHANGES = {'atomic_compare_exchange_weak_explicit'}  # Metal has no strong one
+
+
+def conditional_exchanges(body):
+    """Ids of Metal compare-exchange calls that only some evaluations reach: the right of && or ||,
+    a branch of ?:. Moving them before their statement would run them unconditionally."""
+    found = set()
+    for node in walk(body):
+        later = node.get('inner', ())[1:] if (node.get('kind') == 'BinaryOperator' and node.get('opcode') in ('&&', '||')
+                                              or node.get('kind') == 'ConditionalOperator') else ()
+        for part in later:
+            found |= {n['id'] for n in walk(part) if n.get('kind') == 'CallExpr' and
+                      decl_name(n['inner'][0]) in METAL_EXCHANGES}
+    return found
+
+
+def own_continue(body):
+    """True when a continue in body belongs to the loop around body (not to a loop inside it)."""
+    if not body:
+        return False
+    if body.get('kind') == 'ContinueStmt':
+        return True
+    if body.get('kind') in ('ForStmt', 'WhileStmt', 'DoStmt'):
+        return False
+    return any(own_continue(child) for child in body.get('inner', ()))
+
+
 def atomic_address_base(node):
     """Parameter name behind an atomic address p, p + i or &p[i]."""
     node = peel(node)
@@ -388,7 +417,11 @@ class Dialect:
 class Cuda(Dialect):
     name = 'cuda'
     atomics = {'atomicAdd': ('AtomicAdd', True, False), 'atomicExch': ('AtomicStore', True, False),
-               'atomicMin': ('AtomicMin', True, False), 'atomicCAS': ('AtomicCompareExchange', True, False)}
+               'atomicMin': ('AtomicMin', True, False), 'atomicCAS': ('AtomicCompareExchange', True, False),
+               # IR version 6
+               'atomicMax': ('AtomicMax', True, False), 'atomicAnd': ('AtomicAnd', True, False),
+               'atomicOr': ('AtomicOr', True, False), 'atomicXor': ('AtomicXor', True, False),
+               'atomicSub': ('AtomicSub', True, False), 'qpel_load_f32': ('AtomicLoad', False, False)}
 
     def is_kernel(self, decl):
         return 'CUDAGlobalAttr' in attributes(decl)
@@ -404,7 +437,13 @@ class Metal(Dialect):
                'atomic_store_explicit': ('AtomicStore', True, True),
                'atomic_fetch_add_explicit': ('AtomicAdd', True, True),
                'atomic_fetch_min_explicit': ('AtomicMin', True, True),
-               'qpel_atomic_cas': ('AtomicCompareExchange', True, False)}  # qpel's own Metal spelling
+               'qpel_atomic_cas': ('AtomicCompareExchange', True, False),  # qpel's own Metal spelling
+               # IR version 6; Metal's 64-bit min and max give no result
+               'atomic_fetch_max_explicit': ('AtomicMax', True, True), 'atomic_fetch_and_explicit': ('AtomicAnd', True, True),
+               'atomic_fetch_or_explicit': ('AtomicOr', True, True), 'atomic_fetch_xor_explicit': ('AtomicXor', True, True),
+               'atomic_exchange_explicit': ('AtomicExchange', True, True), 'atomic_fetch_sub_explicit': ('AtomicSub', True, True),
+               'atomic_min_explicit': ('AtomicMin', True, True), 'atomic_max_explicit': ('AtomicMax', True, True),
+               'qpel_add_u64': ('AtomicAdd', True, False)}
 
     def is_kernel(self, decl):
         return 'MetalKernelAttr' in attributes(decl)
@@ -442,7 +481,8 @@ REDUCE_CALLS = {'simd_sum': 'add', 'simd_min': 'min', 'simd_max': 'max', 'simd_a
                 **{f'qpel_subgroup_{op}': op for op in ('add', 'min', 'max', 'and', 'or', 'xor')}}
 SUBGROUP_CALLS = set(SHUFFLE_CALLS) | set(REDUCE_CALLS) | {'qpel_subgroup_lane', 'qpel_subgroup_index', 'qpel_subgroup_size'}
 QPEL_GROUP_SUM_PARAMS = {'qpel_lane', 'qpel_group_size'}  # builtins backends/metal.h adds for a workgroup sum
-ATOMIC_ELEMENTS = {'u32': 'atomic', 'i32': 'atomic_i32'}  # element -> scalar of its atomic buffer
+ATOMIC_ELEMENTS = {'u32': 'atomic', 'i32': 'atomic_i32', 'f32': 'atomic_f32', 'u64': 'atomic_u64'}  # element -> scalar of its atomic buffer
+ATOMIC_POINTEES = set(ATOMIC_ELEMENTS) | set(ATOMIC_ELEMENTS.values())
 LOCAL_ARRAY = re.compile(r'(.*\S)\s*\[([0-9]+)\]')  # `unsigned int [3]`: a local array's type
 # CUDA's vector types (int4, uint2, float3, ...): a local of one becomes a local array
 VECTOR_TYPE = re.compile(r'(?:const\s+)?(int|uint|float|short|ushort|char|uchar|longlong|ulonglong)([234])')
@@ -832,10 +872,11 @@ class Importer:
             if find((decl['name'], i)) in atomic_groups or t[2] in ATOMIC_ELEMENTS.values():
                 scalar = t[2] if t[2] in ATOMIC_ELEMENTS else ATOMIC_SCALARS.get(t[2])
                 if scalar is None:
-                    if t[2] in ('u64', 'i64'):
-                        raise Unsupported(p, 'atomic-type', f'atomics on {p["type"]["qualType"]} are not portable: Metal has '
-                                                            'no 64-bit compare-and-swap or add (only 64-bit min/max on newer GPUs)')
-                    raise Unsupported(p, 'atomic-type', f'atomics on {p["type"]["qualType"]} are not in qpel; only on unsigned int and int')
+                    if t[2] == 'i64':
+                        raise Unsupported(p, 'atomic-type', f'atomics on {p["type"]["qualType"]} are not portable: Metal\'s '
+                                                            '64-bit atomics are unsigned')
+                    raise Unsupported(p, 'atomic-type', f'atomics on {p["type"]["qualType"]} are not in qpel; only on '
+                                                        'unsigned int, int, float and unsigned 64-bit')
                 return type_buffer(scalar, 'atomic')
             if is_vector(t[2]):
                 # int4* bboxes: a buffer of the vector's scalars, N per element of its extent
@@ -1005,6 +1046,7 @@ class Importer:
         self.kernel = kernel
         self.assigned = assigned_decls(body_of(decl))
         self.names = {self.safe_name(p['name']) for p in params_of(decl) if p.get('name')}  # unique per function
+        self.conditional_exchanges = conditional_exchanges(body_of(decl))
         params = []
         position = 0
         shape_param = None
@@ -1491,7 +1533,21 @@ class Importer:
         return self.graph.add('Block', children={'statements': self.statement(node)})
 
     def statement(self, node):
-        return self.attempt(lambda: self.read_statement(node), [])
+        outer, self.prelude = getattr(self, 'prelude', None), []
+        try:
+            statements = self.attempt(lambda: self.read_statement(node), [])
+            return self.prelude + statements if statements else statements
+        finally:
+            self.prelude = outer
+
+    def condition_prelude(self, cond):
+        """A loop condition and the statements it needs before it (a compare-exchange), read apart
+        from the enclosing statement's prelude."""
+        outer, self.prelude = self.prelude, []
+        try:
+            return self.expr(cond), self.prelude
+        finally:
+            self.prelude = outer
 
     def read_statement(self, node):
         kind = node['kind']
@@ -1539,7 +1595,9 @@ class Importer:
                     raise Unsupported(init, 'for-init', 'a for loop can start with one declaration or assignment')
                 children['init'] = parts[0]
             if cond:
-                children['condition'] = self.expr(cond)
+                children['condition'], before = self.condition_prelude(cond)
+                if before:
+                    raise Unsupported(node, 'atomic-cas', 'a compare-exchange in a for condition is not in qpel yet')
             if step:
                 steps = []
                 def split(x):  # `i++, toDo -= 8`: one step each, run in order
@@ -1562,13 +1620,29 @@ class Importer:
             if node.get('hasVar'):
                 raise Unsupported(node, 'while-declaration', 'declarations inside while (...) are not supported')
             cond, body = node['inner']
-            return [add('While', children={'condition': self.expr(cond), 'body': self.as_block(body)})]
+            condition, before = self.condition_prelude(cond)
+            if before:  # while (true) { before; if (!condition) break; body }: continue runs `before` again
+                leave = add('If', children={'condition': add('Unary', {'operator': '!'}, {'operand': condition}),
+                                            'thenBody': add('Block', children={'statements': [add('Break')]})})
+                statements = before + [leave, self.as_block(body)]
+                return [add('While', children={'condition': add('Literal', {'value': 'true'}),
+                                               'body': add('Block', children={'statements': statements})})]
+            return [add('While', children={'condition': condition, 'body': self.as_block(body)})]
         if kind == 'DoStmt':
             body, cond = node['inner']
             block = self.as_block(body)
             if not self.graph.nodes[block]['children'].get('statements') and integer_constant(cond) == 0:
                 return []  # do { } while (0): what is left of a macro such as GGML_UNUSED_VARS
-            return [add('DoWhile', children={'body': block, 'condition': self.expr(cond)})]
+            condition, before = self.condition_prelude(cond)
+            if before:  # while (true) { body; before; if (!condition) break; }: the condition reads before's locals
+                if own_continue(body):
+                    raise Unsupported(node, 'atomic-cas', 'a do loop with continue and a compare-exchange in its '
+                                                          'condition is not in qpel yet')
+                leave = add('If', children={'condition': add('Unary', {'operator': '!'}, {'operand': condition}),
+                                            'thenBody': add('Block', children={'statements': [add('Break')]})})
+                return [add('While', children={'condition': add('Literal', {'value': 'true'}),
+                                               'body': add('Block', children={'statements': [block] + before + [leave]})})]
+            return [add('DoWhile', children={'body': block, 'condition': condition})]
         if kind == 'ReturnStmt':
             value = [self.expr(node['inner'][0])] if node.get('inner') else []
             return [add('Return', children={'value': value})]
@@ -2214,6 +2288,8 @@ class Importer:
         if is_vector(scalar_of(n)) and (kind in ('InitListExpr', 'MetalVectorInitExpr', 'CXXConstructExpr')
                                         or self.vector_load_base(n) is not None):
             return self.vector_value(n, scalar_of(n))
+        if kind == 'MetalAsTypeCastExpr':  # as_type<uint>(x): the bits as another type (IR version 6)
+            return self.bitcast(n, n['inner'][0], scalar_of(n))
         if kind == 'CXXConstructExpr' and len(n.get('inner', ())) == 1 and \
                 ' '.join(words(n['type']['qualType'])) == ' '.join(words(n['inner'][0]['type']['qualType'])):
             return self.expr(n['inner'][0])  # a copy (a dim3 or vector passed by value)
@@ -2597,6 +2673,9 @@ class Importer:
         if callee in ROUNDED:  # CUDA's separately rounded float operations are qpel's float operators
             need(2)
             return add('Binary', {'operator': ROUNDED[callee]}, {'left': self.expr(args[0]), 'right': self.expr(args[1])})
+        if callee in BITCAST_CALLS:  # __float_as_uint(x) and the others, qpel's qpel_bits_as_f32
+            need(1)
+            return self.bitcast(n, args[0], BITCAST_CALLS[callee] or scalar_of(n))
         if callee in SATURATE:  # qpel's saturating float -> integer conversion
             need(1)
             return add('Cast', {'to': SATURATE[callee]}, {'operand': self.expr(args[0])})
@@ -2609,6 +2688,8 @@ class Importer:
                                                  'start': self.expr(args[1]), 'count': self.expr(args[2])})
         if callee == 'qpel_group_sum_f32':
             return add('WorkgroupSumF32', children={'value': self.expr(args[0])})
+        if callee in METAL_EXCHANGES and self.dialect.name == 'metal':
+            return self.metal_exchange(n, args)
         if callee in self.dialect.atomics and self.dialect.atomics[callee][0] == 'AtomicCompareExchange':
             need(3)  # atomicCAS(address, expected, value): the value found
             pointee = describe(peel(args[0]).get('type', {}).get('qualType', ''))
@@ -2625,13 +2706,16 @@ class Importer:
             if has_order and decl_name(args[-1]) != 'memory_order_relaxed':
                 raise Unsupported(n, 'memory-order', 'only memory_order_relaxed atomics are in qpel')
             pointee = describe(peel(args[0]).get('type', {}).get('qualType', ''))
-            if pointee[0] == 'pointer' and pointee[2] not in ('u32', 'i32', 'atomic', 'atomic_i32'):
-                raise Unsupported(n, 'atomic-type', f'{callee} on {pointee[2]} is not in qpel yet; atomics are on unsigned int and int')
+            if pointee[0] == 'pointer' and pointee[2] not in ATOMIC_POINTEES:
+                raise Unsupported(n, 'atomic-type', f'{callee} on {pointee[2]} is not in qpel; atomics are on unsigned int, '
+                                                    'int, float and unsigned 64-bit')
             value = self.atomic_value(args[1], pointee) if has_value else None
+            if kind == 'AtomicSub':  # atomicSub(p, v) is atomicAdd(p, -v): exact, for floats too
+                kind, value = 'AtomicAdd', self.negated(value, ATOMIC_SCALARS.get(pointee[2], pointee[2]))
             if kind == 'AtomicAdd' and peel(args[1])['kind'] == 'IntegerLiteral' and int(peel(args[1])['value']) == 0:
                 kind, value = 'AtomicLoad', None  # CUDA's atomic read idiom
             if kind == 'AtomicStore' and self.dialect.name == 'cuda' and not statement:
-                raise Unsupported(n, 'atomic-exchange', "atomicExch's previous value has no qpel equivalent")
+                kind = 'AtomicExchange'  # atomicExch whose previous value is used (IR version 6)
             children = {'address': self.expr(args[0], address=True)}
             if value is not None:
                 children['value'] = value
@@ -2640,10 +2724,62 @@ class Importer:
             raise Unsupported(n, 'call-rejected', f'{callee} could not be imported, see its own blockers')
         raise Unsupported(n, 'call', f'{callee} is not a qpel operation or a function in this file')
 
+    def metal_exchange(self, n, args):
+        """Metal's atomic_compare_exchange_weak_explicit(p, &expected, desired, order, order):
+        true when it stored `desired`; otherwise `expected` gets the value found. It becomes, before the
+        statement, `found = cas(p, expected, desired); exchanged = found == expected; expected = found;`
+        and the call reads `exchanged`. qpel's exchange is strong, which a weak one may be."""
+        if len(args) != 5:
+            raise Unsupported(n, 'call-arity', f'{self.callee(n)} takes 5 arguments')
+        if any(decl_name(a) != 'memory_order_relaxed' for a in args[3:]):
+            raise Unsupported(n, 'memory-order', 'only memory_order_relaxed atomics are in qpel')
+        if n['id'] in self.conditional_exchanges or self.prelude is None:
+            raise Unsupported(n, 'atomic-cas', 'a compare-exchange that only some evaluations reach (after && or ||, '
+                                               'in ?:) is not in qpel yet')
+        pointee = describe(peel(args[0]).get('type', {}).get('qualType', ''))
+        element = ATOMIC_SCALARS.get(pointee[2], pointee[2]) if pointee[0] == 'pointer' else None
+        if element not in ('u32', 'i32'):
+            raise Unsupported(n, 'atomic-type', f'compare-exchange on {pointee[2]} is not in qpel; it is on atomic_uint '
+                                                'and atomic_int')
+        target = peel(args[1])
+        local = peel(target['inner'][0]) if target['kind'] == 'UnaryOperator' and target['opcode'] == '&' else None
+        entry = self.scope.get(local.get('referencedDecl', {}).get('id')) if local and local['kind'] == 'DeclRefExpr' else None
+        if entry is None or entry[0] != 'local' or entry[2] != element:
+            raise Unsupported(n, 'atomic-cas', f'the expected value of a compare-exchange must be a {element} local (&x)')
+        add = self.graph.add
+        exchange = add('AtomicCompareExchange', children={'address': self.expr(args[0], address=True),
+                                                         'expected': self.name(entry[1]),
+                                                         'value': self.atomic_value(args[2], pointee)})
+        found = add('Variable', {'name': self.unique_name('found')}, {'type': self.type_node(element), 'value': exchange})
+        same = add('Binary', {'operator': '=='}, {'left': self.name(found), 'right': self.name(entry[1])})
+        exchanged = add('Variable', {'name': self.unique_name('exchanged')}, {'type': self.type_node('bool'), 'value': same})
+        self.prelude.extend([found, exchanged, add('Assign', children={'target': self.name(entry[1]), 'value': self.name(found)})])
+        note = f'{self.current}: compare-exchange loops became qpel compare-and-swap (strong, as a weak one may be)'
+        if note not in self.adaptations:
+            self.adaptations.append(note)
+        return self.name(exchanged)
+
+    def bitcast(self, n, operand, target):
+        source = scalar_of(operand)
+        if (source, target) not in BITCASTS:
+            raise Unsupported(n, 'bitcast', f'reading the bits of {source} as {target} is not in qpel; bitcasts are '
+                                            'between float and unsigned int or int')
+        return self.graph.add('Bitcast', {'to': target}, {'operand': self.expr(operand)})
+
+    def negated(self, value, element):
+        """-value in an atomic buffer's element type: unsigned integers wrap (0u - v)."""
+        if element in ('u32', 'u64'):
+            zero = self.graph.add('Literal', {'value': '0u'}) if element == 'u32' else \
+                self.graph.add('Constant', {'scalar': 'u64', 'value': '0'})
+            return self.graph.add('Binary', {'operator': '-'}, {'left': zero, 'right': value})
+        return self.graph.add('Unary', {'operator': '-'}, {'operand': value})
+
     def atomic_value(self, node, pointee):
         """The value of an atomic call in the buffer's element type. Metal's atomic functions
         are templates, so clang leaves e.g. a uint stored into an atomic_int unconverted."""
-        element = 'i32' if pointee[0] == 'pointer' and pointee[2] in ('i32', 'atomic_i32') else 'u32'
+        element = ATOMIC_SCALARS.get(pointee[2], pointee[2]) if pointee[0] == 'pointer' else 'u32'
+        if element not in ATOMIC_ELEMENTS:
+            element = 'u32'
         core = peel(node)
         if core['kind'] == 'IntegerLiteral':
             return self.literal(core, element)

@@ -209,6 +209,34 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long long, -9223372036854775808.0f, 92
 #define QPEL_CAS(address, expected, value) atomicCAS((address), (expected), (value))
 #endif
 
+#ifdef QPEL_ATOMICS_ENABLED
+// IR version 6 atomics (NUMERICS.md, Atomics), relaxed at device scope like the others.
+#define QPEL_ATOMIC_F32 float*
+#define QPEL_ATOMIC_U64 unsigned long long*
+#define QPEL_MAX(address, value) atomicMax((address), (value))
+#define QPEL_AND(address, value) atomicAnd((address), (value))
+#define QPEL_OR(address, value) atomicOr((address), (value))
+#define QPEL_XOR(address, value) atomicXor((address), (value))
+#define QPEL_EXCHANGE(address, value) atomicExch((address), (value))
+// A float32 read gets the stored bits: an or with 0 changes nothing, where an add of zero would
+// turn -0 into +0 (and flush subnormals).
+__device__ __forceinline__ float qpel_load_f32(float* address) { return __int_as_float(atomicOr((int*)address, 0)); }
+#define QPEL_LOAD_F32(address) qpel_load_f32((address))
+// 64-bit atomics are statements (Metal gives no previous value).
+#define QPEL_ADD_U64(address, value) atomicAdd((address), (value))
+#define QPEL_MIN_U64(address, value) atomicMin((address), (value))
+#define QPEL_MAX_U64(address, value) atomicMax((address), (value))
+#endif
+
+#ifdef QPEL_BITCAST_ENABLED
+// IR version 6: a 32-bit value's bits read as another 32-bit type.
+__device__ __forceinline__ float qpel_bits_as_f32(unsigned int x) { return __uint_as_float(x); }
+__device__ __forceinline__ float qpel_bits_as_f32(int x) { return __int_as_float(x); }
+#define QPEL_BITCAST_U32(x) __float_as_uint((x))
+#define QPEL_BITCAST_I32(x) __float_as_int((x))
+#define QPEL_BITCAST_F32(x) qpel_bits_as_f32((x))
+#endif
+
 #ifdef QPEL_SUBGROUPS_ENABLED
 // SIMD-group (warp) operations, IR version 5 (NUMERICS.md, Subgroups). A subgroup is 32 lanes
 // of consecutive linear thread indices in the group; qpel_uniform.py ensures all 32 take part.

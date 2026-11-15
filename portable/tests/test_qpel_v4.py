@@ -131,7 +131,7 @@ __global__ void k(const unsigned int* x, unsigned int* slots, unsigned int* y, u
   static unsigned int cache[64];
   if (i < n) y[i] = cache[0];
 }''')
-        with self.assertRaisesRegex(Unsupported, 'Metal has no 64-bit compare-and-swap'):
+        with self.assertRaisesRegex(Unsupported, 'Metal has no compare-and-swap beyond 32 bits'):
             self.import_text('''__global__ void k(unsigned long long* y, unsigned int n) {
   unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i < n) atomicCAS(&y[i], 0ull, 1ull);

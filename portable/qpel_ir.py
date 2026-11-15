@@ -17,10 +17,10 @@ LEGACY_MACROS={'void':'void','bool':'bool','u8':'QPEL_U8','u32':'QPEL_U32','i32'
        'buffer<i32, write>':'QPEL_WRITE_I32','buffer<f32, read>':'QPEL_READ_F32','buffer<f32, write>':'QPEL_WRITE_F32',
        'buffer<f16, read>':'QPEL_READ_F16','buffer<f16, write>':'QPEL_WRITE_F16'}
 TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType','StructType','ArrayType','VectorType','SharedType','SharedViewType'}
-KINDS=TYPE_KINDS|set('ArrayValue VectorValue Barrier BarrierCount View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce Pipeline Resource Dispatch Binding'.split())
-COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage','groups','math_exact','math_bounded','subgroups'}
+KINDS=TYPE_KINDS|set('ArrayValue VectorValue Barrier BarrierCount View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange AtomicMax AtomicAnd AtomicOr AtomicXor AtomicExchange Bitcast SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce Pipeline Resource Dispatch Binding'.split())
+COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage','groups','math_exact','math_bounded','subgroups','atomics_f32','atomics_u64'}
 PROFILES={'metal':COMMON_FEATURES,'cuda':COMMON_FEATURES}
-SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3',4:'qpel-portable-core-v4',5:'qpel-portable-core-v5'}
+SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3',4:'qpel-portable-core-v4',5:'qpel-portable-core-v5',6:'qpel-portable-core-v6'}
 # Version 2 adds else, for/do/break/continue, signed 32-bit integers and their atomics,
 # shifts, ~, conversion to u8, scalar arguments and 2D/3D kernels.
 V2_KINDS={'Grid3D','ThreadIndex','For','DoWhile','Break','Continue','I32Type','ReadOnlyI32BufferType','I32BufferType','AtomicI32BufferType','I32Literal','I32Cast','U32Cast','U8Cast'}
@@ -32,10 +32,16 @@ V3_KINDS={'ScalarType','BufferType','Cast','Constant','Math','View','StructDecl'
 V4_KINDS={'ArrayType','ArrayValue','AtomicCompareExchange','VectorType','VectorValue','SharedType','Barrier','BarrierCount'}
 # Version 5 adds SIMD-group (warp) operations: lane and subgroup indices, shuffles and reductions.
 V5_KINDS={'SubgroupLane','SubgroupIndex','SubgroupSize','SubgroupShuffle','SubgroupReduce','SharedViewType'}
+# Version 6 adds atomic max, and, or, xor and exchange, and atomics on f32 and u64 buffers.
+V6_KINDS={'AtomicMax','AtomicAnd','AtomicOr','AtomicXor','AtomicExchange','Bitcast'}
+ATOMIC_MACROS={'AtomicLoad':'QPEL_LOAD','AtomicStore':'QPEL_STORE','AtomicAdd':'QPEL_ADD','AtomicMin':'QPEL_MIN',
+               'AtomicMax':'QPEL_MAX','AtomicAnd':'QPEL_AND','AtomicOr':'QPEL_OR','AtomicXor':'QPEL_XOR',
+               'AtomicExchange':'QPEL_EXCHANGE'}
 def type_macro(t):
     """Backend macro spelling a type term."""
     if t in LEGACY_MACROS:return LEGACY_MACROS[t]
     if t.startswith('struct '):return t[len('struct '):]
+    if is_buffer(t) and access(t)=='atomic':return 'QPEL_ATOMIC_'+element(t).upper()  # f32, u64: IR version 6
     if is_buffer(t):return ('QPEL_READ(' if access(t)=='read' else 'QPEL_WRITE(')+type_macro(element(t))+')'
     if is_shared_view(t):return 'QPEL_SHARED_VIEW('+type_macro(view_element(t))+')'  # T* / threadgroup T*
     if is_vector(t):return f'QPEL_VEC{vector_length(t)}_{vector_element(t).upper()}'  # int4, float3, ... (backends/*.h)
@@ -90,9 +96,18 @@ def version_5_features(nodes):
     return {n['kind'] for n in nodes if n['kind'] in V5_KINDS}
 
 
+def version_6_features(nodes):
+    used={n['kind'] for n in nodes if n['kind'] in V6_KINDS}
+    for n in nodes:
+        if n['kind'] in TYPE_KINDS-{'ArrayType','VectorType','SharedType','SharedViewType','StructType'}:
+            t=term(n)
+            if is_buffer(t) and access(t)=='atomic' and element(t) in ('f32','u64'):used.add(t)
+    return used
+
+
 def minimum_version(program):
     nodes=program['nodes']
-    return 5 if version_5_features(nodes) else 4 if version_4_features(nodes) else 3 if version_3_features(nodes) else 2 if version_2_features(nodes) else 1
+    return 6 if version_6_features(nodes) else 5 if version_5_features(nodes) else 4 if version_4_features(nodes) else 3 if version_3_features(nodes) else 2 if version_2_features(nodes) else 1
 
 
 def validate(program, backend=None):
@@ -107,6 +122,8 @@ def validate(program, backend=None):
         raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_4_features(program['nodes'])))+'; declare version 4')
     if program['version']<5 and version_5_features(program['nodes']):
         raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_5_features(program['nodes'])))+'; declare version 5')
+    if program['version']<6 and version_6_features(program['nodes']):
+        raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_6_features(program['nodes'])))+'; declare version 6')
     nodes={n['id']:n for n in program['nodes']}
     if len(nodes)!=len(program['nodes']):raise ValueError('Duplicate IR node id')
     required={'integer_buffers','grid_1d'}
@@ -130,6 +147,8 @@ def validate(program, backend=None):
             if item in ('u8','i8','u16','i16') and n['kind'] not in LEGACY:required.add('int8_16')
             if item in ('u64','i64'):required.add('int64')
             if item=='bf16':required.add('bfloat16_storage')
+            if is_buffer(used) and access(used)=='atomic' and item=='f32':required.add('atomics_f32')
+            if is_buffer(used) and access(used)=='atomic' and item=='u64':required.add('atomics_u64')
         targets=list(n['links'].values())+[v for values in n['children'].values() for v in values]
         if any(t not in nodes for t in targets):raise ValueError('Dangling IR reference')
         if n['kind']=='Binary' and n['attributes'].get('operator') not in BINARY_OPERATORS:
@@ -315,9 +334,12 @@ class Lowering:
             if self.expression_types[self.child(n,'operand')['id']]!='u32':operand='(QPEL_U32)('+operand+')'
             return 'qpel_shuffle_'+a['mode']+'('+e('value')+', '+operand+')'
         if k=='SubgroupReduce':return 'qpel_subgroup_'+a['operator']+'('+e('value')+')'
+        if k=='Bitcast':return 'QPEL_BITCAST_'+a['to'].upper()+'('+e('operand')+')'
         if k=='AtomicCompareExchange':return 'QPEL_CAS('+e('address')+', '+e('expected')+', '+e('value')+')'
-        if k in ('AtomicLoad','AtomicStore','AtomicAdd','AtomicMin'):
-            macro={'AtomicLoad':'QPEL_LOAD','AtomicStore':'QPEL_STORE','AtomicAdd':'QPEL_ADD','AtomicMin':'QPEL_MIN'}[k]
+        if k in ATOMIC_MACROS:
+            macro=ATOMIC_MACROS[k]
+            item=element(self.expression_types[self.child(n,'address')['id']])
+            if item=='u64' or item=='f32' and k=='AtomicLoad':macro+='_'+item.upper()  # IR version 6, backends/*.h
             return macro+'('+e('address')+('' if k=='AtomicLoad' else ', '+e('value'))+')'
         raise ValueError('Not a source expression/statement: '+k)
     def contains(self,n,kind):
@@ -371,6 +393,8 @@ class Lowering:
         if 'Groups' in kinds:found.add('groups')
         if 'Math' in kinds:found.add('math')
         if 'AtomicCompareExchange' in kinds:found.add('atomic_cas')
+        if 'Bitcast' in kinds:found.add('bitcast')
+        if kinds&(V6_KINDS-{'Bitcast'}) or any(is_buffer(t) and access(t)=='atomic' and element(t) not in ('u32','i32') for t in terms):found.add('atomics')
         if kinds&V5_KINDS:found.add('subgroups')
         for n in nodes:
             if n['kind']=='Parameter' and n['attributes'].get('isBuffer'):

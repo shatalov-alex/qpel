@@ -137,6 +137,20 @@ __device__ unsigned long long atomicAdd(unsigned long long*, unsigned long long)
 __device__ int atomicCAS(int*, int, int);
 __device__ unsigned atomicCAS(unsigned*, unsigned, unsigned);
 __device__ unsigned long long atomicCAS(unsigned long long*, unsigned long long, unsigned long long);
+__device__ unsigned long long atomicMin(unsigned long long*, unsigned long long);
+__device__ unsigned long long atomicMax(unsigned long long*, unsigned long long);
+__device__ float atomicExch(float*, float);
+__device__ unsigned int atomicSub(unsigned int*, unsigned int);
+__device__ int atomicSub(int*, int);
+__device__ unsigned int atomicAnd(unsigned int*, unsigned int);
+__device__ int atomicAnd(int*, int);
+__device__ unsigned long long atomicAnd(unsigned long long*, unsigned long long);
+__device__ unsigned int atomicOr(unsigned int*, unsigned int);
+__device__ int atomicOr(int*, int);
+__device__ unsigned long long atomicOr(unsigned long long*, unsigned long long);
+__device__ unsigned int atomicXor(unsigned int*, unsigned int);
+__device__ int atomicXor(int*, int);
+__device__ unsigned long long atomicXor(unsigned long long*, unsigned long long);
 // Runtime API used by host code around kernels (host code is skipped on import).
 typedef struct CUevent_st* cudaEvent_t;
 typedef struct CUgraph_st* cudaGraph_t;

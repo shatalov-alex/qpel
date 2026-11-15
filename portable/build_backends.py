@@ -55,7 +55,8 @@ FEATURE_DEFINES = [('float16_storage', 'QPEL_F16_ENABLED'), ('ordered_sum_f32', 
                    (('int8_16', 'int64', 'typed_buffers'), 'QPEL_INT_WIDTHS_ENABLED'),
                    ('bfloat16_storage', 'QPEL_BF16_ENABLED'), ('float_to_int', 'QPEL_F32_TO_INT_ENABLED'),
                    ('groups', 'QPEL_GROUPS_ENABLED'), ('math', 'QPEL_MATH_ENABLED'),
-                   ('atomic_cas', 'QPEL_CAS_ENABLED'), ('subgroups', 'QPEL_SUBGROUPS_ENABLED')]
+                   ('atomic_cas', 'QPEL_CAS_ENABLED'), ('subgroups', 'QPEL_SUBGROUPS_ENABLED'),
+                   ('atomics', 'QPEL_ATOMICS_ENABLED'), ('bitcast', 'QPEL_BITCAST_ENABLED')]
 # Backend profiles: what each target needs beyond its baseline for a feature.
 METAL_STANDARD = {'bfloat16_storage': 'metal3.1'}  # bfloat needs Metal 3.1 (macOS 14); the baseline is metal3.0
 

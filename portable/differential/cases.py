@@ -27,6 +27,17 @@ def random_array(rng, dtype, count):
     return (np.where(rng.random(count) < 0.5, -1, 1)*magnitude).astype(dtype)
 
 
+def exact_sums(rng, plan, inputs):
+    """Atomic float additions happen in no fixed order (NUMERICS.md, Atomics). When a program has a
+    float32 atomic buffer, its float32 inputs are quarter-integers of small size, whose sums are
+    exact in any order."""
+    if 'buffer<f32, atomic>' not in {r['type'] for r in plan['resources']}:
+        return
+    for name, array in inputs.items():
+        if array.dtype == np.float32:
+            inputs[name] = (rng.integers(-256, 257, array.size) / 4).astype(np.float32)
+
+
 def random_scalar(rng, t):
     """A value of scalar type t for a struct field: integers small enough to be sizes or strides."""
     if t in ('f32', 'f16'):
@@ -46,8 +57,10 @@ def generic(plan, seed, shapes=SHAPES, values=None):
     for i, shape in enumerate(shapes):
         sizes = {g: shape for g in grids}
         sizes.update({o: tuple(shapes[(i + 1 + j) % len(shapes)]) for j, o in enumerate(others)})
-        inputs = {r['name']: random_array(rng, DTYPES[r['type']], buffer_length(r, sizes))
+        inputs = {r['name']: rng.integers(0, 2**64 - 1, buffer_length(r, sizes), dtype=np.uint64, endpoint=True)
+                  if r['type'] == 'buffer<u64, atomic>' else random_array(rng, DTYPES[r['type']], buffer_length(r, sizes))
                   for r in plan['resources'] if r['kind'] in ('input', 'inout')}
+        exact_sums(rng, plan, inputs)
         chosen = {}
         for r in plan['resources']:
             if r['kind'] == 'value' and r['type'].startswith('struct '):

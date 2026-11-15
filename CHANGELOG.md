@@ -1,7 +1,7 @@
 # Changelog
 
 Notable changes to qpel, by milestone. Dates are when the milestone was reached on `main`.
-The IR has its own version (currently 4), recorded in every program and launch plan;
+The IR has its own version (currently 6), recorded in every program and launch plan;
 older programs keep building.
 
 ## [Unreleased] — Phase 5
@@ -54,6 +54,21 @@ older programs keep building.
 - llama.cpp `cumsum_kernel` (dynamic shared memory, a warp scan helper, barriers in a loop) is a
   corpus program and passes both rows: the unmodified CUDA on the simulator against qpel's CUDA
   and qpel's Metal on the Apple GPU.
+- **Atomics (IR version 6):** `atomic.max`, `and`, `or`, `xor` and `exchange` on u32/i32; atomic
+  `f32` buffers (load, store, add, exchange); atomic `u64` buffers (add, min, max, as statements,
+  since Metal's 64-bit atomics give no result). Metal has no 64-bit add, so qpel's Metal adds in
+  two 32-bit halves with a carry, exact once the kernel is done; a kernel therefore does not both
+  add and take min/max of 64-bit atomics (checked). The float atomic load reads the stored bits.
+  The importers read the CUDA and Metal spellings, including `atomicSub` and `atomicExch` whose
+  result is used. Programs with float atomics get quarter-integer test inputs, whose sums are exact
+  in any order. The `atomics` fixture passes against an oracle on the CPU simulator, the
+  Metal-on-CPU runner and the Apple GPU, and both importers give it back.
+- **Bitcasts (IR version 6):** `bitcast<T>(e)` reads an f32's bits as u32 or i32 and back (CUDA
+  `__float_as_uint` and the others, Metal `as_type<T>`).
+- **Metal compare-exchange loops** (`atomic_compare_exchange_weak_explicit`) import as qpel
+  compare-and-swap, re-run every iteration of the loop they control. A capped counter and a
+  modular sum written that way pass on the Metal-on-CPU runner and the Apple GPU (the unmodified
+  original and qpel's Metal) and on the CUDA simulator (qpel's CUDA).
 
 ### Fixed
 - Metal kernels instantiated from templates got numbered names (`kernel_argsort_f32_i32_0`)
