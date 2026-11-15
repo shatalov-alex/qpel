@@ -126,6 +126,7 @@ class Lowering:
         self.reads, self.writes, self.atomics = set(), set(), set()
         self.adaptations = []
         self.k = self.e = None  # the slot and element of the innermost owned() loop
+        self.divides = False  # a float division (Triton's NVIDIA code approximates it: div.full.f32)
         self.float_sums = []  # lengths of the float axes reduced by + or * (compared within a tolerance)
         self.bounded = False  # a bounded math function is used (exp, log, ...): compared within MATH_ULPS
 
@@ -312,6 +313,8 @@ class Lowering:
                 name in ('arith.cmpi', 'arith.cmpf', 'arith.select', 'arith.negf'):
             if name in MATH_BOUNDED:
                 self.bounded = True
+            if name == 'arith.divf':
+                self.divides = True
             return self.elementwise(op)
         raise Unsupported(op, f'{name} is not in qpel\'s Triton subset')
 
@@ -648,11 +651,17 @@ class Lowering:
         a, b = (self.value(x) for x in op.operands[:2])
         acc = self.value(op.operands[2]) if len(op.operands) > 2 else None
         t = self.result_type(op)
-        if len(t.shape) != 2 or scalar_term(t.element) != 'f32' or any(scalar_term(x.type.element) != 'f32' for x in (a, b)):
-            raise Unsupported(op, 'a dot other than a 2D float32 one')
+        if len(t.shape) != 2 or scalar_term(t.element) != 'f32' or \
+                any(scalar_term(x.type.element) not in ('f32', 'f16', 'bf16') for x in (a, b)):
+            raise Unsupported(op, 'a dot other than a 2D one into float32')
+        # float16 and bfloat16 operands are converted to float32 before the product: a product of two
+        # of them is exact in float32, so this is the float32 dot of their values
+
         depth = a.type.shape[1]
         self.float_sums.append(depth)
         a, b = (x if isinstance(x, (Lazy, Shared)) else self.materialize(x, op.results[0]) for x in (a, b))
+        wa, wb = (lambda text: text) if scalar_term(a.type.element) == 'f32' else (lambda text: f'cast<f32>({text})'), \
+            (lambda text: text) if scalar_term(b.type.element) == 'f32' else (lambda text: f'cast<f32>({text})')
         out = self.new_data(t, op.results[0])
         j = self.fresh('kk')
 
@@ -660,7 +669,7 @@ class Lowering:
             start = self.element(acc, c, True) if acc is not None else '0.0f'
             self.emit(f'{out}[{self.k}] = {start};')
             self.open(f'for (let {j}: i32 = 0; {j} < {depth}; {j} = {j} + 1)')
-            product = f'({self.element(a, [c[0], j], False)} * {self.element(b, [j, c[1]], False)})'
+            product = f'({wa(self.element(a, [c[0], j], False))} * {wb(self.element(b, [j, c[1]], False))})'
             self.emit(f'{out}[{self.k}] = ({out}[{self.k}] + {product});')
             self.close()
         self.owned(t, body)

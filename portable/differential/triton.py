@@ -202,7 +202,23 @@ def histogram_cases(rng):
     return out
 
 
-CASES = {'argmax_kernel': argmax_cases, 'cumsum_kernel': cumsum_cases, 'clip_rows_kernel': clip_rows_cases,
+def attention_cases(rng):
+    """softmax(Q K^T / sqrt(d)) V per head, float16 inputs and output: contexts shorter than, equal
+    to and longer than the 16-key blocks (the last block masked), two heads."""
+    out = []
+    heads, d = 2, 32
+    for n in (1, 16, 40, 100):
+        size = heads * n * d
+        q, k, v = (rng.standard_normal(size).astype(np.float16) for _ in range(3))
+        out.append(Case({'programs': (-(-n // 16), heads, 1), 'Q_size': (size, 1, 1), 'K_size': (size, 1, 1),
+                         'V_size': (size, 1, 1), 'Out_size': (size, 1, 1)},
+                        {'Q': q, 'K': k, 'V': v, 'Out': np.zeros(size, np.float16)},
+                        {'sm_scale': float(1 / np.sqrt(d)), 'N_CTX': n, 'stride_h': n * d, 'stride_m': d},
+                        f'{heads} heads x {n} tokens x {d}'))
+    return out
+
+
+CASES = {'attention_fwd_kernel': attention_cases, 'argmax_kernel': argmax_cases, 'cumsum_kernel': cumsum_cases, 'clip_rows_kernel': clip_rows_cases,
          'histogram_kernel': histogram_cases, 'matmul_kernel': matmul_cases, 'row_stats_kernel': row_stats_cases, 'add_kernel': add_cases, 'scale_shift_kernel': scale_shift_cases, 'softmax_kernel': softmax_cases,
          'copy2d_kernel': copy2d_cases, 'layer_norm_kernel': layer_norm_cases}
 
@@ -263,6 +279,12 @@ def check(expected, actual, outputs, ulps, case, reduction):
     """compare(), and for a program with float reductions, a case may give each output a scale (for a
     dot, the sum of |products|, which bounds its rounding error): an element then also matches
     within `reduction` epsilons of max(1, |value|, scale)."""
+    halves = [o for o in outputs if np.asarray(expected[o]).dtype == np.float16]
+    if ulps and halves:  # a float32 result within the tolerance can round to either neighbouring float16
+        error = compare(expected, actual, halves, None, 1)
+        if error:
+            return error
+        outputs = [o for o in outputs if o not in halves]
     error = compare(expected, actual, outputs, None, ulps)
     scales = getattr(case, 'scales', {})
     if error is None or not reduction or not scales:

@@ -1,0 +1,27 @@
+{
+ "kernel": "attention_fwd_kernel",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 4096,
+ "ptx_name": "attention_fwd_kernel",
+ "signature": {
+  "Q": "*fp16",
+  "K": "*fp16",
+  "V": "*fp16",
+  "Out": "*fp16",
+  "sm_scale": "fp32",
+  "N_CTX": "i32",
+  "stride_h": "i32",
+  "stride_m": "i32"
+ },
+ "constexprs": {
+  "BLOCK_M": 16,
+  "BLOCK_N": 16,
+  "HEAD_DIM": 32
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}

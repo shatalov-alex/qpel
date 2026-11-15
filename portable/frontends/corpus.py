@@ -83,7 +83,12 @@ def kernels(functions):
 def source_messages(entry):
     """Counter of (code, message with numbers blanked) over every function of one source."""
     found = Counter()
-    for info in survey(entry).values():
+    try:
+        surveyed = survey(entry)
+    except clang_ast.SourceError:  # counted as a source that does not parse (coverage: UNPARSED)
+        found[('parse', 'the source does not parse with qpel\'s stand-ins')] += 1
+        return found
+    for info in surveyed.values():
         for issue in info['issues']:
             found[(issue['code'], re.sub(r'\b\d+\b', 'N', issue['message']))] += 1
     return found

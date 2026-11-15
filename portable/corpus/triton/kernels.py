@@ -163,3 +163,37 @@ def histogram_kernel(x_ptr, bins_ptr, n, n_bins, BLOCK: tl.constexpr):
     x = tl.load(x_ptr + offs, mask=mask, other=0)
     bucket = tl.minimum(tl.maximum(x, 0), n_bins - 1)
     tl.atomic_add(bins_ptr + bucket, 1, mask=mask, sem='relaxed')
+
+
+@triton.jit
+def attention_fwd_kernel(Q, K, V, Out, sm_scale, N_CTX, stride_h, stride_m,
+                         BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, HEAD_DIM: tl.constexpr):
+    """softmax(Q K^T * sm_scale) V for one head and a block of queries (the online softmax of the
+    Triton fused-attention tutorial, without causal masking): fp16 inputs, fp32 accumulation."""
+    start_m = tl.program_id(0)
+    head = tl.program_id(1)
+    offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = tl.arange(0, BLOCK_N)
+    offs_d = tl.arange(0, HEAD_DIM)
+    base = head * stride_h
+    q = tl.load(Q + base + offs_m[:, None] * stride_m + offs_d[None, :], mask=offs_m[:, None] < N_CTX, other=0.0)
+    m_i = tl.zeros([BLOCK_M], dtype=tl.float32) - float('inf')
+    l_i = tl.zeros([BLOCK_M], dtype=tl.float32) + 1.0
+    acc = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
+    qk_scale = sm_scale * 1.44269504
+    for start_n in range(0, N_CTX, BLOCK_N):
+        cols = start_n + offs_n
+        k = tl.load(K + base + cols[None, :] * stride_m + offs_d[:, None], mask=cols[None, :] < N_CTX, other=0.0)
+        qk = tl.dot(q, k, input_precision="ieee")
+        qk = tl.where(cols[None, :] < N_CTX, qk * qk_scale, -float('inf'))
+        m_ij = tl.maximum(m_i, tl.max(qk, 1))
+        p = tl.math.exp2(qk - m_ij[:, None])
+        l_ij = tl.sum(p, 1)
+        alpha = tl.math.exp2(m_i - m_ij)
+        l_i = l_i * alpha + l_ij
+        acc = acc * alpha[:, None]
+        v = tl.load(V + base + cols[:, None] * stride_m + offs_d[None, :], mask=cols[:, None] < N_CTX, other=0.0)
+        acc = tl.dot(p.to(tl.float16), v, acc, input_precision="ieee")
+        m_i = m_ij
+    acc = acc / l_i[:, None]
+    tl.store(Out + base + offs_m[:, None] * stride_m + offs_d[None, :], acc.to(tl.float16), mask=offs_m[:, None] < N_CTX)

@@ -77,6 +77,11 @@ CUDA on the CPU simulator, and qpel's Metal on the Apple GPU.
   of the products bounds a dot's rounding error, not the size of its result. On the matmul cases
   qpel is within 1.8 of those epsilons of the exact product (float64), the interpreter within 1.4.
   A dot in tf32 or bf16 input precision is rejected (it rounds its inputs: another computation).
+  A dot of float16 (or bfloat16) tensors converts them to float32 first: their products are
+  exact in float32, so it is the float32 dot of their values.
+- **float16 outputs** of a program with any tolerance may differ by one float16 ulp: a float32
+  result within the tolerance can round to either neighbour. Fused attention (float16 Q, K, V and
+  output): 10040 of 10048 outputs bit for bit, 8 one float16 ulp apart.
 - qpel's CUDA and Metal agree with each other bit for bit, bounded math functions apart.
 
 ## Corpus
@@ -85,6 +90,7 @@ CUDA on the CPU simulator, and qpel's Metal on the Apple GPU.
 fused softmax, layer norm, matrix multiplication with the grouped program order), plus an
 element-wise select with scalar arguments, a 2D strided transpose-copy, per-row statistics of a
 2D tile (reductions along axis 1), a row argmax (`return_indices`), a block cumsum, a row clip
-under `if` and an integer histogram with atomics. Each is a fixture (`triton_<kernel>`), so it is part of the round-trip matrix
+under `if`, an integer histogram with atomics, and the forward pass of fused attention (the
+tutorial's online softmax over key blocks with two dots per block, float16 inputs and output). Each is a fixture (`triton_<kernel>`), so it is part of the round-trip matrix
 (the TTIR lowers to exactly the fixture, and qpel's own CUDA and Metal import back to it) and of
 the nvcc check.
