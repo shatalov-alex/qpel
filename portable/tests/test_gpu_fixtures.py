@@ -2,7 +2,7 @@
 
 The same tests `gpu_tests/run_gpu_tests.py` runs, one unittest per fixture, through the
 generated Metal host. Skipped without PyTorch on an Apple GPU (QPEL_REQUIRE=gpu fails
-instead). Corpus programs are left out: their Metal rows are in test_behaviour_rows.
+instead). Corpus programs are left out: their Metal rows are in test_behaviour_rows (Triton kernels: test_triton).
 """
 import importlib.util
 from pathlib import Path
@@ -58,15 +58,15 @@ class AppleGpu(unittest.TestCase):
 def fixture_test(name):
     def test(self):
         if name in self.corpus:
-            self.skipTest('corpus program: its Metal rows run in test_behaviour_rows')
+            self.skipTest('corpus program: its Metal rows run in test_behaviour_rows (Triton kernels: test_triton)')
         host, plan = RUNNER.load_host(name, Path(self.work.name))
         self.assertGreater(RUNNER.TESTS[name](name, host, plan), 0)
     test.__doc__ = f'{name} on the Apple GPU'
     return test
 
 
-from frontends.roundtrip import corpus_programs  # noqa: E402
-CORPUS = {program['fixture'] for _, program in corpus_programs()}
+from frontends.roundtrip import corpus_programs, triton_kernels  # noqa: E402
+CORPUS = {program['fixture'] for _, program in corpus_programs()} | {f'triton_{k}' for k in triton_kernels()}
 for _name in NAMES:
     if _name not in CORPUS:  # corpus programs: their Metal rows run in test_behaviour_rows
         setattr(AppleGpu, f'test_{_name}', fixture_test(_name))

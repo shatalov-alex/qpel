@@ -44,6 +44,13 @@ python3 portable/qpel.py import kernels.cu --out program.qpel.json      # or a .
 python3 portable/qpel.py translate kernels.cu --out /tmp/qpel-translated  # import, then build both backends
 ```
 
+Triton kernels come in through Triton's own TTIR (frontends/triton/README.md: compiled without a GPU in a Linux container, one Triton program per qpel workgroup):
+
+```sh
+python3 -m frontends.triton kernel.ttir --num-warps 4 --out kernel.qpel   # run in portable/
+python3 -m differential.triton          # corpus/triton against Triton's interpreter
+```
+
 ### PyTorch operations
 
 For a PyTorch CUDA extension, `torch-op` reads the extension's own `<<<>>>` launches and adds

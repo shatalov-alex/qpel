@@ -1,0 +1,22 @@
+{
+ "kernel": "softmax_kernel",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 16,
+ "ptx_name": "softmax_kernel",
+ "signature": {
+  "output_ptr": "*fp32",
+  "input_ptr": "*fp32",
+  "input_row_stride": "i32",
+  "output_row_stride": "i32",
+  "n_cols": "i32"
+ },
+ "constexprs": {
+  "BLOCK_SIZE": 128
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}

@@ -1,0 +1,24 @@
+{
+ "kernel": "layer_norm_kernel",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 8,
+ "ptx_name": "layer_norm_kernel",
+ "signature": {
+  "X": "*fp32",
+  "Y": "*fp32",
+  "W": "*fp32",
+  "B": "*fp32",
+  "stride": "i32",
+  "N": "i32",
+  "eps": "fp32"
+ },
+ "constexprs": {
+  "BLOCK_SIZE": 64
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}

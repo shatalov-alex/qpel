@@ -483,13 +483,17 @@ def run_math_ops(name, host, plan):
 
 def corpus_fixtures():
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from frontends.roundtrip import corpus_programs
-    return {program['fixture'] for _, program in corpus_programs()}
+    from frontends.roundtrip import corpus_programs, triton_kernels
+    return {program['fixture'] for _, program in corpus_programs()} | {f'triton_{k}' for k in triton_kernels()}
 
 
 def run_corpus_fixture(name):
-    """qpel's Metal on the Apple GPU against the unmodified original on the CPU simulator."""
+    """qpel's Metal on the Apple GPU against the unmodified original on the CPU simulator (a Triton
+    kernel: against Triton's interpreter, differential/triton.py)."""
     from differential.matrix import rows
+    if name.startswith('triton_'):
+        from differential import triton
+        rows = lambda names, gpu: triton.rows([n[len('triton_'):] for n in names], gpu=gpu)  # noqa: E731
     cases = 0
     for row, label, error in rows([name], gpu=True):
         if row.endswith('-> metal'):

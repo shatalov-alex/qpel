@@ -1,0 +1,24 @@
+{
+ "kernel": "copy2d_kernel",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 2048,
+ "ptx_name": "copy2d_kernel",
+ "signature": {
+  "src_ptr": "*fp32",
+  "dst_ptr": "*fp32",
+  "M": "i32",
+  "N": "i32",
+  "stride_src": "i32",
+  "stride_dst": "i32"
+ },
+ "constexprs": {
+  "BLOCK_M": 16,
+  "BLOCK_N": 32
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}

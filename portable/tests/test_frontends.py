@@ -55,7 +55,7 @@ class RoundTripMatrix(unittest.TestCase):
         self.assertEqual(len(results), 2*len(list(roundtrip.FIXTURES.iterdir())) + 2*len(roundtrip.EXAMPLES)
                          + sum('fixture' in e for e in roundtrip.corpus_entries())
                          + sum(len(e.get('ports', ())) for e in roundtrip.corpus_entries())
-                     + sum(1 for _ in roundtrip.corpus_programs()))
+                     + sum(1 for _ in roundtrip.corpus_programs()) + len(roundtrip.triton_kernels()))
         failures = [(row, case, error) for row, case, error in results if error]
         self.assertEqual(failures, [])
 
