@@ -1,0 +1,159 @@
+{
+ "schema": 2,
+ "module": "pytorch_sparse_spmm_max",
+ "resources": [
+  {
+   "name": "out",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "rows",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "nnz",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "mat",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "rowptr_data",
+   "kind": "input",
+   "type": "buffer<i64, read>",
+   "extent": "rows"
+  },
+  {
+   "name": "col_data",
+   "kind": "input",
+   "type": "buffer<i64, read>",
+   "extent": "nnz"
+  },
+  {
+   "name": "value_data",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "nnz"
+  },
+  {
+   "name": "mat_data",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "mat"
+  },
+  {
+   "name": "out_data",
+   "kind": "inout",
+   "type": "buffer<f32, write>",
+   "extent": "out"
+  },
+  {
+   "name": "arg_out_data",
+   "kind": "inout",
+   "type": "buffer<i64, write>",
+   "extent": "out"
+  },
+  {
+   "name": "B",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "M",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "N",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "K",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "spmm_kernel_f32_5_0",
+   "grid": "out",
+   "blockSize": 256,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "rowptr_data",
+     "resource": "rowptr_data"
+    },
+    {
+     "parameter": "col_data",
+     "resource": "col_data"
+    },
+    {
+     "parameter": "value_data",
+     "resource": "value_data"
+    },
+    {
+     "parameter": "mat_data",
+     "resource": "mat_data"
+    },
+    {
+     "parameter": "out_data",
+     "resource": "out_data"
+    },
+    {
+     "parameter": "arg_out_data",
+     "resource": "arg_out_data"
+    },
+    {
+     "parameter": "B",
+     "resource": "B"
+    },
+    {
+     "parameter": "M",
+     "resource": "M"
+    },
+    {
+     "parameter": "N",
+     "resource": "N"
+    },
+    {
+     "parameter": "K",
+     "resource": "K"
+    }
+   ],
+   "domain": "groups",
+   "blockShape": [
+    256,
+    1,
+    1
+   ],
+   "groups": [
+    "(32 * N * H + 255) / 256",
+    "(W + 31) / 32",
+    "1"
+   ]
+  }
+ ],
+ "features": [
+  "groups",
+  "int32",
+  "int64",
+  "scalar_arguments",
+  "subgroups",
+  "typed_buffers"
+ ]
+}

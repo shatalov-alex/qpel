@@ -1,0 +1,169 @@
+{
+ "schema": 2,
+ "module": "pytorch_sparse_spmm_value_bw_mean",
+ "resources": [
+  {
+   "name": "edges",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "rows",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "mat",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "grad",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "row_data",
+   "kind": "input",
+   "type": "buffer<i64, read>",
+   "extent": "edges"
+  },
+  {
+   "name": "rowptr_data",
+   "kind": "input",
+   "type": "buffer<i64, read>",
+   "extent": "rows"
+  },
+  {
+   "name": "col_data",
+   "kind": "input",
+   "type": "buffer<i64, read>",
+   "extent": "edges"
+  },
+  {
+   "name": "mat_data",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "mat"
+  },
+  {
+   "name": "grad_data",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "grad"
+  },
+  {
+   "name": "out_data",
+   "kind": "inout",
+   "type": "buffer<f32, write>",
+   "extent": "edges"
+  },
+  {
+   "name": "B",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "M",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "N",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "E",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "K",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "spmm_value_bw_kernel_f32_1",
+   "grid": "edges",
+   "blockSize": 256,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "row_data",
+     "resource": "row_data"
+    },
+    {
+     "parameter": "rowptr_data",
+     "resource": "rowptr_data"
+    },
+    {
+     "parameter": "col_data",
+     "resource": "col_data"
+    },
+    {
+     "parameter": "mat_data",
+     "resource": "mat_data"
+    },
+    {
+     "parameter": "grad_data",
+     "resource": "grad_data"
+    },
+    {
+     "parameter": "out_data",
+     "resource": "out_data"
+    },
+    {
+     "parameter": "B",
+     "resource": "B"
+    },
+    {
+     "parameter": "M",
+     "resource": "M"
+    },
+    {
+     "parameter": "N",
+     "resource": "N"
+    },
+    {
+     "parameter": "E",
+     "resource": "E"
+    },
+    {
+     "parameter": "K",
+     "resource": "K"
+    }
+   ],
+   "domain": "groups",
+   "blockShape": [
+    256,
+    1,
+    1
+   ],
+   "groups": [
+    "(32 * W + 255) / 256",
+    "1",
+    "1"
+   ]
+  }
+ ],
+ "features": [
+  "groups",
+  "int32",
+  "int64",
+  "scalar_arguments",
+  "subgroups",
+  "typed_buffers"
+ ]
+}

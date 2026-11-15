@@ -20,6 +20,7 @@ from . import clang_ast
 from .clang_ast import position
 from .facades import inline_facades
 from .demote import demote_unit
+from .statics import lift_statics, read_enums, local_pointers_as_references
 
 IR_HEADER = {'format': 'qpel.ir', 'version': 1, 'semantics': 'qpel-portable-core-v1'}
 U32_MAX = 2**32 - 1
@@ -572,6 +573,9 @@ class Graph:
 class Importer:
     def __init__(self, unit, source, path, dialect, module, survey=False):
         self.dialect = DIALECT[dialect]
+        read_enums(unit)  # SUM, MEAN, ...: their values; enum-typed expressions: the underlying integer
+        lift_statics(unit)  # Reducer<T, R>::update(...) -> Reducer_f32_0_update(...), __ldg(p) -> *p (statics.py)
+        self.local_references = local_pointers_as_references(unit)  # update(&result, ...) of update(T *val, ...): T &val (statics.py)
         inline_facades(unit)  # cub::BlockScan(storage).InclusiveSum(...) -> the function it forwards to
         demote_unit(unit)  # T hy = 1. - ly; and the like: float arithmetic in double's clothes (demote.py)
         self.unit = unit
@@ -718,7 +722,7 @@ class Importer:
 
     def spelled_arguments(self, use, template):
         """template_arguments for calling the instance from C++: an enum value (clang's JSON gives only
-        the number) is cast to its parameter's type, `(cub::BlockScanAlgorithm)0`."""
+        the number) is cast to its parameter's type, `(cub::BlockScanAlgorithm)0`, and a bool is true or false."""
         params = [p for p in template.get('inner', ()) if p.get('kind') in
                   ('TemplateTypeParmDecl', 'NonTypeTemplateParmDecl', 'TemplateTemplateParmDecl')]
         out = self.template_arguments(use)
@@ -729,6 +733,9 @@ class Importer:
             if p['kind'] == 'NonTypeTemplateParmDecl' and kind[0] == 'scalar' and kind[1] not in SCALAR_TERMS \
                     and re.fullmatch(r'-?[0-9]+', out[i]):
                 out[i] = f'({p["type"]["qualType"]}){out[i]}'
+            elif p['kind'] == 'NonTypeTemplateParmDecl' and kind == ('scalar', 'bool') and re.fullmatch(r'-?[0-9]+', out[i]):
+                # clang's JSON gives true as -1 (a one-bit value) and 1 converts to no bool argument
+                out[i] = 'false' if out[i] == '0' else 'true'
         return out
 
     def host_name(self, decl):
@@ -833,8 +840,9 @@ class Importer:
         if kind == 'VarDecl' and 'MetalFunctionConstantAttr' in attributes(node):
             self.function_constants[node['id']] = node['name']  # resolved at import, see constant_value()
             return []
-        if kind in ('CXXRecordDecl', 'RecordDecl', 'TypedefDecl', 'EnumDecl', 'TypeAliasDecl', 'TypeAliasTemplateDecl'):
-            return []  # types are read where parameters use them
+        if kind in ('CXXRecordDecl', 'RecordDecl', 'TypedefDecl', 'EnumDecl', 'TypeAliasDecl', 'TypeAliasTemplateDecl',
+                    'ClassTemplateDecl', 'ClassTemplateSpecializationDecl', 'ClassTemplatePartialSpecializationDecl'):
+            return []  # types are read where parameters use them; their static methods are functions (statics.py)
         if kind == 'VarDecl':
             t = describe(node['type']['qualType'])
             init = node['inner'][0] if 'init' in node and node.get('inner') else None
@@ -1014,6 +1022,10 @@ class Importer:
             self.functions[decl['name']] = (decl, self.graph.reserve(), self.dialect.is_kernel(decl))
             unique.append(decl)
         self.decls = unique
+        for entry in self.local_references:
+            if entry.split('(')[0] in self.functions:
+                self.adaptations.append(f'{entry}: a pointer parameter every call passes the address of a local '
+                                        'was read as a reference to it')
 
     @staticmethod
     def reject(error):
@@ -2683,6 +2695,10 @@ class Importer:
         array = self.local_array(base)
         if array is not None:
             return self.graph.add('Index', children={'base': self.name(array), 'index': self.expr(index)})
+        core = peel(base)
+        if core['kind'] == 'BinaryOperator' and core['opcode'] in ('+', '-') and scalar_of(core) == 'pointer':
+            # (p + i + j)[k], as qpel writes *(p + i + j): an element of the offset view, read as *p is
+            return self.graph.add('Index', children={'base': self.expr(base, address=True), 'index': self.expr(index)})
         if self.is_atomic_element(node):
             # CUDA reads buffers that other threads update atomically with plain loads;
             # qpel makes them relaxed atomic loads.
@@ -2774,6 +2790,10 @@ class Importer:
                 and callee in ('max', 'min', 'lowest') and not args:
             # std::numeric_limits<T>::max() and friends (the class is in a system header): a constant
             limit = scalar_of(n)
+            if limit == 'f32':  # FLT_MAX, -FLT_MAX and FLT_MIN (the least normal float), exact float values
+                value = {'max': 3.4028234663852886e38, 'lowest': -3.4028234663852886e38, 'min': 1.1754943508222875e-38}[callee]
+                magnitude = self.graph.add('F32Literal', {'value': repr(abs(value))})
+                return self.negated(magnitude, 'f32') if value < 0 else magnitude
             if limit not in INTEGER_TERMS:
                 raise Unsupported(n, 'numeric-limits', f'{callee}() of {limit} is only supported for integers')
             size, signed = type_bits(limit), is_signed(limit)

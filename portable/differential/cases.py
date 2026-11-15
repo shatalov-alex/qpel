@@ -305,8 +305,64 @@ def mmcv_nms(plan, seed, shapes=None):
     return out
 
 
+def csr(rng, rows, columns):
+    """A random CSR pattern (rowptr, col) as torch_sparse stores it, int64: rows with no entries,
+    with fewer than 32 and with more (a warp reads a row's entries 32 at a time), columns repeated."""
+    lengths = rng.integers(0, 12, rows)
+    lengths[rng.random(rows) < 0.2] = 0
+    long = rng.random(rows) < 0.2
+    lengths[long] = rng.integers(30, 80, int(long.sum()))
+    rowptr = np.concatenate([[0], np.cumsum(lengths)]).astype(np.int64)
+    col = rng.integers(0, columns, max(1, int(rowptr[-1]))).astype(np.int64)
+    return rowptr, col
+
+
+SPMM_SIZES = [(1, 1, 1, 1), (1, 5, 7, 3), (2, 9, 40, 33), (1, 40, 50, 70), (3, 17, 8, 32)]  # (B, M, N, K)
+
+
+def sparse_spmm(plan, seed, shapes=None):
+    """torch_sparse's spmm (out = A @ mat over a CSR A, reduced by sum, mean, min or max): batches of
+    dense matrices, rows of every length (none, a few, more than one warp's 32), K around the 32
+    columns a block row covers. out starts at zero and arg_out at the number of entries (torch_sparse's
+    full_like(out, col.numel()), the index of no entry)."""
+    rng = np.random.default_rng(seed)
+    out = []
+    for b, m, n, k in SPMM_SIZES:
+        rowptr, col = csr(rng, m, n)
+        e = col.size
+        inputs = {'rowptr_data': rowptr, 'col_data': col, 'value_data': rng.standard_normal(e).astype(np.float32),
+                  'mat_data': rng.standard_normal(b * n * k).astype(np.float32),
+                  'out_data': np.zeros(b * m * k, np.float32), 'arg_out_data': np.full(b * m * k, e, np.int64)}
+        out.append(Case({'out': (k, m, b), 'rows': (m + 1, 1, 1), 'nnz': (e, 1, 1), 'mat': (k, n, b)}, inputs,
+                        {'B': b, 'M': m, 'N': n, 'K': k}, f'{b}x({m}x{n} sparse, {int(rowptr[-1])} entries) @ {n}x{k}'))
+    return out
+
+
+def sparse_spmm_value_bw(plan, seed, shapes=None):
+    """torch_sparse's gradient of spmm by the sparse values: one warp per entry (row, col) adds
+    mat[b, col, :] * grad[b, row, :] over the batch and K, then a shuffle reduction; mean divides by
+    the row's length. out starts at zero (torch::zeros)."""
+    rng = np.random.default_rng(seed)
+    out = []
+    for b, m, n, k in SPMM_SIZES:
+        rowptr, col = csr(rng, m, n)
+        e = int(rowptr[-1])
+        if e == 0:
+            rowptr[1:] = 1  # at least one entry: the first row's
+            e = 1
+        row = np.repeat(np.arange(m), np.diff(rowptr)).astype(np.int64)
+        inputs = {'row_data': row, 'rowptr_data': rowptr, 'col_data': col[:e],
+                  'mat_data': rng.standard_normal(b * n * k).astype(np.float32),
+                  'grad_data': rng.standard_normal(b * m * k).astype(np.float32), 'out_data': np.zeros(e, np.float32)}
+        out.append(Case({'edges': (e, 1, 1), 'rows': (m + 1, 1, 1), 'mat': (k, n, b), 'grad': (k, m, b)}, inputs,
+                        {'B': b, 'M': m, 'N': n, 'E': e, 'K': k}, f'{e} entries of {m}x{n}, batch {b}, K {k}'))
+    return out
+
+
 SPECIAL = {'scale_offset': scale_offset, 'sam2_cc': sam2_cc, 'grid_stride': grid_stride,
-           'mmcv_roi_align_forward': mmcv_roi_align, 'mmcv_nms': mmcv_nms}
+           'mmcv_roi_align_forward': mmcv_roi_align, 'mmcv_nms': mmcv_nms,
+           'pytorch_sparse_spmm_sum': sparse_spmm, 'pytorch_sparse_spmm_mean': sparse_spmm,
+           'pytorch_sparse_spmm_max': sparse_spmm, 'pytorch_sparse_spmm_value_bw_mean': sparse_spmm_value_bw}
 PREFIXES = {'trellis2_hashmap_': hashmap_cases, 'trellis2_hash3d_': hash3d_cases}  # families of corpus programs
 
 

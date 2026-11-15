@@ -218,6 +218,13 @@ inline unsigned __ballot_sync(unsigned, int) { qpel_simulator_needs_threads("__b
 inline void __syncwarp(unsigned = 0xffffffffu) { qpel_simulator_needs_threads("__syncwarp"); }
 inline unsigned __activemask() { qpel_simulator_needs_threads("__activemask"); }
 #endif
+// CUDA's shuffles before the _sync forms (deprecated, and on HIP the only ones): the whole warp takes part
+template <class T> T __shfl(T v, int src, int width = 32) { return __shfl_sync(0xffffffffu, v, src, width); }
+template <class T> T __shfl_xor(T v, int mask, int width = 32) { return __shfl_xor_sync(0xffffffffu, v, mask, width); }
+template <class T> T __shfl_up(T v, unsigned d, int width = 32) { return __shfl_up_sync(0xffffffffu, v, d, width); }
+template <class T> T __shfl_down(T v, unsigned d, int width = 32) { return __shfl_down_sync(0xffffffffu, v, d, width); }
+// __ldg: a load through the read-only data cache, the value at p
+template <class T> T __ldg(const T* p) { return *p; }
 #ifdef QPEL_SIM_THREADED
 inline int __syncthreads_count(int p) { return qpel_sync(p); }
 inline int __syncthreads_or(int p) { return qpel_sync(p) != 0; }

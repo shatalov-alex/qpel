@@ -23,7 +23,19 @@ enum class ScalarType { Byte, Char, Short, Int, Long, Half, Float, Double, Compl
                         Bool, QInt8, QUInt8, QInt32, BFloat16, UInt16 = 27, UInt32, UInt64, Undefined = 255 };
 enum class DeviceType : int8_t { CPU = 0, CUDA = 1, MPS = 13, Meta = 9, COMPILE_TIME_MAX_DEVICE_TYPES = 21 };
 enum class MemoryFormat : int8_t { Contiguous, Preserve, ChannelsLast, ChannelsLast3d };
+#if defined(QPEL_SIM_HALF_IS_FLOAT16) || defined(__CUDA_FP16_H__)
+// Running an original (the CPU simulator, whose __half is _Float16, or nvcc's own cuda_fp16.h):
+// c10::Half is a class of its own, which libraries convert by name (`h.operator __half()`)
+struct Half {
+  __half x;
+  Half() = default;
+  __host__ __device__ Half(__half v) : x(v) {}
+  __host__ __device__ Half(float f) : x((__half)f) {}
+  __host__ __device__ operator __half() const { return x; }
+};
+#else
 using Half = __half;
+#endif
 using BFloat16 = __nv_bfloat16;
 struct Device {
   Device(DeviceType type, int8_t index = -1);

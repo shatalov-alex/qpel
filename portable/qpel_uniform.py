@@ -18,8 +18,10 @@ so the same check runs one level down: such an operation, or a call to a functio
 one, only runs under control flow that is the same for every lane of a subgroup. Uniform there,
 besides everything uniform in the group: the subgroup's index and size, reduction results, and
 a thread index divided by a multiple of 32 or compared with one (the pipeline requires groups
-whose x size is a multiple of 32). Helper functions are checked with their parameters taken as
-varying, and a kernel using subgroup operations, directly or through calls, is a Groups kernel.
+whose x size is a multiple of 32), the index written group_size.x * group.x + local.x included
+(CUDA's blockDim.x * blockIdx.x + threadIdx.x). Helper functions are checked with their
+parameters taken as varying, and a kernel using subgroup operations, directly or through calls,
+is a Groups kernel.
 
 IR version 7 allows barriers in helpers (library code such as qpel's CUB subset): a helper with
 barriers is checked as a kernel is, with its parameters taken as varying, a call of it counts as
@@ -84,11 +86,30 @@ class Uniformity(TypeChecker):
             node = self.child(node, 'operand')
         if node['kind'] in LANE_ROWS:
             return node['attributes'].get('axis', 'x') == 'x'
+        if node['kind'] == 'Binary' and node['attributes']['operator'] == '+':
+            # group_size.x * group.x + local.x (CUDA's blockDim.x * blockIdx.x + threadIdx.x): a multiple of
+            # the group's x size, itself a multiple of 32, plus a thread's x index
+            left, right = self.child(node, 'left'), self.child(node, 'right')
+            return any(self.thread_x(a) and self.multiple_of_group(b) for a, b in ((left, right), (right, left)))
         if node['kind'] == 'Name':
             declaration = self.target(node, 'declaration')
             if declaration['kind'] == 'Variable' and self.children(declaration, 'value') \
                     and declaration['id'] not in self.reassigned():
                 return self.thread_x(self.child(declaration, 'value'))
+        return False
+
+    def multiple_of_group(self, node):
+        """True for group_size.x times a uniform value (a whole number of x groups), or a constant multiple of 32."""
+        while node['kind'] in ('Cast', 'I32Cast', 'U32Cast'):
+            node = self.child(node, 'operand')
+        value = self.constant(node)
+        if value is not None:
+            return value % 32 == 0
+        if node['kind'] == 'GroupSize':
+            return node['attributes'].get('axis', 'x') == 'x'
+        if node['kind'] == 'Binary' and node['attributes']['operator'] == '*':
+            left, right = self.child(node, 'left'), self.child(node, 'right')
+            return any(self.multiple_of_group(a) and self.uniform(b) for a, b in ((left, right), (right, left)))
         return False
 
     def reassigned(self):

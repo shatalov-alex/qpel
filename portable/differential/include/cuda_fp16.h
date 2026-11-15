@@ -3,6 +3,7 @@
 #include <cstring>
 typedef _Float16 __half;
 typedef __half half;
+#define QPEL_SIM_HALF_IS_FLOAT16  // the torch stand-in wraps it: c10::Half has members (operator __half)
 inline __half __float2half_rn(float f) { return (__half)f; }
 inline __half __float2half(float f) { return (__half)f; }
 inline float __half2float(__half h) { return (float)h; }

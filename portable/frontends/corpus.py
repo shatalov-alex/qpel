@@ -31,6 +31,9 @@ COVERAGE = CORPUS/'coverage.json'
 # most three at once (one per core took all of a 48 GB Mac's memory on the extension sources).
 UNPARSED = '(source does not parse)'  # coverage.json key of a source clang rejects
 SURVEY_WORKERS = int(os.environ.get('QPEL_SURVEY_WORKERS', 2))
+# Each source is surveyed in a fresh worker process (max_tasks_per_child=1): a worker would otherwise keep
+# the units clang_ast caches (up to 4, a gigabyte or more each) from one source to the next, and two
+# workers then hold over 14 GB by the end of the corpus.
 
 
 def build_defines(entry):
@@ -107,7 +110,7 @@ def coverage(details=False, dialect=None):
     """{source: {kernel: blocker codes}} for the whole corpus (with details, 'code at function:line');
     sources are surveyed in parallel. dialect ('cuda' or 'metal') limits it to that dialect's sources."""
     listed = [e for e in entries() if not dialect or clang_ast.dialect_of(CORPUS/e['source']) == dialect]
-    with ProcessPoolExecutor(SURVEY_WORKERS) as pool:
+    with ProcessPoolExecutor(SURVEY_WORKERS, max_tasks_per_child=1) as pool:
         found = list(pool.map(source_details if details else source_coverage, listed))
     return {entry['source']: result for entry, result in zip(listed, found)}
 
@@ -188,7 +191,7 @@ def main(argv=None):
                 print('wrote', folder.relative_to(HERE))
         return 0
     if args.messages:
-        with ProcessPoolExecutor(SURVEY_WORKERS) as pool:
+        with ProcessPoolExecutor(SURVEY_WORKERS, max_tasks_per_child=1) as pool:
             total = sum(pool.map(source_messages, entries()), Counter())
         for (code, message), count in total.most_common():
             print(f'{count:5} {code:22} {message}')
