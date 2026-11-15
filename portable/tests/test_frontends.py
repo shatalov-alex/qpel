@@ -150,14 +150,15 @@ class CudaIdioms(Sources):
             'atomic-update': THRESHOLD_CU.replace('binary[i] =', 'atomicAdd(binary, 1u); binary[i] +='),
             'conversion': THRESHOLD_CU.replace('1u :', '(unsigned int)(unsigned long long)binary :'),
             'for-init': THRESHOLD_CU.replace('binary[i] =', 'for (unsigned j = 0, k = 1; j < 2u; ++j) {} binary[i] ='),
-            'double': THRESHOLD_CU.replace('intensity[i] >= cutoff[i]', '0.5 > 0.25'),
+            'double': THRESHOLD_CU.replace('intensity[i] >= cutoff[i]', '0.1 * 3.0 > 0.25'),  # double arithmetic (0.5 > 0.25 is float)
             # (a helper reading threadIdx.x is passed it; the whole builtin as a value is not portable)
             'thread-builtin': '__device__ unsigned int lane(uint3 t) { return t.x; }\n' +
                               THRESHOLD_CU.replace('binary[i] =', 'lane(threadIdx); binary[i] ='),
             'call': THRESHOLD_CU.replace('binary[i] =', '__syncwarp(); binary[i] ='),
             'buffer-type': THRESHOLD_CU.replace('unsigned int* binary', 'double* binary'),
             'local-type': THRESHOLD_CU.replace('binary[i] =', 'char4 packed; binary[i] ='),
-            'scalar-kernel-argument': THRESHOLD_CU.replace('uint3 dimensions', 'uint3 dimensions, bool extra'),
+            'scalar-kernel-argument': '#include <cuda_bf16.h>\n' + THRESHOLD_CU.replace(
+                'uint3 dimensions', 'uint3 dimensions, __nv_bfloat16 extra'),  # (bool is now a u32 argument)
             'no-extent': THRESHOLD_CU.replace('uint3 dimensions', 'unsigned int n, unsigned int m').replace(
                 'dimensions.x * dimensions.y * dimensions.z', 'n || i >= m'),
         }

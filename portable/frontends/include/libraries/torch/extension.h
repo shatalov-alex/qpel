@@ -214,8 +214,9 @@ struct Tensor {
   Tensor new_empty(IntArrayRef, TensorOptions = {}) const;
   Tensor new_zeros(IntArrayRef, TensorOptions = {}) const;
   Tensor masked_fill(const Tensor&, const Scalar&) const;
+  Tensor masked_select(const Tensor&) const;
   Tensor& masked_fill_(const Tensor&, const Scalar&);
-  Tensor sort(int64_t = -1, bool = false) const;
+  std::tuple<Tensor, Tensor> sort(int64_t = -1, bool = false) const;
   Tensor argsort(int64_t = -1, bool = false) const;
   Tensor operator-() const;
   Tensor operator~() const;

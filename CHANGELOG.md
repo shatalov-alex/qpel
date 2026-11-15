@@ -91,6 +91,13 @@ older programs keep building.
   libcu++ stand-ins cover what these libraries include; a source clang still rejects is recorded as such.
   Kernels in a library's headers count when the source's host code launches them.
 
+- **mmcv pilots:** `nms_cuda` and `roi_align_forward_cuda_kernel`, unmodified, pass the CPU
+  simulator, the Apple GPU and GPGPU-Sim (hand-written plans, case generators with valid RoIs and
+  clustered boxes). The importer reads double that is float in disguise as float where the bits
+  are the same (NUMERICS.md), `a = b = c` and comma statements, `bool` kernel arguments and `bool*`
+  buffers, `sizeof`, constants from library headers, and helper `T*` parameters passed shared
+  memory as `shared<T>`. Coverage 250 of 1902 (mmcv 84 of 475, pytorch_sparse 4 of 22).
+
 ### Fixed
 - **Importing is memory-bounded.** A survey of the extension sources ran one clang per core and read
   each AST whole; mamba's host launcher alone is 100 GB of JSON, and the Mac ran out of memory and

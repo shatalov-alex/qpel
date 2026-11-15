@@ -157,6 +157,24 @@ each element has the operations both platforms give it:
   evaluations reach (the right of `&&` or `||`, a branch of `?:`) are rejected, since moving them
   would run them every time.
 
+## Double precision that is float (import)
+
+qpel has no double: Metal has none. CUDA kernels instantiated for float often meet double
+constants anyway (`T hy = 1. - ly;`, `y < -1.0`, `(T)0.5`, mmcv's RoIAlign and NMS), and C then
+computes in double. The importer (`frontends/demote.py`) reads these as float only where the
+result is the same bits:
+
+- a double constant converted to float is that constant rounded once to float;
+- a comparison of two doubles that are floats (promoted floats, constants exactly representable)
+  compares the same values;
+- one `+`, `-`, `*` or `/` of two such doubles, converted back to float, is the float
+  operation: double carries more than 2 × 24 + 2 significant bits, so rounding the exact result
+  to double and then to float is innocuous (Figueroa 1995);
+- `x op= c` with float x and such a constant is the float operation.
+
+A double intermediate used by a second operation, or a double kernel argument or buffer, stays
+an error (`double`).
+
 ## Features
 
 Each program's features (`float16_storage`, `int64`, `groups`, `math`, `scalar_arguments`, ...) come from its IR: `qpel_ir.Lowering.features()` reads its types and nodes. The launch plan and the build manifest record them, and the build enables exactly the matching support blocks of `backends/cuda.h` and `backends/metal.h` (`build_backends.FEATURE_DEFINES`); a backend profile adds what a feature needs on that target (`METAL_STANDARD`: bf16 needs Metal 3.1). Before 2026-11-11 the build searched the generated text for macro names; the switch left every generated source byte-identical.

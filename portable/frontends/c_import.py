@@ -19,6 +19,7 @@ from qpel_types import is_shared_view, view_element, shared_bytes, BITCASTS
 from . import clang_ast
 from .clang_ast import position
 from .facades import inline_facades
+from .demote import demote_unit
 
 IR_HEADER = {'format': 'qpel.ir', 'version': 1, 'semantics': 'qpel-portable-core-v1'}
 U32_MAX = 2**32 - 1
@@ -32,6 +33,15 @@ class Unsupported(ValueError):
         self.code = code
         self.location = f'{file}:{line}:{col}'
         super().__init__(f'{self.location}: [{code}] {message}')
+
+    def __reduce__(self):  # survives the trip back from a survey worker process
+        return (_unsupported, (self.code, self.location, self.args[0]))
+
+
+def _unsupported(code, location, text):
+    error = Unsupported(None, code, '')
+    error.location, error.args = location, (text,)
+    return error
 
 
 # --- types -----------------------------------------------------------------
@@ -563,6 +573,7 @@ class Importer:
     def __init__(self, unit, source, path, dialect, module, survey=False):
         self.dialect = DIALECT[dialect]
         inline_facades(unit)  # cub::BlockScan(storage).InclusiveSum(...) -> the function it forwards to
+        demote_unit(unit)  # T hy = 1. - ly; and the like: float arithmetic in double's clothes (demote.py)
         self.unit = unit
         self.sites = None  # launch sites of the original's host code, read when first needed
         self.extents = {}  # kernel -> {buffer parameter: shape parameter that sizes it}
@@ -598,6 +609,7 @@ class Importer:
         self.grid3d = False
         self.adaptations = []
         self.instances = {}  # clang id of a template instantiation -> its qpel function name
+        self.bool_params = set()  # clang ids of bool kernel arguments, passed as u32
         self.records = records(unit)  # struct name -> its clang record, for argument structs
         self.structs = {}  # struct name -> [(field, type term)] used by imported functions
         self.function_constants = {}  # clang id -> name of a Metal [[function_constant]] variable
@@ -627,6 +639,16 @@ class Importer:
                 self.header = True
                 decls.extend(self.attempt(lambda: self.top_level(node), []))
         self.header = False
+
+        def header_constants(nodes):  # `int const threadsPerBlock = 64;` in a library header
+            for node in nodes:
+                if node.get('kind') in ('NamespaceDecl', 'LinkageSpecDecl'):
+                    header_constants(node.get('inner', ()))
+                elif node.get('kind') == 'VarDecl' and id(node) not in main_ids and 'init' in node and node.get('inner'):
+                    t = describe(node['type']['qualType'])
+                    if t[0] == 'scalar' and t[1] in SCALAR_TERMS and 'const' in node['type']['qualType'].split():
+                        self.global_values.setdefault(node['id'], (node['name'], node['inner'][0]))
+        header_constants(unit.get('inner', ()))
         headers = [d['name'] for d in decls if d.get('_header')]
         if headers:
             self.adaptations.append('device functions from included headers were imported: ' + ', '.join(headers))
@@ -870,6 +892,7 @@ class Importer:
                         if (fname, name) in index:
                             union(index[(fname, name)], (callee, j))
         atomic_groups = {find(slot) for slot in atomic}
+        self.shared_slots, self.device_slots = self.pointer_spaces(index)
         types = {}
         for decl in self.decls:
             for i, p in enumerate(params_of(decl)):
@@ -880,10 +903,61 @@ class Importer:
                 types[(decl['name'], i)] = self.attempt(lambda: self.parameter_type(decl, i, p, find, atomic_groups))
         return types
 
+    def pointer_spaces(self, index):
+        """({(helper, i)}, {(helper, i)}): CUDA helper pointer parameters that calls pass shared memory
+        (a __shared__ array, a pointer into one, or such a parameter), and those they pass anything else.
+        CUDA spells both `T*`; qpel's helper parameter is shared<T> for the first."""
+        shared_decls = {n['id'] for n in walk(self.unit) if n.get('kind') == 'VarDecl' and 'CUDASharedAttr' in attributes(n)}
+        params = {(d['name'], i): p['id'] for d in self.decls for i, p in enumerate(params_of(d))}
+        shared, device = set(), set()
+
+        def base(arg):
+            try:
+                return base_of(arg)
+            except Unsupported:
+                return None  # a conversion qpel reports where the argument is read
+
+        def base_of(arg):
+            node = peel(arg)
+            while node.get('kind') == 'BinaryOperator' and node.get('opcode') in ('+', '-'):
+                left, right = node['inner']
+                node = peel(left if 'pointer' in (scalar_of(left), describe(left['type']['qualType'])[0]) else right)
+            if node.get('kind') == 'UnaryOperator' and node.get('opcode') == '&' and node.get('inner'):
+                node = peel(node['inner'][0])
+                while node.get('kind') == 'ArraySubscriptExpr':
+                    node = peel(node['inner'][0])
+            return node.get('referencedDecl', {}).get('id') if node.get('kind') == 'DeclRefExpr' else None
+        changed = True
+        while changed:  # shared through helpers that pass their own parameters on
+            changed = False
+            shared_ids = shared_decls | {params[s] for s in shared if s in params}
+            for decl in self.decls:
+                for node in walk(body_of(decl)):
+                    if node['kind'] != 'CallExpr':
+                        continue
+                    callee = self.callee(node)
+                    if callee not in self.functions or self.functions[callee][2]:
+                        continue
+                    for j, arg in enumerate(node['inner'][1:]):
+                        if describe(arg.get('type', {}).get('qualType', ''))[0] != 'pointer':
+                            continue
+                        slot = (callee, j)
+                        space = shared if base(arg) in shared_ids else device
+                        if slot not in space:
+                            space.add(slot)
+                            changed = True
+        return shared, device
+
     def parameter_type(self, decl, i, p, find, atomic_groups):
         t = describe(view_spelling(p))
+        slot = (decl['name'], i)
+        if t[0] == 'pointer' and not self.dialect.is_kernel(decl) and slot in getattr(self, 'shared_slots', ()) and \
+                slot in getattr(self, 'device_slots', ()):
+            raise Unsupported(p, 'parameter-type', f'{p["name"]} is passed shared memory at one call and device memory at '
+                                                   'another; a qpel helper parameter is one or the other')
         if t[0] == 'pointer' and ('threadgroup' in p['type']['qualType'].replace('*', ' ').split()
-                                  or 'qpel_shared_view<' in p['type']['qualType']) and not self.dialect.is_kernel(decl):
+                                  or 'qpel_shared_view<' in p['type']['qualType']
+                                  or slot in getattr(self, 'shared_slots', ())) and not self.dialect.is_kernel(decl):
             if t[2] not in SCALAR_TERMS - {'bool'} and not is_vector(t[2]):
                 raise Unsupported(p, 'parameter-type', f'parameter type {p["type"]["qualType"]} is not in qpel yet')
             return f'shared<{t[2]}>'  # a helper's view into the caller's group memory (IR version 5)
@@ -905,7 +979,12 @@ class Importer:
                 if self.views.setdefault(decl['name'], {}).setdefault(self.safe_name(p['name']), vector_length(t[2])) != vector_length(t[2]):
                     raise Unsupported(p, 'buffer-type', f'{p["name"]} is read as vectors of two lengths')
                 return type_buffer(vector_element(t[2]), 'read' if t[1] else 'write')
-            if t[2] not in SCALAR_TERMS or t[2] == 'bool':
+            if t[2] == 'bool':  # one byte per element on both platforms: a u8 buffer holding 0 or 1
+                message = f'{decl["name"]}: {p["name"]} (bool *) became a u8 buffer of 0 and 1'
+                if message not in self.adaptations:
+                    self.adaptations.append(message)
+                return type_buffer('u8', 'read' if t[1] else 'write')
+            if t[2] not in SCALAR_TERMS:
                 raise Unsupported(p, 'buffer-type', f'{p["type"]["qualType"]} buffers are not in qpel yet')
             if t[2] == 'u8' and not t[1] and p['name'] not in written_buffers(body_of(decl)):
                 self.adaptations.append(f'{decl["name"]}: {p["name"]} is never written, so it became read-only')
@@ -1112,6 +1191,13 @@ class Importer:
                     shape_param = p
                 elif count is not None and p['id'] == count['id'] or p['id'] in sized:
                     kind = 'shape3'
+                elif kind == 'bool':
+                    # `const bool aligned`: a u32 argument (0 or 1, as C passes it), read as `aligned != 0u`
+                    kind = 'u32'
+                    self.bool_params.add(p['id'])
+                    message = f'{name}: bool argument {p["name"]} became a u32 argument, read as {p["name"]} != 0'
+                    if message not in self.adaptations:
+                        self.adaptations.append(message)
                 elif not type_is_buffer(kind) and kind not in VALUE_TERMS and not is_struct(kind):
                     self.attempt(lambda: self.reject(Unsupported(
                         p, 'scalar-kernel-argument', 'kernel arguments can be integers or float')))
@@ -2068,6 +2154,22 @@ class Importer:
         while node['kind'] in ('ExprWithCleanups', 'ParenExpr'):
             node = node['inner'][0]
         kind = node['kind']
+        if kind == 'BinaryOperator' and node['opcode'] == ',':  # `a = x, b = y;`: one statement after the other
+            return add('Block', children={'statements': [self.expression_statement(x) for x in node['inner']]})
+        if kind == 'BinaryOperator' and node['opcode'] == '=':
+            inner = node['inner'][1]
+            while inner['kind'] in ('ImplicitCastExpr', 'ParenExpr') and inner.get('inner') and \
+                    inner.get('castKind') in (None, 'LValueToRValue', 'NoOp'):
+                inner = inner['inner'][0]
+            if inner['kind'] == 'BinaryOperator' and inner['opcode'] == '=' and \
+                    peel(inner['inner'][0])['kind'] == 'DeclRefExpr':
+                # `a = b = 0;`: b = 0, then a = b (the value b was given, converted to a's type)
+                first = self.expression_statement(inner)
+                then = add('Assign', children={'target': self.lvalue(node['inner'][0]),
+                                               'value': self.convert_types(self.expr(inner['inner'][0]),
+                                                                           scalar_of(inner['inner'][0]),
+                                                                           scalar_of(node['inner'][0]), node)})
+                return add('Block', children={'statements': [first, then]})
         if kind in ('BinaryOperator', 'CompoundAssignOperator', 'UnaryOperator') and node.get('opcode') in ('=', '++', '--') \
                 or kind == 'CompoundAssignOperator':
             if self.is_atomic_element(node['inner'][0]):
@@ -2318,6 +2420,11 @@ class Importer:
         kind = n['kind']
         if '_facade_error' in n:
             raise Unsupported(n, 'library', n['_facade_error'])
+        if kind == 'UnaryExprOrTypeTraitExpr':
+            value = integer_constant(n)
+            if value is None or scalar_of(n) not in INTEGER_TERMS:
+                raise Unsupported(n, 'expression', f'{n.get("name", "sizeof")} of this type is not in qpel')
+            return self.int_value(scalar_of(n), value)
         if kind == 'CXXScalarValueInitExpr' and scalar_of(n) in SCALAR_TERMS - {'bool'}:
             return self.zero(scalar_of(n))  # T(): zero
         if is_vector(scalar_of(n)) and (kind in ('InitListExpr', 'MetalVectorInitExpr', 'CXXConstructExpr')
@@ -2354,6 +2461,8 @@ class Importer:
                 raise Unsupported(n, 'unknown-name', f'{ref.get("name")} is not a parameter or local')
             if entry[0] == 'shared-scalar':
                 return add('Index', children={'base': self.name(entry[1]), 'index': self.int_value('u32', 0)})
+            if entry[0] == 'param' and ref['id'] in self.bool_params:
+                return add('Binary', {'operator': '!='}, {'left': self.name(entry[1]), 'right': self.int_value('u32', 0)})
             if entry[0] == 'local' and is_array(entry[2]):
                 raise Unsupported(n, 'array-use', f'local array {ref.get("name")} can only be indexed in qpel '
                                                   '(not passed, copied or used as a pointer)')
@@ -3270,6 +3379,12 @@ def constexpr_call(node, functions):
     return integer_constant(statements[0]['inner'][0])
 
 
+SIZEOF = {'char': 1, 'signed char': 1, 'unsigned char': 1, 'bool': 1, 'short': 2, 'unsigned short': 2,
+          'int': 4, 'unsigned int': 4, 'long': 8, 'unsigned long': 8, 'long long': 8, 'long long int': 8,
+          'unsigned long long': 8, 'unsigned long long int': 8, 'float': 4, 'double': 8, '__half': 2,
+          'half': 2}  # sizeof on both platforms (LP64)
+
+
 def integer_constant(node):
     """The value of an integer expression made only of literals, + - * and casts, with C's
     conversions applied (wrapping), or None."""
@@ -3284,6 +3399,9 @@ def integer_constant(node):
         return v - 2**size if signed and v >= 2**(size - 1) else v
     if kind == 'IntegerLiteral':
         return fit(int(n['value']))
+    if kind == 'UnaryExprOrTypeTraitExpr' and n.get('name') == 'sizeof' and 'argType' in n:
+        size = SIZEOF.get(' '.join(words(n['argType'].get('desugaredQualType', n['argType']['qualType']))))
+        return None if size is None else fit(size)
     if kind == 'SubstNonTypeTemplateParmExpr' and n.get('inner'):  # a template's int argument (width = 32)
         inner = integer_constant(n['inner'][-1])
         return None if inner is None else fit(inner)

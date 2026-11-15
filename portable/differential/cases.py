@@ -245,7 +245,68 @@ def hash3d_cases(plan, seed):
     return cases
 
 
-SPECIAL = {'scale_offset': scale_offset, 'sam2_cc': sam2_cc, 'grid_stride': grid_stride}
+def mmcv_roi_align(plan, seed, shapes=None):
+    """mmcv's RoIAlign forward: feature maps (N, C, H, W), RoIs (batch index, x1, y1, x2, y2) in image
+    coordinates (feature coordinates / spatial_scale), some partly or wholly outside the map and
+    some degenerate; max and average pooling, aligned or not, fixed or adaptive sampling. The
+    outputs start at zero, as mmcv allocates them (new_zeros)."""
+    rng = np.random.default_rng(seed)
+    configs = [  # (images, channels, height, width, rois, pooled h, pooled w, sampling, mode, aligned, scale)
+        (1, 1, 5, 7, 1, 2, 2, 2, 0, 0, 1.0),
+        (2, 3, 9, 6, 5, 3, 2, 0, 1, 1, 0.5),
+        (1, 4, 16, 16, 7, 7, 7, 2, 1, 0, 0.25),
+        (3, 2, 11, 13, 9, 2, 3, 0, 0, 1, 0.125),
+        (2, 8, 20, 17, 12, 4, 4, 1, 1, 1, 1.0 / 16),
+    ]
+    out = []
+    for n, c, h, w, k, ph, pw, sampling, mode, aligned, scale in configs:
+        boxes = np.empty((k, 5), np.float32)
+        boxes[:, 0] = rng.integers(0, n, k)
+        # most inside the map; one in four an edge case: partly or wholly outside, or degenerate
+        corner = rng.uniform(0, 1, (k, 2)) * [w - 1, h - 1]
+        size = rng.uniform(0.5, 1, (k, 2)) * ([w, h] - corner)
+        edge = rng.random(k) < 0.25
+        edge[0] = False  # the first RoI of every case lies inside
+        corner[edge] = rng.uniform(-3, max(w, h) + 3, (int(edge.sum()), 2))
+        size[edge] = rng.uniform(-2, max(w, h) / 2, (int(edge.sum()), 2))
+        boxes[:, 1:3] = corner / scale
+        boxes[:, 3:5] = (corner + size) / scale
+        count = k * c * ph * pw
+        shapes_ = {'pooled': (pw * ph, c, k), 'feature': (w, h, c * n), 'boxes': (k, 1, 1)}
+        inputs = {'input': rng.standard_normal(n * c * h * w).astype(np.float32), 'rois': boxes.reshape(-1),
+                  'output': np.zeros(count, np.float32), 'argmax_y': np.zeros(count, np.float32),
+                  'argmax_x': np.zeros(count, np.float32)}
+        values = {'nthreads': count, 'pooled_height': ph, 'pooled_width': pw, 'spatial_scale': scale,
+                  'sampling_ratio': sampling, 'pool_mode': mode, 'aligned': aligned, 'channels': c,
+                  'height': h, 'width': w}
+        out.append(Case(shapes_, inputs, values, f'{n}x{c}x{h}x{w} rois={k} {ph}x{pw} '
+                                                 f'{"max" if mode == 0 else "avg"}{" aligned" if aligned else ""}'))
+    return out
+
+
+def mmcv_nms(plan, seed, shapes=None):
+    """mmcv's NMS mask kernel: boxes (x1, y1, x2, y2) in clusters, so that many overlap, sorted as
+    the host sorts them (by score, here by a random score); counts around the 64-box blocks; both
+    IoU offsets mmcv uses (0 and 1). The mask starts at zero (the host's at::empty leaves the
+    words the kernel does not write undefined, and never reads them)."""
+    rng = np.random.default_rng(seed)
+    out = []
+    for n, threshold, offset in ((1, 0.5, 0), (5, 0.3, 1), (64, 0.5, 0), (65, 0.4, 0), (130, 0.6, 1), (300, 0.5, 0)):
+        centres = rng.uniform(0, 100, (max(1, n // 6), 2))
+        centre = centres[rng.integers(0, len(centres), n)] + rng.normal(0, 4, (n, 2))
+        size = rng.uniform(4, 30, (n, 2))
+        boxes = np.concatenate([centre - size / 2, centre + size / 2], axis=1).astype(np.float32)
+        boxes = boxes[np.argsort(-rng.random(n), kind='stable')]
+        blocks = (n + 63) // 64
+        out.append(Case({'boxes': (n, 1, 1), 'mask': (n * blocks, 1, 1)},
+                        {'dev_boxes': boxes.reshape(-1), 'dev_mask': np.zeros(n * blocks, np.uint64)},
+                        {'n_boxes': n, 'iou_threshold': threshold, 'offset': offset},
+                        f'{n} boxes iou>{threshold} offset {offset}'))
+    return out
+
+
+SPECIAL = {'scale_offset': scale_offset, 'sam2_cc': sam2_cc, 'grid_stride': grid_stride,
+           'mmcv_roi_align_forward': mmcv_roi_align, 'mmcv_nms': mmcv_nms}
 PREFIXES = {'trellis2_hashmap_': hashmap_cases, 'trellis2_hash3d_': hash3d_cases}  # families of corpus programs
 
 

@@ -136,6 +136,26 @@ def needs_threads(text):
                for token in BARRIERS)
 
 
+def included_text(source, include):
+    """The source with the library headers it includes (found next to it or in `include`, recursively):
+    a kernel's barriers may be in a header (mmcv's kernels are in .cuh files)."""
+    seen, texts, stack = set(), [], [Path(source)]
+    while stack:
+        path = stack.pop()
+        if path in seen or not path.is_file():
+            continue
+        seen.add(path)
+        text = path.read_text(errors='replace')
+        texts.append(text)
+        for name in re.findall(r'^\s*#\s*include\s*[<"]([^">]+)[">]', text, re.M):
+            for folder in [path.parent, *include]:
+                candidate = Path(folder)/name
+                if candidate.is_file():
+                    stack.append(candidate.resolve())
+                    break
+    return '\n'.join(texts)
+
+
 class Program:
     """A compiled simulator program for one source and one launch plan."""
 
@@ -178,6 +198,11 @@ class Program:
             device.write_bytes(bytes(text))
             include = [source.parent] + include
             source = device
+        if original and original.get('dialect') == 'cuda' and (self.work/'tree').is_dir():
+            # the same in the library's headers (their copy): launch-sized arrays of kernels not run here
+            for header in (self.work/'tree').rglob('*'):
+                if header.suffix in ('.cuh', '.h', '.hpp') and 'extern __shared__' in header.read_text(errors='replace'):
+                    header.write_text(sized_shared(header.read_text(), {}))
         if original and original.get('dialect') == 'cuda' and 'extern __shared__' in source.read_text(errors='replace'):
             # extern __shared__ T s[] gets its length from the launch (the third <<<>>> argument);
             # the simulator and the NVIDIA hosts run it as __shared__ T s[N], the length the import had.
@@ -186,7 +211,7 @@ class Program:
             include = [source.parent] + include
             source = sized
         self.source, self.include = source, include
-        self.threaded = needs_threads(source.read_text(errors='replace'))
+        self.threaded = needs_threads(included_text(source, include) if original else source.read_text(errors='replace'))
         self.main = self.work/self.MAIN
         self.main.write_text(self.program(source))
         self.binary = self.work/'simulate'

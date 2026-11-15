@@ -1,0 +1,100 @@
+{
+ "schema": 2,
+ "module": "mmcv_nms",
+ "resources": [
+  {
+   "name": "boxes",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "mask",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "n_boxes",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "iou_threshold",
+   "kind": "value",
+   "type": "f32",
+   "extent": null
+  },
+  {
+   "name": "offset",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "dev_boxes",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "boxes",
+   "scale": 4
+  },
+  {
+   "name": "dev_mask",
+   "kind": "inout",
+   "type": "buffer<u64, write>",
+   "extent": "mask"
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "nms_cuda",
+   "grid": "boxes",
+   "blockSize": 64,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "n_boxes",
+     "resource": "n_boxes"
+    },
+    {
+     "parameter": "iou_threshold",
+     "resource": "iou_threshold"
+    },
+    {
+     "parameter": "offset",
+     "resource": "offset"
+    },
+    {
+     "parameter": "dev_boxes",
+     "resource": "dev_boxes"
+    },
+    {
+     "parameter": "dev_mask",
+     "resource": "dev_mask"
+    }
+   ],
+   "domain": "groups",
+   "blockShape": [
+    64,
+    1,
+    1
+   ],
+   "groups": [
+    "(W + 63) / 64",
+    "(W + 63) / 64",
+    "1"
+   ]
+  }
+ ],
+ "features": [
+  "float_to_int",
+  "groups",
+  "int32",
+  "int64",
+  "math",
+  "scalar_arguments",
+  "subgroups",
+  "typed_buffers"
+ ]
+}
