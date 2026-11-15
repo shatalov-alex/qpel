@@ -62,7 +62,7 @@ def sources():
         options = {'kernels': program['kernels'], 'module': program['fixture'], 'values': program.get('values', {}),
                    'constants': program.get('constants'), 'geometry': program.get('geometry'),
                    'shapes': program.get('shapes'), 'inputs': program.get('inputs'), 'outputs': program.get('outputs'),
-                   'shared': program.get('shared'), 'defines': entry.get('defines', ())}
+                   'shared': program.get('shared'), 'defines': roundtrip.corpus_defines(entry)}
         out.append((program['fixture'], path, 'cuda' if path.suffix == '.cu' else 'metal', plan, include, {}, options))
     return out
 
@@ -191,7 +191,7 @@ def parallel(gpu=None, workers=None, chunk=6, metal_chunk=6):
         size = metal_chunk if path.suffix == '.metal' else chunk
         tasks += [group[i:i + size] for i in range(0, len(group), size)]
     tasks.sort(key=len, reverse=True)  # the long ones first
-    workers = workers or max(1, min(len(tasks), os.cpu_count() or 2))
+    workers = workers or max(1, min(len(tasks), (os.cpu_count() or 2) // 2, 4))  # memory: each may hold a 2 GB AST
     executor = ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context('spawn'))
     futures = {}
     for task in tasks:

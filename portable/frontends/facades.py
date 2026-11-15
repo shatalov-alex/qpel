@@ -25,11 +25,11 @@ def facade_methods(unit):
     """{clang id: CXXMethodDecl with a body} of the classes in the facade namespaces."""
     methods = {}
 
-    def visit(node, inside):
+    def visit(node, inside):  # (methods without a body are recorded too: declared, not supported)
         kind = node.get('kind')
         if kind == 'NamespaceDecl' and node.get('name') in FACADE_NAMESPACES:
             inside = True
-        if inside and kind == 'CXXMethodDecl' and any(c.get('kind') == 'CompoundStmt' for c in node.get('inner', ())):
+        if inside and kind == 'CXXMethodDecl':
             methods[node['id']] = node
         if kind in CONTAINERS:
             for child in node.get('inner', ()):
@@ -100,7 +100,10 @@ def inline_facades(unit):
             args = call['inner'][1:]
             if len(args) != len(params) or any(a.get('kind') == 'CXXDefaultArgExpr' for a in args):
                 return dict(call, _facade_error=f'{name}: default arguments are not in qpel\'s library subset')
-            body = next(c for c in method['inner'] if c.get('kind') == 'CompoundStmt')
+            body = next((c for c in method.get('inner', ()) if c.get('kind') == 'CompoundStmt'), None)
+            if body is None:
+                return dict(call, _facade_error=f'{name} with these arguments is not in qpel\'s CUB subset '
+                                                '(LIBRARIES.md)')
             statements = body.get('inner', ())
             if len(statements) != 1:
                 return dict(call, _facade_error=f'{name} is not a forwarding method of qpel\'s library headers')

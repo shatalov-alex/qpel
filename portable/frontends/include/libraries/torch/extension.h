@@ -13,12 +13,15 @@
 #include <limits>
 #include <string>
 #include <tuple>
+#include <unordered_map>
+#include <optional>
+#include <type_traits>
 #include <vector>
 
 namespace c10 {
 enum class ScalarType { Byte, Char, Short, Int, Long, Half, Float, Double, ComplexHalf, ComplexFloat, ComplexDouble,
                         Bool, QInt8, QUInt8, QInt32, BFloat16, UInt16 = 27, UInt32, UInt64, Undefined = 255 };
-enum class DeviceType : int8_t { CPU = 0, CUDA = 1, MPS = 13, Meta = 9 };
+enum class DeviceType : int8_t { CPU = 0, CUDA = 1, MPS = 13, Meta = 9, COMPILE_TIME_MAX_DEVICE_TYPES = 21 };
 enum class MemoryFormat : int8_t { Contiguous, Preserve, ChannelsLast, ChannelsLast3d };
 using Half = __half;
 using BFloat16 = __nv_bfloat16;
@@ -28,6 +31,9 @@ struct Device {
   DeviceType type() const;
   int8_t index() const;
   bool is_cuda() const;
+  bool has_index() const;
+  bool operator==(const Device&) const;
+  bool operator!=(const Device&) const;
   bool is_cpu() const;
 };
 template <typename T> struct ArrayRef {
@@ -42,17 +48,13 @@ template <typename T> struct ArrayRef {
   const T* begin() const;
   const T* end() const;
   std::vector<T> vec() const;
+  ArrayRef slice(size_t, size_t) const;
+  ArrayRef slice(size_t) const;
 };
 using IntArrayRef = ArrayRef<int64_t>;
-template <typename T> struct optional {
-  optional();
-  optional(const T&);
-  bool has_value() const;
-  const T& value() const;
-  explicit operator bool() const;
-  const T& operator*() const;
-  const T* operator->() const;
-};
+using SymInt = int64_t;
+using SymIntArrayRef = ArrayRef<int64_t>;
+template <typename T> using optional = std::optional<T>;  // as in PyTorch 2.x
 struct Scalar {
   Scalar(double);
   Scalar(int64_t);
@@ -67,6 +69,8 @@ using c10::ScalarType;
 using c10::DeviceType;
 using c10::Device;
 using c10::IntArrayRef;
+using c10::SymIntArrayRef;
+using c10::SymInt;
 using c10::Half;
 using c10::BFloat16;
 using c10::Scalar;
@@ -84,7 +88,7 @@ struct TensorOptions {
   TensorOptions();
   TensorOptions(ScalarType);
   TensorOptions(Device);
-  TensorOptions(DeviceType);
+  explicit TensorOptions(DeviceType);
   TensorOptions dtype(ScalarType) const;
   template <typename T> TensorOptions dtype() const;
   TensorOptions device(Device) const;
@@ -96,6 +100,29 @@ struct TensorOptions {
 };
 struct Tensor;
 struct TensorIndex;
+using TensorList = c10::ArrayRef<Tensor>;
+// Accessors (ATen/core/TensorAccessor.h), as device code indexes them.
+template <typename T> struct DefaultPtrTraits { typedef T* PtrType; };
+template <typename T> struct RestrictPtrTraits { typedef T* __restrict__ PtrType; };
+template <typename T, size_t N, template <typename> class Traits = DefaultPtrTraits, typename Index = int64_t>
+struct TensorAccessor {
+  __host__ __device__ TensorAccessor<T, N - 1, Traits, Index> operator[](Index) const;
+  __host__ __device__ Index size(Index) const;
+  __host__ __device__ Index stride(Index) const;
+  __host__ __device__ T* data() const;
+};
+template <typename T, template <typename> class Traits, typename Index> struct TensorAccessor<T, 1, Traits, Index> {
+  __host__ __device__ T& operator[](Index) const;
+  __host__ __device__ Index size(Index) const;
+  __host__ __device__ Index stride(Index) const;
+  __host__ __device__ T* data() const;
+};
+template <typename T, size_t N, template <typename> class Traits = DefaultPtrTraits, typename Index = int64_t>
+struct PackedTensorAccessor : TensorAccessor<T, N, Traits, Index> {};
+template <typename T, size_t N, template <typename> class Traits = DefaultPtrTraits>
+using PackedTensorAccessor32 = PackedTensorAccessor<T, N, Traits, int32_t>;
+template <typename T, size_t N, template <typename> class Traits = DefaultPtrTraits>
+using PackedTensorAccessor64 = PackedTensorAccessor<T, N, Traits, int64_t>;
 struct Tensor {
   Tensor();
   int64_t size(int64_t) const;
@@ -121,13 +148,16 @@ struct Tensor {
   template <typename T> T* mutable_data_ptr() const;
   void* mutable_data_ptr() const;
   template <typename T> const T* const_data_ptr() const;
+  const void* const_data_ptr() const;
+  SymIntArrayRef sym_sizes() const;
   template <typename T> T item() const;
   Scalar item() const;
   Tensor contiguous(MemoryFormat = MemoryFormat::Contiguous) const;
   Tensor to(ScalarType, bool = false, bool = false) const;
   Tensor to(Device, bool = false, bool = false) const;
   Tensor to(Device, ScalarType, bool = false, bool = false) const;
-  Tensor to(TensorOptions, bool = false, bool = false) const;
+  template <class O, class = typename std::enable_if<std::is_same<O, TensorOptions>::value>::type>
+  Tensor to(O, bool = false, bool = false) const;  // (a template: `.to({kCPU})` picks Device)
   Tensor cuda() const;
   Tensor cpu() const;
   Tensor clone() const;
@@ -170,18 +200,61 @@ struct Tensor {
   Tensor operator>(const Scalar&) const;
   template <typename T, size_t N> struct Accessor { T* data() const; };
   template <typename T, size_t N> Accessor<T, N> accessor() const;
+  template <typename T, size_t N, template <typename> class Traits = DefaultPtrTraits, typename Index = int64_t>
+  PackedTensorAccessor<T, N, Traits, Index> packed_accessor() const;
+  template <typename T, size_t N, template <typename> class Traits = DefaultPtrTraits>
+  PackedTensorAccessor<T, N, Traits, int32_t> packed_accessor32() const;
+  template <typename T, size_t N, template <typename> class Traits = DefaultPtrTraits>
+  PackedTensorAccessor<T, N, Traits, int64_t> packed_accessor64() const;
+  int64_t get_device() const;
+  Tensor t() const;
+  Tensor lt(const Scalar&) const;
+  Tensor gt(const Scalar&) const;
+  Tensor nonzero() const;
+  Tensor new_empty(IntArrayRef, TensorOptions = {}) const;
+  Tensor new_zeros(IntArrayRef, TensorOptions = {}) const;
+  Tensor masked_fill(const Tensor&, const Scalar&) const;
+  Tensor& masked_fill_(const Tensor&, const Scalar&);
+  Tensor sort(int64_t = -1, bool = false) const;
+  Tensor argsort(int64_t = -1, bool = false) const;
+  Tensor operator-() const;
+  Tensor operator~() const;
+  Tensor operator+(const Scalar&) const;
+  Tensor operator-(const Scalar&) const;
+  Tensor operator/(const Scalar&) const;
+  Tensor operator&(const Tensor&) const;
+  Tensor operator|(const Tensor&) const;
+  Tensor operator>=(const Scalar&) const;
+  Tensor operator<=(const Scalar&) const;
+  Tensor& operator+=(const Tensor&);
+  Tensor& operator*=(const Scalar&);
+  Tensor& add_(const Tensor&, const Scalar& = 1);
+  Tensor& mul_(const Scalar&);
+  Tensor& sub_(const Tensor&);
+  Tensor mm(const Tensor&) const;
+  Tensor view(ScalarType) const;
+  Tensor type_as(const Tensor&) const;
+  Tensor any(int64_t = 0, bool = false) const;
+  Tensor all(int64_t = 0, bool = false) const;
+  Tensor& index_fill_(int64_t, const Tensor&, const Scalar&);
+  MemoryFormat suggest_memory_format() const;
+  bool is_non_overlapping_and_dense() const;
+  Tensor& set_(const Tensor&);
+  Tensor index_add(int64_t, const Tensor&, const Tensor&) const;
 };
+struct indexing_Slice { indexing_Slice(); indexing_Slice(int64_t, int64_t = 0, int64_t = 1); };
 struct TensorIndex {
   TensorIndex(int64_t);
   TensorIndex(int);
   TensorIndex(const Tensor&);
   TensorIndex(const char*);
+  TensorIndex(indexing_Slice);
 };
 TensorOptions dtype(ScalarType);
 template <typename T> TensorOptions dtype();
 TensorOptions device(Device);
 TensorOptions device(DeviceType);
-Tensor empty(IntArrayRef, TensorOptions = {});
+Tensor empty(IntArrayRef, TensorOptions = {}, std::optional<MemoryFormat> = {});
 Tensor zeros(IntArrayRef, TensorOptions = {});
 Tensor ones(IntArrayRef, TensorOptions = {});
 Tensor full(IntArrayRef, const Scalar&, TensorOptions = {});
@@ -192,6 +265,11 @@ Tensor zeros_like(const Tensor&, TensorOptions = {});
 Tensor ones_like(const Tensor&, TensorOptions = {});
 Tensor full_like(const Tensor&, const Scalar&, TensorOptions = {});
 Tensor from_blob(void*, IntArrayRef, TensorOptions = {});
+Tensor rand(IntArrayRef, TensorOptions = {});
+Tensor sparse_coo_tensor(const Tensor&, const Tensor&, IntArrayRef, TensorOptions = {});
+template <class... A> Tensor sparse_coo_tensor(const Tensor&, const Tensor&, IntArrayRef, A&&...);
+Tensor randint(int64_t, IntArrayRef, TensorOptions = {});
+Tensor randn(IntArrayRef, TensorOptions = {});
 Tensor cat(std::initializer_list<Tensor>, int64_t = 0);
 Tensor cat(const std::vector<Tensor>&, int64_t = 0);
 Tensor stack(const std::vector<Tensor>&, int64_t = 0);
@@ -200,13 +278,85 @@ Tensor index_select(const Tensor&, int64_t, const Tensor&);
 Tensor where(const Tensor&, const Tensor&, const Tensor&);
 Tensor clamp(const Tensor&, const Scalar&, const Scalar&);
 std::tuple<Tensor, Tensor> sort(const Tensor&, int64_t = -1, bool = false);
+std::tuple<Tensor, Tensor, Tensor> unique_dim(const Tensor&, int64_t, bool = true, bool = false, bool = false);
+std::tuple<Tensor, Tensor> _unique(const Tensor&, bool = true, bool = false);
+Tensor& mm_out(Tensor&, const Tensor&, const Tensor&);
+Tensor mm(const Tensor&, const Tensor&);
+Tensor matmul(const Tensor&, const Tensor&);
+Tensor nonzero(const Tensor&);
+Tensor sum(const Tensor&, int64_t, bool = false);
+Device device_of(const Tensor&);
+namespace cuda {
+template <typename T> __host__ __device__ T ATenCeilDiv(T a, T b) { return (a + b - 1) / b; }
+inline void MaybeSetDevice(int) {}
+}
 std::tuple<Tensor, Tensor> unique_consecutive(const Tensor&, bool = false, bool = false);
 std::tuple<Tensor, Tensor, Tensor> _unique2(const Tensor&, bool = true, bool = false, bool = false);
-namespace indexing { struct Slice { Slice(); Slice(int64_t, int64_t = 0, int64_t = 1); }; extern const char* None; }
+namespace indexing { using Slice = indexing_Slice; extern const char* None; }
+}  // namespace at
+
+namespace c10 {
+using DeviceIndex = int8_t;
+template <class C> int64_t multiply_integers(const C&);
+std::string DeviceTypeName(DeviceType, bool = false);
+template <class T> bool operator==(ArrayRef<T>, ArrayRef<T>);
+template <class T> bool operator!=(ArrayRef<T>, ArrayRef<T>);
+using std::nullopt;
+using std::nullopt_t;
+namespace cuda {
+namespace CUDACachingAllocator { void* raw_alloc(size_t); void* raw_alloc_with_stream(size_t, cudaStream_t); void raw_delete(void*); }
+inline void MaybeSetDevice(int) {} inline DeviceIndex current_device() { return 0; } inline DeviceIndex device_count() { return 1; } }
+// c10/util/irange.h
+template <class T> struct integer_range { struct iterator { T v; T operator*() const { return v; } iterator& operator++() { ++v; return *this; } bool operator!=(iterator o) const { return v != o.v; } }; T b, e; iterator begin() const { return {b}; } iterator end() const { return {e}; } };
+template <class T> integer_range<T> irange(T end) { return {T(0), end}; }
+template <class T, class U> integer_range<T> irange(T begin, U end) { return {begin, T(end)}; }
+template <class T> struct intrusive_ptr { T* operator->() const; T& operator*() const; T* get() const; };
+template <class T, class... A> intrusive_ptr<T> make_intrusive(A&&...);
+template <class T> struct List { size_t size() const; T get(size_t) const; };
+// ATen/core/dispatch/Dispatcher.h: calling a registered operator (host code).
+template <class Sig> struct TypedOperatorHandle { template <class... A> auto call(A&&...) const; };
+struct OperatorHandle { template <class Sig> TypedOperatorHandle<Sig> typed() const; };
+struct Dispatcher { static Dispatcher& singleton(); OperatorHandle findSchemaOrThrow(const char*, const char*); };
+struct IValue {
+  IValue();
+  template <class T> IValue(T&&);
+  template <class T> T to() const;
+  at::Tensor toTensor() const;
+  bool isNone() const;
+  bool isTensor() const;
+  int64_t toInt() const;
+  double toDouble() const;
+  bool toBool() const;
+  std::vector<at::Tensor> toTensorVector() const;
+  template <class T> c10::List<T> toList() const;
+  template <class T> c10::intrusive_ptr<T> toCustomClass() const;
+};
+}
+
+namespace at {
+template <class T> using opmath_type = T;  // ATen/OpMathType.h (float stays float; half math is float)
+struct GradMode { static bool is_enabled(); static void set_enabled(bool); };
+struct AutoGradMode { AutoGradMode(bool); };
+struct NoGradGuard {};
+using c10::DeviceTypeName;
 }  // namespace at
 
 namespace torch {
 using namespace at;
+namespace autograd {
+struct AutogradContext {
+  template <class... T> void save_for_backward(T&&...);
+  std::vector<Tensor> get_saved_variables() const;
+  std::unordered_map<std::string, c10::IValue> saved_data;
+  void mark_non_differentiable(const std::vector<Tensor>&);
+  void set_materialize_grads(bool);
+  bool needs_input_grad(size_t) const;
+};
+template <class T> struct Function { template <class... A> static auto apply(A&&...); };
+using variable_list = std::vector<Tensor>;
+}  // namespace autograd
+struct CustomClassHolder { virtual ~CustomClassHolder() = default; };  // torch/custom_class.h
+template <class T> struct class_ { class_(const std::string&, const std::string&); };
 using at::Tensor;
 }  // namespace torch
 
@@ -219,6 +369,9 @@ using at::Tensor;
 #define AT_ERROR(...) ((void)0)
 #define C10_CUDA_KERNEL_LAUNCH_CHECK() ((void)0)
 #define C10_CUDA_CHECK(expression) ((void)(expression))
+#define C10_CUDA_CHECK_WARN(expression) ((void)(expression))
+#define AT_CUDA_CHECK(expression) ((void)(expression))
+#define C10_CUDA_KERNEL_LAUNCH_CHECK_() ((void)0)
 
 // Type dispatch: the stand-in instantiates float (and the half types where the real macro
 // adds them). The real macros also instantiate double, which Metal cannot run.
@@ -229,6 +382,13 @@ using at::Tensor;
 #define AT_DISPATCH_FLOATING_TYPES_AND2(E1, E2, TYPE, NAME, ...) AT_PRIVATE_CASE(float, __VA_ARGS__)
 #define AT_DISPATCH_INTEGRAL_TYPES(TYPE, NAME, ...) AT_PRIVATE_CASE(int, __VA_ARGS__)
 #define AT_DISPATCH_ALL_TYPES(TYPE, NAME, ...) AT_PRIVATE_CASE(float, __VA_ARGS__)
+#define AT_DISPATCH_ALL_TYPES_AND(E1, TYPE, NAME, ...) AT_PRIVATE_CASE(float, __VA_ARGS__)
+#define AT_DISPATCH_ALL_TYPES_AND2(E1, E2, TYPE, NAME, ...) AT_PRIVATE_CASE(float, __VA_ARGS__)
+#define AT_DISPATCH_ALL_TYPES_AND3(E1, E2, E3, TYPE, NAME, ...) AT_PRIVATE_CASE(float, __VA_ARGS__)
+#define AT_DISPATCH_ALL_TYPES_AND_COMPLEX(TYPE, NAME, ...) AT_PRIVATE_CASE(float, __VA_ARGS__)
+#define AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND2(E1, E2, TYPE, NAME, ...) AT_PRIVATE_CASE(float, __VA_ARGS__)
+#define AT_DISPATCH_FLOATING_TYPES_AND3(E1, E2, E3, TYPE, NAME, ...) AT_PRIVATE_CASE(float, __VA_ARGS__)
+#define AT_DISPATCH_INDEX_TYPES(TYPE, NAME, ...) [&] { using index_t = int64_t; return __VA_ARGS__(); }()
 
 namespace pybind11 {
 struct module_ {

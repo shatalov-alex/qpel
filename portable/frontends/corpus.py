@@ -13,6 +13,7 @@ the result changes, so progress (or a regression) is always a visible diff:
     python3 -m frontends.corpus --messages # every blocker message, most frequent first
     python3 -m frontends.corpus --check    # fail if the result differs (check_all runs this)
 """
+import os
 import argparse
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
@@ -26,6 +27,15 @@ from .c_import import Importer
 HERE = Path(__file__).resolve().parents[1]
 CORPUS = HERE/'corpus'
 COVERAGE = CORPUS/'coverage.json'
+# Parallel surveys: each may hold a source's AST (clang_ast.UNIT_LIMIT, about 4 GB in Python), so at
+# most three at once (one per core took all of a 48 GB Mac's memory on the extension sources).
+UNPARSED = '(source does not parse)'  # coverage.json key of a source clang rejects
+SURVEY_WORKERS = int(os.environ.get('QPEL_SURVEY_WORKERS', 2))
+
+
+def build_defines(entry):
+    """An entry's macros and language standard, as clang_ast.flags reads them."""
+    return list(entry.get('defines', ())) + ([f'-std={entry["standard"]}'] if entry.get('standard') else [])
 
 
 def entries():
@@ -37,8 +47,14 @@ def survey(entry):
     path = CORPUS/entry['source']
     dialect = clang_ast.dialect_of(path)
     unit, source = clang_ast.parse(path, dialect, [CORPUS/folder for folder in entry.get('include', ())],
-                                   entry.get('defines', ()))
-    return Importer(unit, source, path, dialect, path.stem, survey=True).survey()
+                                   build_defines(entry))
+    found = Importer(unit, source, path, dialect, path.stem, survey=True).survey()
+    for skipped in unit.get('_skipped', ()):  # too large to read (clang_ast.DECLARATION_LIMIT)
+        if skipped['kernel'] and not skipped['system']:
+            found.setdefault(skipped['name'], {'kind': 'kernel', 'calls': [], 'issues': [{
+                'code': 'ast-too-large', 'at': f'{path}:0:0',
+                'message': 'its instantiations make more JSON AST than qpel reads at once'}]})
+    return found
 
 
 def kernels(functions):
@@ -71,8 +87,13 @@ def source_messages(entry):
 
 
 def source_coverage(entry, details=False):
-    """{kernel: blockers}: their codes (what coverage.json records), or with locations."""
-    found = kernels(survey(entry))
+    """{kernel: blockers}: their codes (what coverage.json records), or with locations. A source clang
+    cannot parse with qpel's stand-in headers is {UNPARSED: ['parse at <first error>']}, kernels unknown."""
+    try:
+        found = kernels(survey(entry))
+    except clang_ast.SourceError as error:
+        first = next((line for line in str(error).splitlines() if 'error:' in line), str(error).splitlines()[-1])
+        found = {UNPARSED: ['parse at ' + first.split('error: ', 1)[-1][:200]]}
     if details:
         return found
     return {k: sorted({b.split(' ')[0] for b in blockers}) for k, blockers in found.items()}
@@ -86,9 +107,27 @@ def coverage(details=False, dialect=None):
     """{source: {kernel: blocker codes}} for the whole corpus (with details, 'code at function:line');
     sources are surveyed in parallel. dialect ('cuda' or 'metal') limits it to that dialect's sources."""
     listed = [e for e in entries() if not dialect or clang_ast.dialect_of(CORPUS/e['source']) == dialect]
-    with ProcessPoolExecutor() as pool:
+    with ProcessPoolExecutor(SURVEY_WORKERS) as pool:
         found = list(pool.map(source_details if details else source_coverage, listed))
     return {entry['source']: result for entry, result in zip(listed, found)}
+
+
+def per_repository(result):
+    """{repository (the source's first folder): (importable kernels, kernels)}, the headline numbers."""
+    out = {}
+    for source, found in result.items():
+        ok, count = out.get(source.split('/')[0], (0, 0))
+        found = {k: b for k, b in found.items() if k != UNPARSED}  # its kernels are not known
+        out[source.split('/')[0]] = (ok + sum(not b for b in found.values()), count + len(found))
+    return out
+
+
+def unparsed(result):
+    """{repository: sources clang could not parse}."""
+    out = Counter()
+    for source, found in result.items():
+        out[source.split('/')[0]] += UNPARSED in found
+    return out
 
 
 def report(result):
@@ -98,12 +137,19 @@ def report(result):
     for source, found in result.items():
         lines.append(source)
         for kernel, blockers in found.items():
+            if kernel == UNPARSED:
+                lines.append(f'  does not parse: {blockers[0][9:] if blockers[0].startswith("parse at ") else blockers[0]}')
+                continue
             total += 1
             importable += not blockers
             codes = sorted({b.split(' ')[0] for b in blockers})  # works for codes and for details
             blocked_by.update(codes)
             lines.append(f'  {"ok     " if not blockers else "blocked"} {kernel}' + (f': {", ".join(codes)}' if codes else ''))
     lines.append(f'{importable} of {total} kernels importable')
+    lines.append('per repository:')
+    for repo, (ok, count) in sorted(per_repository(result).items()):
+        failed = unparsed(result)[repo]
+        lines.append(f'  {repo:16} {ok:4} of {count:4}' + (f'  ({failed} sources do not parse)' if failed else ''))
     sized = sum(1 for found in result.values() for blockers in found.values()
                 if blockers and {b.split(' ')[0] for b in blockers} == {'dynamic-shared'})
     if sized:
@@ -135,14 +181,14 @@ def main(argv=None):
                                             kernels=program['kernels'], module=program['fixture'], plan=program_plan(program),
                                             constants=program.get('constants'), geometry=program.get('geometry'),
                                             shared=program.get('shared'),
-                                            resources=program.get('resources'), defines=entry.get('defines', ()))
+                                            resources=program.get('resources'), defines=build_defines(entry))
                 folder = fixtures/program['fixture']
                 folder.mkdir(exist_ok=True)
                 (folder/'program.qpel.json').write_text(json.dumps(imported, indent=2) + '\n')
                 print('wrote', folder.relative_to(HERE))
         return 0
     if args.messages:
-        with ProcessPoolExecutor() as pool:
+        with ProcessPoolExecutor(SURVEY_WORKERS) as pool:
             total = sum(pool.map(source_messages, entries()), Counter())
         for (code, message), count in total.most_common():
             print(f'{count:5} {code:22} {message}')

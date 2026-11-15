@@ -30,8 +30,14 @@ def metal_available():
     return subprocess.run(['xcrun', '--find', 'metal'], capture_output=True).returncode == 0
 
 
+def flags(defines):
+    """Compiler flags for a source's build settings: macros (`NAME` or `NAME=value`) and a language
+    standard written `-std=c++20` (a corpus entry's "standard"), which overrides the default."""
+    return [d if d.startswith('-std=') else '-D' + d for d in defines]
+
+
 def command(path, dialect, include=(), defines=()):
-    extra = [arg for folder in include for arg in ('-I', str(folder))] + ['-D' + d for d in defines]
+    extra = [arg for folder in include for arg in ('-I', str(folder))] + flags(defines)
     if dialect == 'cuda':
         return ['clang', '-std=c++17', '-x', 'cuda', '--cuda-host-only', '-nocudainc', '-nocudalib',
                 '-I', str(INCLUDE), '-I', str(INCLUDE/'libraries'), '-I', str(INCLUDE/'qpel_cub'), *extra,
@@ -77,21 +83,49 @@ def last_location(text, state):
         state[key] = value
 
 
+DECLARATION_LIMIT = int(os.environ.get('QPEL_AST_DECLARATION_MB', 1024)) << 20  # JSON one top-level declaration may have
+UNIT_LIMIT = int(os.environ.get('QPEL_AST_UNIT_MB', 1024)) << 20  # kept JSON for a whole source (about 10x in Python)
+
+
 def read_unit(stream):
     """The translation unit from clang's JSON dump, without system-header declarations.
 
     clang prints one top-level declaration per 4-space-indented block, and writes a
     location's file and line only when they change, so each kept declaration gets
-    the file and line in effect before it ('_seed', used by annotate)."""
+    the file and line in effect before it ('_seed', used by annotate).
+
+    Memory is bounded: a declaration whose JSON passes DECLARATION_LIMIT is read past without
+    being kept and named in unit['_skipped'] (mamba's host launcher: nested BOOL_SWITCH lambdas
+    make 100 GB of JSON for one function), and a source whose kept JSON passes UNIT_LIMIT is
+    refused (SourceError), so that importing never takes the machine's memory."""
     head, decls, chunk, state, started = [], [], None, {'file': None, 'line': None}, False
+    size, kept, skipped, oversized = 0, 0, [], None
     for line in stream:
-        if chunk is None:
+        if chunk is None and oversized is None:
             if line == '    {\n':
-                chunk, started = [line], True
+                chunk, started, size = [line], True, len(line)
             elif not started:
                 head.append(line)
             continue
+        if oversized is not None:  # streamed past: only the locations it writes are followed
+            last_location(line, state)
+            if oversized['name'] is None and line.startswith('      "name": '):
+                oversized['name'] = line.split('"')[3]
+            if line in ('    },\n', '    }\n'):
+                skipped.append({'name': oversized['name'] or '?', 'kernel': oversized['kernel'] or '"kind": "CUDAGlobalAttr"' in line,
+                                'system': is_system(oversized['file'])})
+                oversized = None
+            continue
         chunk.append(line)
+        size += len(line)
+        if size > DECLARATION_LIMIT:
+            text = ''.join(chunk)
+            name = re.search(r'^      "name": "([^"]*)"', text, re.M)
+            last_location(text, state)
+            oversized = {'name': name.group(1) if name else None, 'kernel': '"kind": "CUDAGlobalAttr"' in text,
+                         'file': state['file']}
+            chunk = None
+            continue
         if line in ('    },\n', '    }\n'):
             text = ''.join(chunk)
             before = dict(state)
@@ -99,12 +133,18 @@ def read_unit(stream):
             last_location(text[:text.find('"range"')], at)
             last_location(text, state)
             if not is_system(at['file']):
+                kept += len(text)
+                if kept > UNIT_LIMIT:
+                    raise SourceError(f'the source\'s AST passes {UNIT_LIMIT >> 20} MB of JSON; qpel does not read it '
+                                      'whole (template instantiations multiply it)')
                 decl = json.loads(text.rstrip().rstrip(','))
                 decl['_seed'] = before
                 decls.append(decl)
             chunk = None
     unit = json.loads(re.sub(r',\s*"inner": \[\s*$', '', ''.join(head)) + '}')
     unit['inner'] = decls
+    unit['_skipped'] = skipped
+    unit['_kept_bytes'] = kept
     return unit
 
 
@@ -139,6 +179,10 @@ def _parse(path, dialect, include, defines=()):
                 unit = read_unit(process.stdout)
             except json.JSONDecodeError:
                 unit = None
+            except SourceError as error:  # too large to read: stop clang, say which source
+                process.kill()
+                process.wait()
+                raise SourceError(f'{path}: {error}') from None
         process.wait()
         errors.seek(0)
         stderr = errors.read()

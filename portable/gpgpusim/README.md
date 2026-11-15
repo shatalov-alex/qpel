@@ -109,7 +109,8 @@ predicate as 1 for true, but GPGPU-Sim's predicate registers hold a zero flag (0
 shuffles never read that predicate (they compare lanes with `setp`), so the self-test and every
 fixture passed; CUB's scans and reductions are inline PTX that do (`shfl.sync.up.b32 r0|p ...;
 @p add.f32 r0, r0, x;`), and a 256-thread `cub::BlockScan` gave wrong sums from lane 8 on. The
-self-test now runs that PTX (an inclusive sum of ones over a warp). The same line is in #156.
+self-test now runs that PTX (an inclusive sum of ones over a warp). #156 has the fix as a third
+commit (2026-11-15).
 
 Timing (performance) mode still aborts on shuffles, before and after the fixes
 (`bitset::test` out of range in `shader_core_ctx::execute`); qpel runs functional mode only.

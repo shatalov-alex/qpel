@@ -36,6 +36,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 from . import matrix  # noqa: E402
 from .simulate import Program  # noqa: E402
+from frontends import clang_ast  # noqa: E402
 
 IMAGE = 'qpel/gpgpu-sim:dev-4195dd4-qpel13'  # change the tag whenever gpgpusim/ changes
 DOCKERFILE = HERE/'gpgpusim'
@@ -54,7 +55,7 @@ cd /opt/gpgpu-sim && source setup_environment release > /dev/null || exit 1
 set -u
 export PTX_SIM_MODE_FUNC=${PTX_SIM_MODE_FUNC:-1}
 build() {
-  cd "$1" && nvcc -std=c++17 -O2 -cudart shared -gencode arch=$ARCH,code=$ARCH -w $(cat nvcc.args) \
+  cd "$1" && nvcc $(grep -q -- -std= nvcc.args || echo -std=c++17) -O2 -cudart shared -gencode arch=$ARCH,code=$ARCH -w $(cat nvcc.args) \
     main.cu -o program > build.log 2>&1 && touch built
 }
 run() {
@@ -84,7 +85,7 @@ class GpuProgram(Program):
     def build(self):
         args = [] if self.fmad else ['-fmad=false']
         args += [arg for folder in self.include for arg in ('-I', str(folder))]
-        args += ['-D' + d for d in (self.original or {}).get('defines', ())]  # macros the original's build sets
+        args += clang_ast.flags((self.original or {}).get('defines', ()))  # macros and standard the original's build sets
         # The importer's library stand-ins (PyTorch, ATen, c10, pybind11, cuBLAS), for extensions;
         # they hold no CUDA runtime headers, so NVIDIA's own stay in force.
         args += ['-I', str(HERE/'frontends/include/libraries')]

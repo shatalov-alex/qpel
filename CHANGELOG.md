@@ -84,12 +84,23 @@ older programs keep building.
   template arguments of kernels it calls back (`(cub::BlockScanAlgorithm)0`), `T()` and local
   `typedef`s.
 
+- **Extensions corpus:** mamba (`selective_scan`), pytorch_sparse, mmcv (`ops/csrc`) and gsplat (with glm),
+  unmodified at pinned commits with licences and `SHA256SUMS`; the coverage report gives each repository
+  its own number (mmcv 65/473, gsplat 2/206, pytorch_sparse 2/22, mamba 0/480; 228/1900 overall).
+  Corpus entries can set a language standard (`"standard"`). The PyTorch, CUDA, cooperative-groups and
+  libcu++ stand-ins cover what these libraries include; a source clang still rejects is recorded as such.
+  Kernels in a library's headers count when the source's host code launches them.
+
 ### Fixed
+- **Importing is memory-bounded.** A survey of the extension sources ran one clang per core and read
+  each AST whole; mamba's host launcher alone is 100 GB of JSON, and the Mac ran out of memory and
+  restarted. clang's JSON is now streamed with limits per declaration and per source (oversized
+  declarations are skipped and reported as `ast-too-large`), and surveys run two sources at once.
 - A CUDA `__shared__` scalar (`__shared__ float carry;`) was imported as each thread's own local;
   it is now group memory (`shared<T, 1>`). No earlier corpus program had one.
 - GPGPU-Sim image `qpel13`: the shuffle fix of `qpel12` wrote the in-range predicate of
   `shfl.sync d|p` inverted (GPGPU-Sim's predicates are zero flags), which CUB's inline PTX reads;
-  the self-test now checks it. The same line is in upstream PR #156.
+  the self-test now checks it. Also pushed to upstream PR #156 as a third commit.
 - The CPU simulator compiles originals whose other kernels have launch-sized `extern __shared__`
   arrays, and calls kernels whose template arguments name a namespace.
 - Metal kernels instantiated from templates got numbered names (`kernel_argsort_f32_i32_0`)

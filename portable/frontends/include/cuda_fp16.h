@@ -6,6 +6,7 @@ struct __half {
   __half() = default;
   __host__ __device__ __half(float);
   __device__ operator float() const;
+  __host__ __device__ explicit operator __half() const { return *this; }  // c10::Half's own conversion, called by name
 };
 __device__ __half __float2half_rn(float);
 __device__ __half __float2half(float);
@@ -35,3 +36,7 @@ __device__ unsigned short __half_as_ushort(__half);
 __device__ __half2 operator+(__half2, __half2);
 __device__ __half2 operator*(__half2, __half2);
 __device__ __half2& operator+=(__half2&, __half2);
+__device__ __half __float2half_ru(float);
+__device__ __half& operator+=(__half&, __half);
+__device__ __half operator+(__half, __half);
+__device__ __half operator*(__half, __half);

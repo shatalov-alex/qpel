@@ -17,5 +17,9 @@ driver API, cooperative groups, PyTorch/ATen/c10, pybind11, cuBLAS, and qpel's C
 when it changes. Multi-file vendored trees (`llama.cpp/`, `trellis2/`) carry a `SHA256SUMS`
 for every file, headers included, checked by `tests/test_corpus.py`. See IMPORT.md, "Real-source corpus and coverage".
 
+Repositories: SAM 2, llama.cpp, TRELLIS.2 (o-voxel), and the extensions corpus: mamba, pytorch_sparse,
+mmcv and gsplat (`python3 -m frontends.corpus` reports each). Entries may give `defines` and a
+`standard` (`c++20`) their real build uses.
+
 Entries may pin single kernels as `programs` (one kernel imported on its own, its
 fixture, argument rules for the behaviour rows); see IMPORT.md.

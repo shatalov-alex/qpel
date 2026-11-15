@@ -9,6 +9,7 @@
 #define __constant__ __attribute__((constant))
 #define __launch_bounds__(...) __attribute__((launch_bounds(__VA_ARGS__)))
 #define __forceinline__ __attribute__((always_inline)) inline
+#define __grid_constant__
 struct uint3 { unsigned int x, y, z; };
 static constexpr int warpSize = 32;  // a constant on every NVIDIA GPU so far
 // Vector types (vector_types.h in the SDK), as plain aggregates.
@@ -26,6 +27,10 @@ struct short2 { short x, y; };
 struct ushort2 { unsigned short x, y; };
 struct double2 { double x, y; };
 struct longlong2 { long long x, y; };
+struct longlong3 { long long x, y, z; };
+struct longlong4 { long long x, y, z, w; };
+struct double3 { double x, y, z; };
+struct double4 { double x, y, z, w; };
 inline __host__ __device__ int2 make_int2(int x, int y) { return {x, y}; }
 inline __host__ __device__ int3 make_int3(int x, int y, int z) { return {x, y, z}; }
 inline __host__ __device__ int4 make_int4(int x, int y, int z, int w) { return {x, y, z, w}; }
@@ -119,6 +124,7 @@ __device__ float exp2f(float);
 __device__ float log2f(float);
 __device__ float truncf(float);
 __device__ float expf(float);
+__device__ void sincosf(float, float*, float*);
 __device__ float logf(float);
 __device__ float sinf(float);
 __device__ float cosf(float);
@@ -205,3 +211,133 @@ extern "C" __device__ void __assert_rtn(const char*, const char*, int, const cha
 extern "C" __device__ void __assert_fail(const char*, const char*, unsigned, const char*);
 enum cudaMemcpyKind { cudaMemcpyHostToHost = 0, cudaMemcpyHostToDevice = 1, cudaMemcpyDeviceToHost = 2, cudaMemcpyDeviceToDevice = 3, cudaMemcpyDefault = 4 };
 enum cudaFuncAttribute { cudaFuncAttributeMaxDynamicSharedMemorySize = 8 };
+// The runtime's typed overload (C++ linkage, so outside the C declarations).
+template <class F> cudaError_t cudaFuncSetAttribute(F*, int, int);
+// Read-only cache loads (sm_35+): the value at p.
+template <class T> __device__ T __ldg(const T* p);
+// nvcc's cuda_runtime.h brings in these C headers.
+#include <float.h>
+#include <assert.h>
+// Host overloads of the integer min/max the device code has (CUDA's math headers declare both).
+__host__ int min(int, int);
+__host__ int max(int, int);
+__host__ unsigned int min(unsigned int, unsigned int);
+__host__ unsigned int max(unsigned int, unsigned int);
+__host__ long long min(long long, long long);
+__host__ long long max(long long, long long);
+// float overloads of the C++ math functions (device code calls abs(x) on a scalar_t).
+__device__ float abs(float);
+__device__ double __longlong_as_double(long long);
+__device__ long long __double_as_longlong(double);
+__host__ __device__ double2 make_double2(double, double);
+__host__ __device__ double4 make_double4(double, double, double, double);
+__host__ __device__ longlong4 make_longlong4(long long, long long, long long, long long);
+cudaError_t cudaLaunchKernel(const void*, dim3, dim3, void**, size_t, cudaStream_t);
+// Device overloads of the <cmath> float functions (CUDA's math headers have them; -nocudainc drops
+// them): declared once, globally, and brought into std as the real headers do.
+__device__ float asin(float);
+__device__ float acos(float);
+__device__ float atan(float);
+__device__ float sin(float);
+__device__ float cos(float);
+__device__ float tan(float);
+__device__ float sqrt(float);
+__device__ float exp(float);
+__device__ float log(float);
+__device__ float fabs(float);
+__device__ float floor(float);
+__device__ float ceil(float);
+__device__ float round(float);
+__device__ float tanh(float);
+__device__ float exp2(float);
+__device__ float log2(float);
+__device__ float atan2(float, float);
+__device__ float pow(float, float);
+__device__ float fmin(float, float);
+__device__ float fmax(float, float);
+__device__ float hypot(float, float);
+__device__ bool isnan(float);
+__device__ bool isinf(float);
+__device__ bool isfinite(float);
+namespace std {
+using ::asin; using ::acos; using ::atan; using ::sin; using ::cos; using ::tan; using ::sqrt; using ::exp; using ::log; using ::fabs; using ::floor; using ::ceil; using ::round; using ::tanh; using ::exp2; using ::log2; using ::atan2; using ::pow; using ::fmin; using ::fmax; using ::hypot; using ::isnan; using ::isinf; using ::isfinite; using ::abs;
+template <class T> __device__ constexpr const T& min(const T&, const T&);
+template <class T> __device__ constexpr const T& max(const T&, const T&);
+template <class T> __device__ constexpr const T& clamp(const T&, const T&, const T&);
+#if __cplusplus < 202002L
+template <class T> struct type_identity { using type = T; };  // C++20, which these libraries build with
+#endif
+}  // namespace std
+__host__ __device__ ushort2 make_ushort2(unsigned short, unsigned short);
+__device__ float fmod(float, float);
+// The float math functions of CUDA's device library, each declared once more (repeats are harmless).
+__device__ float sqrtf(float);
+__device__ float rsqrtf(float);
+__device__ float cbrtf(float);
+__device__ float rcbrtf(float);
+__device__ float sinf(float);
+__device__ float cosf(float);
+__device__ float tanf(float);
+__device__ float asinf(float);
+__device__ float acosf(float);
+__device__ float atanf(float);
+__device__ float sinhf(float);
+__device__ float coshf(float);
+__device__ float tanhf(float);
+__device__ float asinhf(float);
+__device__ float acoshf(float);
+__device__ float atanhf(float);
+__device__ float expf(float);
+__device__ float exp2f(float);
+__device__ float exp10f(float);
+__device__ float expm1f(float);
+__device__ float logf(float);
+__device__ float log2f(float);
+__device__ float log10f(float);
+__device__ float log1pf(float);
+__device__ float fabsf(float);
+__device__ float floorf(float);
+__device__ float ceilf(float);
+__device__ float roundf(float);
+__device__ float rintf(float);
+__device__ float truncf(float);
+__device__ float erff(float);
+__device__ float erfcf(float);
+__device__ float erfinvf(float);
+__device__ float lgammaf(float);
+__device__ float tgammaf(float);
+__device__ float __expf(float);
+__device__ float __logf(float);
+__device__ float __sinf(float);
+__device__ float __cosf(float);
+__device__ float __saturatef(float);
+__device__ float atan2f(float, float);
+__device__ float powf(float, float);
+__device__ float fminf(float, float);
+__device__ float fmaxf(float, float);
+__device__ float fmodf(float, float);
+__device__ float hypotf(float, float);
+__device__ float copysignf(float, float);
+__device__ float remainderf(float, float);
+__device__ float fdimf(float, float);
+__device__ float __powf(float, float);
+__device__ float __fdividef(float, float);
+__device__ float fmaf(float, float, float);
+__device__ float norm3df(float, float, float);
+__device__ float rnorm3df(float, float, float);
+__device__ int __float2int_rn(float);
+template <class T> __device__ T atomicAdd_system(T*, T);
+namespace cuda {  // libcu++ <cuda/cmath>
+template <class T, class U> __host__ __device__ constexpr T ceil_div(T a, U b) { return (a + T(b) - 1) / T(b); }
+}
+#if __cplusplus < 202002L
+namespace std { template <class T> constexpr int bit_width(T x) { int n = 0; while (x) { x >>= 1; ++n; } return n; } }  // C++20
+#endif
+struct ushort4 { unsigned short x, y, z, w; };
+cudaError_t cudaMallocAsync(void**, size_t, cudaStream_t);
+cudaError_t cudaFreeAsync(void*, cudaStream_t);
+__device__ int __popcll(unsigned long long);
+__device__ int __clzll(long long);
+__device__ int __ffsll(long long);
+cudaError_t cudaMallocHost(void**, size_t);
+cudaError_t cudaFreeHost(void*);

@@ -248,7 +248,12 @@ def rows(fixtures=None):
         yield (f'{dialect} -> qpel', f'corpus/{entry["source"]} {",".join(program["kernels"])}',
                check(fixture(program['fixture']), source, program_plan(program), validate, include, program['kernels'], program['fixture'],
                      program.get('constants'), program.get('geometry'), program.get('resources'), program.get('shared'),
-                     entry.get('defines', ())))
+                     corpus_defines(entry)))
+
+
+def corpus_defines(entry):
+    from .corpus import build_defines
+    return build_defines(entry)
 
 
 def program_plan(program):

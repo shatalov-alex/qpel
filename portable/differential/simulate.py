@@ -28,6 +28,7 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
+from frontends import clang_ast  # noqa: E402
 from qpel_types import buffer_length, NUMPY_DTYPES, element, is_buffer, is_struct, normalize_plan, pack_struct, term  # noqa: E402
 
 INCLUDE = HERE/'include'
@@ -201,7 +202,7 @@ class Program:
                                 '-fsanitize=undefined', *threads,
                                 '-fno-sanitize-recover=all', '-w', '-I', str(INCLUDE),
                                 *[arg for folder in self.include for arg in ('-I', str(folder))],
-                                *['-D' + d for d in (self.original or {}).get('defines', ())],
+                                *clang_ast.flags((self.original or {}).get('defines', ())),
                                 # The importer's library stand-ins (PyTorch, ATen, c10, pybind11, cuBLAS).
                                 '-I', str(IMPORT_INCLUDE), '-I', str(CUB_INCLUDE),
                                 str(self.main), '-o', str(self.binary)], capture_output=True, text=True, timeout=180)

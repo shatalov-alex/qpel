@@ -2759,6 +2759,8 @@ class Importer:
             return add(kind, children=children)
         if callee in self.rejected:
             raise Unsupported(n, 'call-rejected', f'{callee} could not be imported, see its own blockers')
+        if callee in {s['name'] for s in self.unit.get('_skipped', ())}:
+            raise Unsupported(n, 'ast-too-large', f'{callee} makes more JSON AST than qpel reads at once (clang_ast)')
         raise Unsupported(n, 'call', f'{callee} is not a qpel operation or a function in this file')
 
     def metal_exchange(self, n, args):
@@ -3160,10 +3162,26 @@ def reachable_functions(unit, main, dialect):
         def mine(n):
             if n.get('kind') == 'FunctionDecl' and not dialect.is_host(n):
                 start.append(n['id'])
+            elif n.get('kind') == 'FunctionDecl' and body_of(n) is not None:
+                # host code of this file: the kernels it launches (`k<<<g, b>>>(...)`), wherever they are
+                # defined (PyTorch extensions keep kernels in .cuh headers and launch them from the .cu)
+                for call in walk(body_of(n)):
+                    if call.get('kind') == 'CUDAKernelCallExpr' and call.get('inner'):
+                        callee = call['inner'][0]
+                        while callee.get('kind') in ('ImplicitCastExpr', 'ParenExpr', 'CStyleCastExpr') and callee.get('inner'):
+                            callee = callee['inner'][0]
+                        if callee.get('kind') == 'DeclRefExpr' and callee['referencedDecl'].get('kind') == 'FunctionDecl':
+                            start.append(callee['referencedDecl']['id'])
             for c in n.get('inner', ()):
                 if c.get('kind') in ('FunctionDecl', 'FunctionTemplateDecl', 'NamespaceDecl', 'LinkageSpecDecl'):
                     mine(c)
         mine(node)
+    if any(not skipped['system'] for skipped in unit.get('_skipped', ())):
+        # a declaration of this source was too large to read (clang_ast.DECLARATION_LIMIT), such as mamba's
+        # host launcher: the kernels instantiated in the library's own headers are the ones it launched
+        # (system headers never reach the unit: clang_ast.read_unit drops them)
+        start += [i for i, f in functions.items() if dialect.is_kernel(f)
+                  and any(c.get('kind') == 'TemplateArgument' for c in f.get('inner', ()))]
     seen, stack = set(), start
     while stack:
         ident = stack.pop()
