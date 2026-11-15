@@ -13,7 +13,7 @@ python3 -m fuzz --nvidia                    # random programs, also on GPGPU-Sim
 python3 check_all.py --gpu --nvidia         # all of it, with the other checks
 ```
 
-The image (`qpel/gpgpu-sim:dev-4195dd4-qpel12`, from this folder's Dockerfile on the
+The image (`qpel/gpgpu-sim:dev-4195dd4-qpel13`, from this folder's Dockerfile on the
 CUDA 12.6 devel image `nvcc_check.py` uses) is built on first use and takes about a
 minute. It is built and tested natively on arm64 (Apple silicon, Docker Desktop). On
 x86-64 the upstream build flags are kept, but that build is untested. Change the tag in
@@ -103,6 +103,14 @@ shuffle result from GPGPU-Sim could be trusted before image `qpel12`.
 
 The self-test checks idx, bfly, down and up in 3 blocks of 2 warps. llama.cpp `argmax_f32`
 passes for the original and qpel's CUDA. The pull request has the same two changes, one commit each, reformatted with clang-format.
+**Fixed (2026-11-15), image `qpel13`:** the first fix gave `shfl.sync d|p` its in-range
+predicate as 1 for true, but GPGPU-Sim's predicate registers hold a zero flag (0 is true, as
+`setp_impl` writes them), so `@p` after a shuffle ran exactly where it should not. nvcc's own
+shuffles never read that predicate (they compare lanes with `setp`), so the self-test and every
+fixture passed; CUB's scans and reductions are inline PTX that do (`shfl.sync.up.b32 r0|p ...;
+@p add.f32 r0, r0, x;`), and a 256-thread `cub::BlockScan` gave wrong sums from lane 8 on. The
+self-test now runs that PTX (an inclusive sum of ones over a warp). The same line is in #156.
+
 Timing (performance) mode still aborts on shuffles, before and after the fixes
 (`bitset::test` out of range in `shader_core_ctx::execute`); qpel runs functional mode only.
 

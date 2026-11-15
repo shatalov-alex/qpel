@@ -247,7 +247,8 @@ def rows(fixtures=None):
         dialect = 'cuda' if source.suffix == '.cu' else 'metal'
         yield (f'{dialect} -> qpel', f'corpus/{entry["source"]} {",".join(program["kernels"])}',
                check(fixture(program['fixture']), source, program_plan(program), validate, include, program['kernels'], program['fixture'],
-                     program.get('constants'), program.get('geometry'), program.get('resources'), program.get('shared')))
+                     program.get('constants'), program.get('geometry'), program.get('resources'), program.get('shared'),
+                     entry.get('defines', ())))
 
 
 def program_plan(program):
@@ -273,10 +274,11 @@ def reimport(program):
 
 
 def check(original, source, plan, validate, include=(), kernels=None, module=None, constants=None, geometry=None,
-          resources=None, shared=None):
+          resources=None, shared=None, defines=()):
     try:
         program, _ = import_source(source, plan=plan, include=include, kernels=kernels, module=module,
-                                   constants=constants, geometry=geometry, resources=resources, shared=shared)
+                                   constants=constants, geometry=geometry, resources=resources, shared=shared,
+                                   defines=defines)
         validate(program)
     except ValueError as error:
         return str(error)

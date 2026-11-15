@@ -17,6 +17,7 @@ WORKDIR /opt/gpgpu-sim
 # are local so far. qpel-shfl.patch (2026-11-14, upstream as #156): warp shuffles. shfl.sync with a d|p destination,
 # as CUDA 12 emits it, lost its value (every shuffle read 0), and in functional mode every warp
 # used warp 0's threads (getExecuteWarp did not set the warp id that shfl_impl and mma read).
+# 2026-11-15: its in-range predicate is a zero flag (0 is true), which CUB's inline PTX reads.
 COPY qpel-fixes.patch qpel-shfl.patch /tmp/
 RUN git apply /tmp/qpel-fixes.patch && git apply /tmp/qpel-shfl.patch
 RUN bash -c 'set -eo pipefail; export CUDA_INSTALL_PATH=/usr/local/cuda; source setup_environment release; \

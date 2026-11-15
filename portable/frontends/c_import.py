@@ -18,6 +18,7 @@ from qpel_types import arithmetic as type_arithmetic, element as element_of, is_
 from qpel_types import is_shared_view, view_element, shared_bytes, BITCASTS
 from . import clang_ast
 from .clang_ast import position
+from .facades import inline_facades
 
 IR_HEADER = {'format': 'qpel.ir', 'version': 1, 'semantics': 'qpel-portable-core-v1'}
 U32_MAX = 2**32 - 1
@@ -561,6 +562,7 @@ class Graph:
 class Importer:
     def __init__(self, unit, source, path, dialect, module, survey=False):
         self.dialect = DIALECT[dialect]
+        inline_facades(unit)  # cub::BlockScan(storage).InclusiveSum(...) -> the function it forwards to
         self.unit = unit
         self.sites = None  # launch sites of the original's host code, read when first needed
         self.extents = {}  # kernel -> {buffer parameter: shape parameter that sizes it}
@@ -692,6 +694,21 @@ class Importer:
                     out.append('?')
         return out
 
+    def spelled_arguments(self, use, template):
+        """template_arguments for calling the instance from C++: an enum value (clang's JSON gives only
+        the number) is cast to its parameter's type, `(cub::BlockScanAlgorithm)0`."""
+        params = [p for p in template.get('inner', ()) if p.get('kind') in
+                  ('TemplateTypeParmDecl', 'NonTypeTemplateParmDecl', 'TemplateTemplateParmDecl')]
+        out = self.template_arguments(use)
+        if any(p.get('isParameterPack') for p in params) or len(params) != len(out):
+            return out
+        for i, p in enumerate(params):
+            kind = describe(p.get('type', {}).get('qualType', ''))
+            if p['kind'] == 'NonTypeTemplateParmDecl' and kind[0] == 'scalar' and kind[1] not in SCALAR_TERMS \
+                    and re.fullmatch(r'-?[0-9]+', out[i]):
+                out[i] = f'({p["type"]["qualType"]}){out[i]}'
+        return out
+
     def host_name(self, decl):
         """The name a Metal explicit instantiation gives a kernel: [[host_name("...")]]."""
         for c in decl.get('inner', ()):
@@ -738,7 +755,8 @@ class Importer:
             if len(uses) == 1 and not self.host_name(uses[0]):
                 arguments = ', '.join(self.template_arguments(uses[0]))
                 self.adaptations.append(f'template {node["name"]} is used only with <{arguments}> and was imported for it')
-                self.qualified[node['name']] = f'{self.namespace}{node["name"]}<{portable_spelling(arguments)}>'
+                self.qualified[node['name']] = (f'{self.namespace}{node["name"]}'
+                                                f'<{portable_spelling(", ".join(self.spelled_arguments(uses[0], node)))}>')
                 return self.top_level(uses[0], qualified=False)
             # Each instantiation is its own function: qpel has no templates.
             out = []
@@ -753,7 +771,8 @@ class Importer:
                 instance = dict(use, name=name)
                 imported = self.attempt(lambda: self.top_level(instance, qualified=False), [])
                 if imported:
-                    self.qualified[name] = self.host_name(use) or f'{self.namespace}{node["name"]}<{portable_spelling(", ".join(arguments))}>'
+                    spelled = ', '.join(self.spelled_arguments(use, node))
+                    self.qualified[name] = self.host_name(use) or f'{self.namespace}{node["name"]}<{portable_spelling(spelled)}>'
                 out.extend(imported)
             self.adaptations.append(f'template {node["name"]} became {len(uses)} functions, one per instantiation: '
                                     + ', '.join(self.instances[u['id']] for u in uses))
@@ -1666,6 +1685,8 @@ class Importer:
         return [s for d in node['inner'] for s in self.local(d)]
 
     def local(self, decl):
+        if decl['kind'] in ('TypedefDecl', 'TypeAliasDecl', 'UsingDecl', 'UsingDirectiveDecl') or decl.get('_qpel_facade'):
+            return []  # local type names are read where they are used; a library facade object is inlined
         if decl['kind'] != 'VarDecl':
             raise Unsupported(decl, 'declaration', decl['kind'] + ' inside a function is not supported')
         name = decl['name']
@@ -1682,7 +1703,8 @@ class Importer:
         if t[0] == 'pointer' and t[2] in SCALAR_TERMS - {'bool'} and \
                 not {'threadgroup', 'constant', 'thread'} & set(decl['type']['qualType'].replace('*', ' ').split()):
             return self.buffer_local(decl, name, type_buffer(t[2], 'read' if t[1] else 'write'))
-        array = LOCAL_ARRAY.fullmatch(decl['type']['qualType'].strip())
+        array = LOCAL_ARRAY.fullmatch(decl['type']['qualType'].strip()) or \
+            LOCAL_ARRAY.fullmatch(decl['type'].get('desugaredQualType', '').strip())  # BlockScanT::TempStorage
         if array:
             return self.array_local(decl, name, array)
         unsized = re.fullmatch(r'(.+?)\s*\[\]', decl['type']['qualType'].strip())
@@ -1690,6 +1712,12 @@ class Importer:
             return self.dynamic_shared_local(decl, name, describe(unsized.group(1)))
         if t[0] == 'scalar' and is_vector(t[1]):
             return self.vector_local(decl, name, t[1])
+        if t[0] == 'scalar' and t[1] in SCALAR_TERMS - {'bool'} and (
+                'CUDASharedAttr' in attributes(decl) or 'threadgroup' in decl['type']['qualType'].split()):
+            # `__shared__ float carry;`: one value for the group, a shared<T, 1> read and written at [0]
+            out = self.shared_local(decl, name, t, 1)
+            self.scope[decl['id']] = ('shared-scalar', self.scope[decl['id']][1], t[1])
+            return out
         if t[0] == 'scalar' and t[1] in self.records:
             raise Unsupported(decl, 'local-type', f'local {name}: struct locals are not in qpel yet')
         if t[0] != 'scalar' or t[1] not in SCALAR_TERMS:
@@ -2089,6 +2117,9 @@ class Importer:
             entry = self.typed(self.scope.get(core['referencedDecl']['id']), node)
             if entry and entry[0] in ('param', 'local'):
                 return self.graph.add('Name', links={'declaration': entry[1]})
+            if entry and entry[0] == 'shared-scalar':
+                return self.graph.add('Index', children={'base': self.graph.add('Name', links={'declaration': entry[1]}),
+                                                         'index': self.int_value('u32', 0)})
             raise Unsupported(node, 'assign-target', 'cannot assign to ' + core['referencedDecl'].get('name', '?'))
         if core['kind'] == 'ArraySubscriptExpr':
             if self.vector_element_ref(core):
@@ -2285,6 +2316,10 @@ class Importer:
     def core(self, n, statement, address):
         add = self.graph.add
         kind = n['kind']
+        if '_facade_error' in n:
+            raise Unsupported(n, 'library', n['_facade_error'])
+        if kind == 'CXXScalarValueInitExpr' and scalar_of(n) in SCALAR_TERMS - {'bool'}:
+            return self.zero(scalar_of(n))  # T(): zero
         if is_vector(scalar_of(n)) and (kind in ('InitListExpr', 'MetalVectorInitExpr', 'CXXConstructExpr')
                                         or self.vector_load_base(n) is not None):
             return self.vector_value(n, scalar_of(n))
@@ -2317,6 +2352,8 @@ class Importer:
                 if ref.get('name') in ('threadIdx', 'blockIdx', 'blockDim', 'gridDim'):
                     raise Unsupported(n, 'thread-builtin', 'only blockIdx.x * blockDim.x + threadIdx.x is supported')
                 raise Unsupported(n, 'unknown-name', f'{ref.get("name")} is not a parameter or local')
+            if entry[0] == 'shared-scalar':
+                return add('Index', children={'base': self.name(entry[1]), 'index': self.int_value('u32', 0)})
             if entry[0] == 'local' and is_array(entry[2]):
                 raise Unsupported(n, 'array-use', f'local array {ref.get("name")} can only be indexed in qpel '
                                                   '(not passed, copied or used as a pointer)')
@@ -3299,7 +3336,7 @@ def assigned_decls(body):
 
 
 def import_source(path, dialect=None, module=None, plan=None, block_size=64, include=(), kernels=None,
-                  constants=None, geometry=None, resources=None, shared=None):
+                  constants=None, geometry=None, resources=None, shared=None, defines=()):
     """Import every kernel and device function in `path`. Returns (program, report).
 
     `plan` is an optional launch plan (the pipeline.json qpel writes); without one,
@@ -3314,7 +3351,7 @@ def import_source(path, dialect=None, module=None, plan=None, block_size=64, inc
     original's host sets at the launch."""
     path = Path(path)
     dialect = dialect or clang_ast.dialect_of(path)
-    unit, source = clang_ast.parse(path, dialect, include)
+    unit, source = clang_ast.parse(path, dialect, include, defines)  # defines: macros the original's build sets
     module = module or (plan or {}).get('module') or path.stem
     if not is_identifier(module):
         raise ValueError(f'{module!r} cannot be a qpel module name; pass one explicitly')
@@ -3331,7 +3368,7 @@ def import_source(path, dialect=None, module=None, plan=None, block_size=64, inc
               'adaptations': importer.adaptations, 'warnings': unguarded_kernels(program),
               'qualified': {k: importer.qualified[k] for k in importer.arguments}, 'arguments': importer.arguments,
               'host_spans': importer.host_spans, 'header_host_bodies': importer.header_host_bodies,
-              'shared': dict(importer.shared_lengths)}
+              'shared': dict(importer.shared_lengths), 'defines': list(defines)}
     return program, report
 
 

@@ -1,7 +1,7 @@
 # Changelog
 
 Notable changes to qpel, by milestone. Dates are when the milestone was reached on `main`.
-The IR has its own version (currently 6), recorded in every program and launch plan;
+The IR has its own version (currently 7), recorded in every program and launch plan;
 older programs keep building.
 
 ## [Unreleased] — Phase 5
@@ -69,8 +69,29 @@ older programs keep building.
   compare-and-swap, re-run every iteration of the loop they control. A capped counter and a
   modular sum written that way pass on the Metal-on-CPU runner and the Apple GPU (the unmodified
   original and qpel's Metal) and on the CUDA simulator (qpel's CUDA).
+- **CUB block scans and reductions** (LIBRARIES.md): `cub::BlockScan` (raking, raking-memoize and
+  warp-scans algorithms; inclusive and exclusive sums and scans, with or without the block total)
+  and `cub::BlockReduce` (`Sum`, `Reduce`, full or partial tiles) with `cub::Sum`, `Max` and
+  `Min`, one int, unsigned int or float per thread. qpel's own `<cub/cub.cuh>` writes them as
+  library functions in CUB 2.5's order of operations; the importer inlines each method call
+  (`frontends/facades.py`) and imports the functions. `tests/cub_blocks.cu` agrees bit for bit with
+  NVIDIA's CUB on GPGPU-Sim (56 runs) and with qpel's CUDA and Metal; llama.cpp's
+  `cumsum_cub_kernel` passes on the CPU simulator, the Apple GPU and GPGPU-Sim (coverage 159/719).
+- **Barriers in helper functions (IR version 7):** `qpel.barrier()` may be in a helper that Groups
+  kernels call; the uniformity check covers the helper and its calls. `barrier_count` stays in
+  kernels.
+- Corpus entries may set the macros their real build sets (`"defines"`); the importer reads enum
+  template arguments of kernels it calls back (`(cub::BlockScanAlgorithm)0`), `T()` and local
+  `typedef`s.
 
 ### Fixed
+- A CUDA `__shared__` scalar (`__shared__ float carry;`) was imported as each thread's own local;
+  it is now group memory (`shared<T, 1>`). No earlier corpus program had one.
+- GPGPU-Sim image `qpel13`: the shuffle fix of `qpel12` wrote the in-range predicate of
+  `shfl.sync d|p` inverted (GPGPU-Sim's predicates are zero flags), which CUB's inline PTX reads;
+  the self-test now checks it. The same line is in upstream PR #156.
+- The CPU simulator compiles originals whose other kernels have launch-sized `extern __shared__`
+  arrays, and calls kernels whose template arguments name a namespace.
 - Metal kernels instantiated from templates got numbered names (`kernel_argsort_f32_i32_0`)
   instead of their `host_name` after the first non-ASCII character of ggml-metal.metal: the
   importer sliced the file by clang's byte offsets as characters. 471 kernel names changed.

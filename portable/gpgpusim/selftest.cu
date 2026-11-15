@@ -81,6 +81,18 @@ __global__ void shuffles(unsigned* out) {
   o[2] = __shfl_down_sync(0xffffffffu, v, 4);
   o[3] = __shfl_up_sync(0xffffffffu, v, 4);
 }
+// The predicate of shfl.sync d|p (whether the source lane was in range), which hand-written PTX
+// such as CUB's scans reads: an inclusive sum of ones over a warp, steps 1, 2, 4, 8, 16.
+__global__ void shuffle_predicates(unsigned* out) {
+  unsigned x = 1u, mask = 0xffffffffu, c = 0u;
+  for (unsigned offset = 1u; offset < 32u; offset *= 2u) {
+    unsigned y;
+    asm volatile("{ .reg .u32 r0; .reg .pred p; shfl.sync.up.b32 r0|p, %1, %2, %3, %4; @p add.u32 r0, r0, %1; mov.u32 %0, r0; }"
+                 : "=r"(y) : "r"(x), "r"(offset), "r"(c), "r"(mask));
+    x = y;
+  }
+  out[blockIdx.x * blockDim.x + threadIdx.x] = x;
+}
 int main() {
   int failures = 0;
   { // warp shuffles, 3 blocks of 2 warps
@@ -94,6 +106,14 @@ int main() {
         printf("SELFTEST FAIL %s: thread %d gives %u, want %u\n", names[m], t, h[t * 4 + m], want[m]);
         ++failures; break;
       }
+    }
+  }
+  { // shfl.sync predicates: lane t's inclusive sum of ones is t + 1
+    static unsigned h[64]; unsigned* d; cudaMalloc(&d, sizeof h);
+    shuffle_predicates<<<1, 64>>>(d); cudaDeviceSynchronize(); cudaMemcpy(h, d, sizeof h, cudaMemcpyDeviceToHost);
+    for (int t = 0; t < 64; ++t) if (h[t] != (t & 31u) + 1u) {
+      printf("SELFTEST FAIL shfl.sync predicate: thread %d gives %u, want %u\n", t, h[t], (t & 31u) + 1u);
+      ++failures; break;
     }
   }
   { // barrier reductions, in each of 4 blocks

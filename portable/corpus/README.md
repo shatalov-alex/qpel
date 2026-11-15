@@ -4,8 +4,10 @@ Unmodified third-party GPU sources, used to measure how much real code qpel can
 import. Each entry in `corpus.json` records where the file came from, its licence
 and its SHA-256; the licence files sit next to the sources. Clang parses them offline
 against the importer's declaration-only stand-ins (`frontends/include/` and its `pytorch/`: CUDA runtime and
-driver API, cooperative groups, PyTorch/ATen/c10, pybind11, cuBLAS); `include/` is for
-stand-ins only one corpus library needs.
+driver API, cooperative groups, PyTorch/ATen/c10, pybind11, cuBLAS, and qpel's CUB subset in
+`qpel_cub/`, LIBRARIES.md); `include/` is for stand-ins only one corpus library needs. An entry's
+`defines` are macros its real build sets (llama.cpp's `GGML_CUDA_USE_CUB`, which ggml derives from
+`CUDART_VERSION`); they reach clang, the CPU simulator and nvcc.
 
     python3 -m frontends.corpus             # coverage report (run in portable/)
     python3 -m frontends.corpus --details   # every blocker with its location

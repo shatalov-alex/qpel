@@ -37,7 +37,7 @@ sys.path.insert(0, str(HERE))
 from . import matrix  # noqa: E402
 from .simulate import Program  # noqa: E402
 
-IMAGE = 'qpel/gpgpu-sim:dev-4195dd4-qpel12'  # change the tag whenever gpgpusim/ changes
+IMAGE = 'qpel/gpgpu-sim:dev-4195dd4-qpel13'  # change the tag whenever gpgpusim/ changes
 DOCKERFILE = HERE/'gpgpusim'
 # Programs GPGPU-Sim cannot run correctly yet, for the original and qpel's CUDA alike, while
 # the CPU simulator and the Apple GPU agree (gpgpusim/README.md, Open). Real NVIDIA hardware
@@ -84,6 +84,7 @@ class GpuProgram(Program):
     def build(self):
         args = [] if self.fmad else ['-fmad=false']
         args += [arg for folder in self.include for arg in ('-I', str(folder))]
+        args += ['-D' + d for d in (self.original or {}).get('defines', ())]  # macros the original's build sets
         # The importer's library stand-ins (PyTorch, ATen, c10, pybind11, cuBLAS), for extensions;
         # they hold no CUDA runtime headers, so NVIDIA's own stay in force.
         args += ['-I', str(HERE/'frontends/include/libraries')]

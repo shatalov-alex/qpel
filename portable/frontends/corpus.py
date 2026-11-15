@@ -36,7 +36,8 @@ def survey(entry):
     """{function: {'kind', 'issues', 'calls'}} for one corpus source."""
     path = CORPUS/entry['source']
     dialect = clang_ast.dialect_of(path)
-    unit, source = clang_ast.parse(path, dialect, [CORPUS/folder for folder in entry.get('include', ())])
+    unit, source = clang_ast.parse(path, dialect, [CORPUS/folder for folder in entry.get('include', ())],
+                                   entry.get('defines', ()))
     return Importer(unit, source, path, dialect, path.stem, survey=True).survey()
 
 
@@ -134,7 +135,7 @@ def main(argv=None):
                                             kernels=program['kernels'], module=program['fixture'], plan=program_plan(program),
                                             constants=program.get('constants'), geometry=program.get('geometry'),
                                             shared=program.get('shared'),
-                                            resources=program.get('resources'))
+                                            resources=program.get('resources'), defines=entry.get('defines', ()))
                 folder = fixtures/program['fixture']
                 folder.mkdir(exist_ok=True)
                 (folder/'program.qpel.json').write_text(json.dumps(imported, indent=2) + '\n')

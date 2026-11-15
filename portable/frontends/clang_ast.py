@@ -30,11 +30,11 @@ def metal_available():
     return subprocess.run(['xcrun', '--find', 'metal'], capture_output=True).returncode == 0
 
 
-def command(path, dialect, include=()):
-    extra = [arg for folder in include for arg in ('-I', str(folder))]
+def command(path, dialect, include=(), defines=()):
+    extra = [arg for folder in include for arg in ('-I', str(folder))] + ['-D' + d for d in defines]
     if dialect == 'cuda':
         return ['clang', '-std=c++17', '-x', 'cuda', '--cuda-host-only', '-nocudainc', '-nocudalib',
-                '-I', str(INCLUDE), '-I', str(INCLUDE/'libraries'), *extra,
+                '-I', str(INCLUDE), '-I', str(INCLUDE/'libraries'), '-I', str(INCLUDE/'qpel_cub'), *extra,
                 # clang's cuda_wrappers/new uses ::malloc/::free, which -nocudainc no longer declares;
                 # libc++'s <new> happens to (macOS), libstdc++'s does not (Linux).
                 '-include', 'stdlib.h',
@@ -112,26 +112,27 @@ _CACHE = {}  # (path, mtime, dialect, include) -> (unit, text); the importer nev
 _CACHE_SIZE = 4
 
 
-def parse(path, dialect, include=()):
+def parse(path, dialect, include=(), defines=()):
     """Return (translation unit, source text). Locations are annotated, see annotate().
 
     `include` lists extra header folders, such as stubs for a library the source includes.
     Declarations from system headers are left out (see SYSTEM). The last few results are
     kept: importing several kernels of one library file parses it once."""
     path = Path(path)
-    key = (str(path.resolve()), path.stat().st_mtime_ns, dialect, tuple(str(Path(f).resolve()) for f in include))
+    key = (str(path.resolve()), path.stat().st_mtime_ns, dialect, tuple(str(Path(f).resolve()) for f in include),
+           tuple(defines))
     if key in _CACHE:
         return _CACHE[key]
-    result = _parse(path, dialect, include)
+    result = _parse(path, dialect, include, tuple(defines))
     if len(_CACHE) >= _CACHE_SIZE:
         _CACHE.pop(next(iter(_CACHE)))
     _CACHE[key] = result
     return result
 
 
-def _parse(path, dialect, include):
+def _parse(path, dialect, include, defines=()):
     with tempfile.TemporaryFile('w+') as errors:
-        process = subprocess.Popen(command(path, dialect, include), stdout=subprocess.PIPE, stderr=errors, text=True,
+        process = subprocess.Popen(command(path, dialect, include, defines), stdout=subprocess.PIPE, stderr=errors, text=True,
                                    bufsize=1 << 20)
         with process.stdout:
             try:

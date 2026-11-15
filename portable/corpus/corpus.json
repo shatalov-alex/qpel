@@ -368,7 +368,19 @@
     "origin": "https://github.com/ggml-org/llama.cpp, commit 91d2fc387529940230555abd297a8b5e99737d3f, ggml/src/ggml-cuda/cumsum.cu (unmodified)",
     "license": "MIT (llama.cpp/LICENSE)",
     "sha256": "75e37c9febac23c6fb103ac18914a154bfe34cbaadb862b177f46f63441b0d1e",
+    "defines": ["GGML_CUDA_USE_CUB"],
     "programs": [
+      {
+        "kernels": ["cumsum_cub_kernel"],
+        "fixture": "llama_cumsum_cub_f32",
+        "geometry": {"groups": ["H", "N", "1"], "block": [256, 1, 1]},
+        "values": {
+          "ne00": "W", "ne01": "H", "ne02": "N", "ne03": 1,
+          "s01": "W", "s02": "W*H", "s03": "W*H*N",
+          "s1": "W", "s2": "W*H", "s3": "W*H*N"
+        },
+        "shapes": [[1, 1, 1], [5, 3, 1], [300, 2, 1], [1024, 1, 1], [1500, 3, 2], [4100, 1, 1]]
+      },
       {
         "kernels": ["cumsum_kernel"],
         "fixture": "llama_cumsum_f32",

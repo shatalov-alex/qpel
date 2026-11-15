@@ -62,7 +62,7 @@ def sources():
         options = {'kernels': program['kernels'], 'module': program['fixture'], 'values': program.get('values', {}),
                    'constants': program.get('constants'), 'geometry': program.get('geometry'),
                    'shapes': program.get('shapes'), 'inputs': program.get('inputs'), 'outputs': program.get('outputs'),
-                   'shared': program.get('shared')}
+                   'shared': program.get('shared'), 'defines': entry.get('defines', ())}
         out.append((program['fixture'], path, 'cuda' if path.suffix == '.cu' else 'metal', plan, include, {}, options))
     return out
 
@@ -83,7 +83,7 @@ class Prepared:
             name, path, dialect, plan, include, options
         self.program, self.report = import_source(path, plan=plan, include=include, kernels=options.get('kernels'),
                                                   module=options.get('module'), constants=options.get('constants'),
-                                                  shared=options.get('shared'))
+                                                  shared=options.get('shared'), defines=options.get('defines', ()))
         saved = work/'program.qpel.json'
         saved.write_text(json.dumps(self.program))
         compile_program(saved, work/'package')

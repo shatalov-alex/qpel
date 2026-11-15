@@ -20,6 +20,10 @@ besides everything uniform in the group: the subgroup's index and size, reductio
 a thread index divided by a multiple of 32 or compared with one (the pipeline requires groups
 whose x size is a multiple of 32). Helper functions are checked with their parameters taken as
 varying, and a kernel using subgroup operations, directly or through calls, is a Groups kernel.
+
+IR version 7 allows barriers in helpers (library code such as qpel's CUB subset): a helper with
+barriers is checked as a kernel is, with its parameters taken as varying, a call of it counts as
+a barrier, and a kernel that reaches one through calls is a Groups kernel.
 """
 from qpel_types import TypeChecker, is_shared, is_shared_view, term
 
@@ -230,8 +234,9 @@ class Uniformity(TypeChecker):
             if self.level == 'subgroup' and kernel:
                 self.require(function, self.domain(function) == 'Groups', 'SUBGROUP_CONTEXT',
                              'Subgroup operations (shuffles, reductions) are in Groups kernels and the functions they call')
-            if self.level == 'group' and not kernel:
-                continue
+            if self.level == 'group' and kernel:
+                self.require(function, self.domain(function) == 'Groups', 'BARRIER_CONTEXT',
+                             'Barriers are in Groups kernels and the helpers they call')
             self.parameters_uniform = bool(kernel)
             self.varying, self.divergent = set(), set()
             self.changed = True

@@ -526,8 +526,10 @@ class TypeChecker:
                   f"subgroup_{a['operator']} takes {'u32 or i32' if bitwise else 'u32, i32 or f32'} values")
             return value
         if k in ('Barrier', 'BarrierCount'):
-            check(function['attributes'].get('isKernel', False) and self.domain(function) == 'Groups', 'BARRIER_CONTEXT',
-                  'Barriers are in Groups kernels (the threads of a group wait for each other)')
+            kernel = function['attributes'].get('isKernel', False)
+            # IR version 7: a barrier may be in a helper (qpel_uniform.py checks the kernels that call it)
+            check(kernel and self.domain(function) == 'Groups' or not kernel and k == 'Barrier', 'BARRIER_CONTEXT',
+                  'Barriers are in Groups kernels and the helpers they call; barrier_count only in a kernel')
             if k == 'Barrier':
                 parent = self.parents.get(node['id'])
                 check(parent is not None and parent['kind'] == 'Evaluate', 'BARRIER_CONTEXT', 'qpel.barrier() is a statement')

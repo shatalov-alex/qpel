@@ -12,6 +12,7 @@ launch plan, so their outputs can be compared buffer by buffer:
 One program is compiled per source and run once per case. Everything that varies
 between cases (sizes, scalar values, launch geometry) is read from files.
 """
+import re
 import ast
 import operator
 import os
@@ -31,6 +32,7 @@ from qpel_types import buffer_length, NUMPY_DTYPES, element, is_buffer, is_struc
 
 INCLUDE = HERE/'include'
 IMPORT_INCLUDE = HERE.parent/'frontends/include/libraries'  # PyTorch, cuBLAS; CUDA is the simulator's own
+CUB_INCLUDE = HERE.parent/'frontends/include/qpel_cub'  # qpel's CUB subset (cub/cub.cuh); NVIDIA runs use the real one
 
 
 class _Types(dict):
@@ -76,7 +78,10 @@ def sized_shared(text, lengths):
                               lambda m: f'__shared__ {m.group(1)} {name}[{int(length)}];', text)
         if not count:
             raise ValueError(f'dynamic shared memory {name}: no extern __shared__ declaration found')
-    return text
+    # The rest belong to kernels this program does not run (the importer needs a length for any it
+    # runs): one element, so that the file compiles.
+    return re.sub(r'extern\s+__shared__\s+((?:\w+\s+)*?\w+)\s+(\w+)\s*\[\s*\]\s*;',
+                  lambda m: f'__shared__ {m.group(1)} {m.group(2)}[1];', text)
 
 
 def volume(shape):
@@ -124,6 +129,8 @@ def needs_threads(text):
     __syncthreads whether or not they use it)."""
     if GENERATED in text:
         text = text[text.rindex(GENERATED):]
+    if re.search(r'#\s*include\s*[<"]cub/', text):
+        return True  # qpel's CUB subset (block scans and reductions use barriers and shuffles)
     return any(token in line for line in text.splitlines() if not line.lstrip().startswith(('#', '//'))
                for token in BARRIERS)
 
@@ -170,7 +177,7 @@ class Program:
             device.write_bytes(bytes(text))
             include = [source.parent] + include
             source = device
-        if original and original.get('shared') and original.get('dialect') == 'cuda':
+        if original and original.get('dialect') == 'cuda' and 'extern __shared__' in source.read_text(errors='replace'):
             # extern __shared__ T s[] gets its length from the launch (the third <<<>>> argument);
             # the simulator and the NVIDIA hosts run it as __shared__ T s[N], the length the import had.
             sized = self.work/('sized_' + source.name)
@@ -194,8 +201,9 @@ class Program:
                                 '-fsanitize=undefined', *threads,
                                 '-fno-sanitize-recover=all', '-w', '-I', str(INCLUDE),
                                 *[arg for folder in self.include for arg in ('-I', str(folder))],
+                                *['-D' + d for d in (self.original or {}).get('defines', ())],
                                 # The importer's library stand-ins (PyTorch, ATen, c10, pybind11, cuBLAS).
-                                '-I', str(IMPORT_INCLUDE),
+                                '-I', str(IMPORT_INCLUDE), '-I', str(CUB_INCLUDE),
                                 str(self.main), '-o', str(self.binary)], capture_output=True, text=True, timeout=180)
         if build.returncode:
             raise RuntimeError(f'{self.source.name} does not compile for the simulator:\n{build.stderr[-4000:]}')
@@ -229,7 +237,7 @@ class Program:
                  'static unsigned long long qpel_sim_u64(unsigned int lo, unsigned int hi) { return (unsigned long long)hi << 32 | lo; }',
                  'static long long qpel_sim_i64(unsigned int lo, unsigned int hi) { return (long long)qpel_sim_u64(lo, hi); }',
                  'static __half qpel_sim_f16(unsigned int w) { unsigned short b = (unsigned short)w; __half v; std::memcpy(&v, &b, 2); return v; }']
-        namespaces = sorted({q.rpartition('::')[0] for q in (self.original or {}).get('qualified', {}).values()} - {''})
+        namespaces = sorted({q.split('<')[0].rpartition('::')[0] for q in (self.original or {}).get('qualified', {}).values()} - {''})
         lines += [f'using namespace {n};' for n in namespaces]
         lines += ['int main(int argc, char** argv) {', '  std::string dir = argv[1];',
                   '  std::vector<char> scalars = load(dir + "/scalars.bin");',

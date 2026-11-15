@@ -69,6 +69,10 @@ Subgroup (SIMD-group, warp) operations, in Groups kernels and the helpers they c
 
 Shared views. `SharedViewType {element}` (term `shared<T>`, T a scalar or vector) is a thread's pointer into its group's shared memory: a shared array (its name), or a view, plus or minus an integer (`Binary` + or -, giving `shared<T>`). It types a local `Variable`, which needs a value and may be assigned another view, and a helper `Parameter`; a kernel parameter cannot be one. A shared array of `shared<T, N>` passes where `shared<T>` is expected. `Index` on a view reads or writes an element; nothing checks its bounds statically (the CPU simulator does when it runs). For the barrier and subgroup checks, a read through a view varies, as a shared-array read does, and a write through one changes no local. Backends: CUDA `qpel_shared_view<T>` (an alias of `T*`, so the importer reads qpel's own output back), Metal `threadgroup T*`.
 
+## IR version 7
+
+Barriers in helper functions, as library code has them (LIBRARIES.md, qpel's CUB subset). A `Barrier` may be in a helper that Groups kernels call; `BarrierCount` stays in kernels (its Metal scratch is the kernel's). qpel_uniform.py checks a helper with barriers as it checks a kernel, with the helper's parameters taken as varying: each barrier under control flow that is the same for the whole group, and no return only some threads take before one. A call of such a helper counts as a barrier in its caller, so it too must be reached by every thread, and a kernel that calls one, directly or not, is a Groups kernel. Both backends emit the same `__syncthreads()` / `threadgroup_barrier` in the helper. A program with a barrier in a helper is version 7.
+
 ## Numeric revision
 
 New exports use `qpel-portable-core-v1` and the `u32-modulo-v1` numeric emitter. See NUMERICS.md for exact rules, migration limitations and CPU UBSan evidence. Earlier sections describing exact native source parity and incomplete numeric lowering refer to the preceding revision; only the compatibility rendering now has native token parity. Dynamic division-by-zero, pointer validity and GPU execution remain unchecked.
