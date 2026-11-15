@@ -46,7 +46,8 @@ the same value, as Triton's scalars do. `scf.for` loops carry scalars and tensor
 
 Supported: `tt.get_program_id`, `tt.get_num_programs`, `tt.make_range`, `tt.splat`,
 `tt.broadcast`, `tt.expand_dims`, `tt.reshape`, `tt.addptr`, `tt.load` (mask, other),
-`tt.store` (mask), `tt.reduce` (one sum, product, min or max), `scf.for`, `arith` integer and
+`tt.store` (mask), `tt.reduce` (one sum, product, min or max, along any axis), `tt.dot`, `scf.for`
+(with scalars, tensors and tensors of pointers carried), `arith` integer and
 float arithmetic, comparisons, `select`, casts, `maxnumf`/`minnumf`/`maxsi`/`minsi`, and the
 `math` functions qpel has (`exp`, `exp2`, `log`, `log2`, `sqrt`, `absf`, `sin`, `cos`, `tanh`,
 `floor`, `ceil`). Anything else is reported by operation and line (`Unsupported`).
@@ -65,12 +66,18 @@ CUDA on the CPU simulator, and qpel's Metal on the Apple GPU.
 - **Float sum reductions** over n elements agree within 2 * ceil(log2 n) + 4 more epsilons of
   max(1, |value|): numpy sums pairwise, qpel in index order. On these cases the largest difference
   measured was 3 epsilons.
+- **Dots** (`tl.dot`, float32 with `input_precision="ieee"`) fold K in index order, every product
+  and sum rounded. They compare like sums, with epsilons of max(1, |value|, Σ|a_ik b_kj|): the size
+  of the products bounds a dot's rounding error, not the size of its result. On the matmul cases
+  qpel is within 1.8 of those epsilons of the exact product (float64), the interpreter within 1.4.
+  A dot in tf32 or bf16 input precision is rejected (it rounds its inputs: another computation).
 - qpel's CUDA and Metal agree with each other bit for bit, bounded math functions apart.
 
 ## Corpus
 
 `corpus/triton/kernels.py` holds kernels in the style of the Triton tutorials (vector addition,
-fused softmax, layer norm), plus an element-wise select with scalar arguments and a 2D strided
-transpose-copy. Each is a fixture (`triton_<kernel>`), so it is part of the round-trip matrix
+fused softmax, layer norm, matrix multiplication with the grouped program order), plus an
+element-wise select with scalar arguments, a 2D strided transpose-copy and per-row statistics of a
+2D tile (reductions along axis 1). Each is a fixture (`triton_<kernel>`), so it is part of the round-trip matrix
 (the TTIR lowers to exactly the fixture, and qpel's own CUDA and Metal import back to it) and of
 the nvcc check.

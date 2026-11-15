@@ -13,7 +13,10 @@ Element-wise float operations compare bit for bit; a bounded math function (exp,
 2 * MATH_ULPS. A program with a float sum reduction over n elements is compared within
 2 * ceil(log2 n) + 4 more epsilons of max(1, |value|): Triton leaves a reduction's order open,
 numpy sums pairwise and qpel in index order (the largest difference measured on these cases
-was 3 epsilons, softmax over 128 columns and layer norm over 200). qpel's CUDA and Metal run the same order and agree exactly
+was 3 epsilons, softmax over 128 columns and layer norm over 200). A dot (tl.dot) is compared
+the same way, its epsilons taken of max(1, |value|, sum of |a_ik * b_kj|): the size of the
+products, not of their sum, bounds its rounding error (largest measured: 1.5 of those; against
+the exact product in float64, qpel is within 1.8 and the interpreter within 1.4). qpel's CUDA and Metal run the same order and agree exactly
 (bounded math functions apart).
 
     python3 -m differential.triton                 # every kernel
@@ -121,7 +124,40 @@ def layer_norm_cases(rng):
     return out
 
 
-CASES = {'add_kernel': add_cases, 'scale_shift_kernel': scale_shift_cases, 'softmax_kernel': softmax_cases,
+def matmul_cases(rng):
+    """C = A @ B with 32 x 32 tiles over K in steps of 16: tiles that end inside M, N and K, a
+    transposed B (its strides swapped), and the grouped program order of the Triton tutorial."""
+    out = []
+    for m, n, k, transposed in ((1, 1, 1, False), (32, 32, 16, False), (33, 17, 40, False), (64, 96, 48, True),
+                                (70, 50, 33, False), (129, 40, 7, True)):
+        a = rng.standard_normal(m * k).astype(np.float32)
+        b = rng.standard_normal(k * n).astype(np.float32)
+        sbk, sbn = (1, k) if transposed else (n, 1)  # B as [N, K] in memory, read through its strides
+        programs = -(-m // 32) * -(-n // 32)
+        bm = b.reshape(n, k).T if transposed else b.reshape(k, n)
+        scale = (np.abs(a.reshape(m, k)).astype(np.float64) @ np.abs(bm).astype(np.float64)).ravel()
+        out.append(Case({'programs': (programs, 1, 1), 'a_ptr_size': (m * k, 1, 1), 'b_ptr_size': (k * n, 1, 1),
+                         'c_ptr_size': (m * n, 1, 1)},
+                        {'a_ptr': a, 'b_ptr': b, 'c_ptr': np.zeros(m * n, np.float32)},
+                        {'M': m, 'N': n, 'K': k, 'stride_am': k, 'stride_ak': 1, 'stride_bk': sbk, 'stride_bn': sbn,
+                         'stride_cm': n, 'stride_cn': 1}, f'{m}x{k} @ {k}x{n}{" (B transposed)" if transposed else ""}'))
+        out[-1].scales = {'c_ptr': scale}  # sum of |a_ik * b_kj|: what a dot's rounding error is relative to
+    return out
+
+
+def row_stats_cases(rng):
+    out = []
+    for m, n, pad in ((1, 1, 0), (8, 64, 0), (13, 20, 3), (40, 63, 1), (3, 64, 0)):
+        stride = n + pad
+        x = (rng.standard_normal(m * stride) * 4).astype(np.float32)
+        out.append(Case({'programs': (-(-m // 8), 1, 1), 'x_ptr_size': (m * stride, 1, 1), 'max_ptr_size': (m, 1, 1),
+                         'mean_ptr_size': (m, 1, 1)},
+                        {'x_ptr': x, 'max_ptr': np.zeros(m, np.float32), 'mean_ptr': np.zeros(m, np.float32)},
+                        {'M': m, 'N': n, 'stride': stride}, f'{m}x{n} stride {stride}'))
+    return out
+
+
+CASES = {'matmul_kernel': matmul_cases, 'row_stats_kernel': row_stats_cases, 'add_kernel': add_cases, 'scale_shift_kernel': scale_shift_cases, 'softmax_kernel': softmax_cases,
          'copy2d_kernel': copy2d_cases, 'layer_norm_kernel': layer_norm_cases}
 
 
@@ -177,6 +213,26 @@ def tolerance(prog, lowering):
     return ulps
 
 
+def check(expected, actual, outputs, ulps, case, reduction):
+    """compare(), and for a program with float reductions, a case may give each output a scale (for a
+    dot, the sum of |products|, which bounds its rounding error): an element then also matches
+    within `reduction` epsilons of max(1, |value|, scale)."""
+    error = compare(expected, actual, outputs, None, ulps)
+    scales = getattr(case, 'scales', {})
+    if error is None or not reduction or not scales:
+        return error
+    epsilon = float(np.finfo(np.float32).eps)
+    for name in outputs:
+        a, b = np.asarray(expected[name], np.float64), np.asarray(actual[name], np.float64)
+        scale = np.maximum(1.0, np.maximum(np.abs(a), scales.get(name, 0)))
+        with np.errstate(all='ignore'):
+            bad = ~((np.abs(a - b) <= ulps * epsilon * scale) | (a == b) | (np.isnan(a) & np.isnan(b)))
+        if bad.any():
+            i = int(np.flatnonzero(bad)[0])
+            return f'{name}[{i}]: original {a[i]}, qpel {b[i]} ({int(bad.sum())} differ beyond {ulps} epsilons of the scale)'
+    return None
+
+
 def rows(names=None, gpu=None):
     """Yield (row, case label, error or None)."""
     from qpel import compile_program
@@ -217,11 +273,12 @@ def rows(names=None, gpu=None):
                 label = f'{name} {case.label}'
                 expected = expected_all[(name, i)]
                 cuda = simulated.run(case)
-                yield 'triton -> qpel -> cuda', label, compare(expected, cuda, outputs, None, ulps)
+                reduction = bool(lowering.float_sums)
+                yield 'triton -> qpel -> cuda', label, check(expected, cuda, outputs, ulps, case, reduction)
                 if gpu:
                     from . import metal
                     apple = metal.run_generated(host, plan, case)
-                    yield 'triton -> qpel -> metal', label, compare(expected, apple, outputs, None, ulps)
+                    yield 'triton -> qpel -> metal', label, check(expected, apple, outputs, ulps, case, reduction)
                     same = 2 * MATH_ULPS if lowering.bounded else 0
                     yield 'qpel cuda = metal', label, compare(cuda, apple, outputs, None, same)
                 else:

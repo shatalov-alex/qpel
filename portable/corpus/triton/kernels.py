@@ -78,3 +78,48 @@ def layer_norm_kernel(X, Y, W, B, stride, N, eps, BLOCK_SIZE: tl.constexpr):
         x = tl.load(X + cols, mask=mask, other=0.).to(tl.float32)
         x_hat = (x - mean) * rstd
         tl.store(Y + cols, x_hat * w + b, mask=mask)
+
+
+@triton.jit
+def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, stride_am, stride_ak, stride_bk, stride_bn, stride_cm, stride_cn,
+                  BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, GROUP_M: tl.constexpr):
+    pid = tl.program_id(axis=0)
+    num_pid_m = tl.cdiv(M, BLOCK_M)
+    num_pid_n = tl.cdiv(N, BLOCK_N)
+    num_pid_in_group = GROUP_M * num_pid_n
+    group_id = pid // num_pid_in_group
+    first_pid_m = group_id * GROUP_M
+    group_size_m = min(num_pid_m - first_pid_m, GROUP_M)
+    pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
+    pid_n = (pid % num_pid_in_group) // group_size_m
+    offs_am = (pid_m * BLOCK_M + tl.arange(0, BLOCK_M)) % M
+    offs_bn = (pid_n * BLOCK_N + tl.arange(0, BLOCK_N)) % N
+    offs_k = tl.arange(0, BLOCK_K)
+    a_ptrs = a_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)
+    b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
+    accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+    for k in range(0, tl.cdiv(K, BLOCK_K)):
+        a = tl.load(a_ptrs, mask=offs_k[None, :] < K - k * BLOCK_K, other=0.0)
+        b = tl.load(b_ptrs, mask=offs_k[:, None] < K - k * BLOCK_K, other=0.0)
+        accumulator = tl.dot(a, b, accumulator, input_precision="ieee")
+        a_ptrs += BLOCK_K * stride_ak
+        b_ptrs += BLOCK_K * stride_bk
+    offs_cm = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_cn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    c_ptrs = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
+    c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
+    tl.store(c_ptrs, accumulator, mask=c_mask)
+
+
+@triton.jit
+def row_stats_kernel(x_ptr, max_ptr, mean_ptr, M, N, stride, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
+    pid = tl.program_id(0)
+    rows = pid * BLOCK_M + tl.arange(0, BLOCK_M)
+    cols = tl.arange(0, BLOCK_N)
+    mask = (rows[:, None] < M) & (cols[None, :] < N)
+    x = tl.load(x_ptr + rows[:, None] * stride + cols[None, :], mask=mask, other=-float('inf'))
+    row_max = tl.max(x, axis=1)
+    shifted = tl.where(mask, x - row_max[:, None], 0.0)
+    row_mean = tl.sum(shifted, axis=1) / N
+    tl.store(max_ptr + rows, row_max, mask=rows < M)
+    tl.store(mean_ptr + rows, row_mean, mask=rows < M)

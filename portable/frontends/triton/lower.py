@@ -304,6 +304,8 @@ class Lowering:
             return self.reduce(op)
         if name == 'scf.for':
             return self.loop(op)
+        if name == 'tt.dot':
+            return self.dot(op)
         if name in INT_BINARY or name in FLOAT_BINARY or name in CALLS or name in CASTS or \
                 name in ('arith.cmpi', 'arith.cmpf', 'arith.select', 'arith.negf'):
             if name in MATH_BOUNDED:
@@ -504,6 +506,34 @@ class Lowering:
         self.owned(rt, fold)
         self.define(op, Data(rt, out))
 
+    def dot(self, op):
+        """acc + a @ b for a [M, K] and b [K, N]: each owned element (m, n) adds a[m, k] * b[k, n] to
+        acc[m, n] for k = 0 to K - 1, each product and sum rounded (Triton leaves the order and the
+        fusing of a dot open; it is compared within a tolerance, as a sum is)."""
+        if re.search(r'inputPrecision\s*=\s*(tf32|tf32x3|bf16)', op.text):
+            raise Unsupported(op, 'a dot in reduced input precision (tf32, bf16); qpel computes in float32: '
+                                  'use tl.dot(..., input_precision="ieee")')
+        a, b = (self.value(x) for x in op.operands[:2])
+        acc = self.value(op.operands[2]) if len(op.operands) > 2 else None
+        t = self.result_type(op)
+        if len(t.shape) != 2 or scalar_term(t.element) != 'f32' or any(scalar_term(x.type.element) != 'f32' for x in (a, b)):
+            raise Unsupported(op, 'a dot other than a 2D float32 one')
+        depth = a.type.shape[1]
+        self.float_sums.append(depth)
+        a, b = (x if isinstance(x, (Lazy, Shared)) else self.materialize(x, op.results[0]) for x in (a, b))
+        out = self.new_data(t, op.results[0])
+        j = self.fresh('kk')
+
+        def body(c):
+            start = self.element(acc, c, True) if acc is not None else '0.0f'
+            self.emit(f'{out}[{self.k}] = {start};')
+            self.open(f'for (let {j}: i32 = 0; {j} < {depth}; {j} = {j} + 1)')
+            product = f'({self.element(a, [c[0], j], False)} * {self.element(b, [j, c[1]], False)})'
+            self.emit(f'{out}[{self.k}] = ({out}[{self.k}] + {product});')
+            self.close()
+        self.owned(t, body)
+        self.define(op, Data(t, out))
+
     def loop(self, op):
         m = re.match(r'\s*(%[\w$.#-]+)\s*=\s*(%[\w$.#-]+)\s+to\s+(%[\w$.#-]+)\s+step\s+(%[\w$.#-]+)', op.text)
         if not m:
@@ -513,10 +543,10 @@ class Lowering:
         variables = []
         for (arg, init), result in zip(carried, op.results):
             v = self.value(init)
-            if v.type.is_tensor:
+            if v.type.is_tensor:  # (a tensor of pointers: its offsets, into the same buffer)
                 name = self.new_data(v.type, arg)
                 self.owned(v.type, lambda c, v=v, name=name: self.emit(f'{name}[{self.k}] = {self.element(v, c, True)};'))
-                variables.append((arg, Data(v.type, name), result))
+                variables.append((arg, Data(v.type, name, buffer=v.buffer), result))
             else:
                 name = self.fresh(arg)
                 self.emit(f'let {name}: {scalar_term(v.type.element)} = {v.text};')

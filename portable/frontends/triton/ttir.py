@@ -153,6 +153,7 @@ def types_of(text):
         return inputs, [parse_type(t) for t in split_top(results)]
     if '->' in text:
         left, right = text.split('->', 1)
+        left = left.replace(' * ', ', ')  # tt.dot: tensor<MxK> * tensor<KxN> -> tensor<MxN>
         right = right.strip()
         right = right[1:-1] if right.startswith('(') else right
         return [parse_type(t) for t in split_top(left)], [parse_type(t) for t in split_top(right)]
