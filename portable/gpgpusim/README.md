@@ -13,7 +13,7 @@ python3 -m fuzz --nvidia                    # random programs, also on GPGPU-Sim
 python3 check_all.py --gpu --nvidia         # all of it, with the other checks
 ```
 
-The image (`qpel/gpgpu-sim:dev-4195dd4-qpel13`, from this folder's Dockerfile on the
+The image (`qpel/gpgpu-sim:dev-4195dd4-qpel14`, from this folder's Dockerfile on the
 CUDA 12.6 devel image `nvcc_check.py` uses) is built on first use and takes about a
 minute. It is built and tested natively on arm64 (Apple silicon, Docker Desktop). On
 x86-64 the upstream build flags are kept, but that build is untested. Change the tag in
@@ -111,6 +111,15 @@ fixture passed; CUB's scans and reductions are inline PTX that do (`shfl.sync.up
 @p add.f32 r0, r0, x;`), and a 256-thread `cub::BlockScan` gave wrong sums from lane 8 on. The
 self-test now runs that PTX (an inclusive sum of ones over a warp). #156 has the fix as a third
 commit (2026-11-15).
+
+**Fixed (2026-11-16), `qpel-setp.patch`, image `qpel14` (local so far):** `setp` on `.b16` and
+`.b32` compared the wrong bits. `CmpOp` has no `break` after the `B16_TYPE` and `B32_TYPE` cases,
+so both fell through to the `B64_TYPE` comparison of the whole 64-bit register value, including
+bits above the register's width that earlier instructions left there. After `add.s32 r, 1, -1`
+(the immediate taken as 0xffffffff) the register's low 32 bits are 0 and bit 32 is set, so
+`setp.ne.b32 p, r, 0` gave true. Every CUDA row passed with the bug in place (their
+comparisons never met a register with such bits); Triton's PTX counts its loops down and tests
+them with `setp.ne.b32`, and Triton's matmul ran forever. The self-test checks `setp.ne` and `setp.eq` on `.b32` and `.b16`.
 
 Timing (performance) mode still aborts on shuffles, before and after the fixes
 (`bitset::test` out of range in `shader_core_ctx::execute`); qpel runs functional mode only.

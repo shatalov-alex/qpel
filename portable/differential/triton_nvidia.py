@@ -2,10 +2,12 @@
 
 Triton compiles each corpus kernel to PTX for sm_75 (corpus/triton/build/<kernel>.ptx,
 frontends/triton/compile.py). GPGPU-Sim runs PTX but implements none of the driver API Triton's
-launcher uses (cuModuleLoadData, cuLaunchKernel). So a stub CUDA program declares a kernel of
-the same name and parameters (Triton appends two scratch pointers, passed null here), launches it
-with the runtime API, and GPGPU-Sim is told to run Triton's PTX in its place
-(PTX_SIM_USE_PTX_FILE, PTX_SIM_KERNELFILE). The block is num_warps * 32 threads and the dynamic
+launcher uses (cuModuleLoadData, cuLaunchKernel), and its PTX_SIM_USE_PTX_FILE override does not
+reach the path a runtime-API program takes. So a stub CUDA program declares a kernel of the same
+name and parameters (Triton appends two scratch pointers, passed null here) and launches it with
+the runtime API; it is built twice, the second time from nvcc's own steps after the PTX
+(`nvcc --dryrun -keep`) with Triton's PTX in place of the stub's, so the executable embeds
+Triton's code and GPGPU-Sim extracts and runs it as it does any CUDA program's. The block is num_warps * 32 threads and the dynamic
 shared memory Triton's metadata gives. Triton 3.8 writes `.version 8.8`; the container's ptxas
 (CUDA 12.6, which GPGPU-Sim calls for register counts) reads up to 8.5, and sm_75 code uses
 nothing newer, so the version line is rewritten to 8.5.
@@ -44,18 +46,46 @@ POINTERS = {'*fp32': 'float', '*i32': 'int', '*fp16': '__half', '*i64': 'long lo
 SCRIPT = r'''
 cd /opt/gpgpu-sim && source setup_environment release > /dev/null || exit 1
 export PTX_SIM_MODE_FUNC=1
-for k in "$ROOT"/*/; do
-  (cd "$k" && nvcc -O2 -cudart shared -gencode arch=compute_75,code=compute_75 -w main.cu -o program > build.log 2>&1 && touch built)
-done
+# Build the stub program, then build it again from its PTX on with Triton's PTX in place of the
+# stub's: the executable embeds Triton's code, which GPGPU-Sim extracts and runs.
+build() {
+  cd "$1" || return
+  flags="-O2 -cudart shared -gencode arch=compute_75,code=compute_75 -w -keep main.cu -o program"
+  nvcc $flags > build.log 2>&1 || return
+  nvcc $flags --dryrun 2>&1 | sed -n 's/^#\$ //p' > steps.txt
+  { grep -E '^(PATH|LD_LIBRARY_PATH)=' steps.txt; sed -n '/^fatbinary --create="main.fatbin"/,$p' steps.txt; } > repack.sh
+  cp kernel.ptx main.ptx && bash -e repack.sh >> build.log 2>&1 && touch built
+}
+for k in "$ROOT"/*/; do build "$k"; done
 run() {
   kernel=$(dirname "$1"); cd "$1" || return
   if [ ! -f "$kernel/built" ]; then echo 125 > status; return; fi
   ln -sf /opt/gpgpu-sim/configs/tested-cfgs/$CONFIG/* .
-  PTX_SIM_USE_PTX_FILE=1 PTX_SIM_KERNELFILE="$kernel/kernel.ptx" "$kernel/program" "$1" > run.log 2>&1; echo $? > status
+  "$kernel/program" "$1" > run.log 2>&1; echo $? > status
 }
 export -f run
 find "$ROOT" -mindepth 2 -type d -name 'c[0-9]*' | xargs -P "$(nproc)" -I{} bash -c 'run {}'
 '''
+
+
+def for_gpgpusim(ptx):
+    """Triton's PTX as GPGPU-Sim's PTX parser reads it. Only directives that do not change what the
+    code computes are changed: the PTX version (8.8 -> 8.5, which the container's ptxas reads),
+    `.reqntid` (the block size, which the launch gives), debug line information (`.loc`, `.file`
+    and the `.debug_*` sections), pointer qualifiers on parameters (`.ptr .global .align 1`), and
+    one-register braces (`ld.global.b32 { %r1 }`, which ptxas reads as `%r1` and GPGPU-Sim as a
+    vector), `.shared::cta` (`.shared` without clusters) and `atom.global.gpu.relaxed` (atom's
+    default order and scope)."""
+    import re
+    ptx = ptx.replace('.version 8.8', '.version 8.5', 1)
+    ptx = re.sub(r'^\s*\.reqntid[^\n]*\n', '', ptx, flags=re.M)
+    ptx = re.sub(r'^\s*\.(loc|file)\b[^\n]*\n', '', ptx, flags=re.M)
+    ptx = re.sub(r'\.section\s+\.debug_\w+\s*\{[^}]*\}', '', ptx)
+    ptx = re.sub(r'\.ptr\s+\.global\s+\.align\s+\d+\s+', '', ptx)
+    ptx = re.sub(r'\{\s*(%\w+)\s*\}', r'\1', ptx)  # ld.global.b32 { %r1 }: one register, not a vector
+    ptx = ptx.replace('.shared::cta', '.shared')  # the CTA's shared memory (no clusters on sm_75)
+    ptx = re.sub(r'\batom\.global\.gpu\.relaxed\.', 'atom.global.', ptx)  # atom's defaults, spelled out
+    return ptx
 
 
 def stub(name, meta):
@@ -115,15 +145,18 @@ int main(int argc, char **argv) {{
 
 def run(jobs):
     """{(kernel, case index): {buffer: array}} from Triton's PTX on GPGPU-Sim, for [(kernel, cases)]."""
+    import os
+    keep = os.environ.get('QPEL_KEEP')  # a folder to keep the programs, PTX and logs in
     with tempfile.TemporaryDirectory(prefix='qpel-triton-nvidia-') as work:
-        work = Path(work)
+        work = Path(keep) if keep else Path(work)
+        work.mkdir(parents=True, exist_ok=True)
         layout = {}
         for name, cases in jobs:
             meta = json.loads((triton.BUILD/f'{name}.json').read_text())
             folder = work/name
             folder.mkdir()
             (folder/'main.cu').write_text(stub(name, meta))
-            ptx = (triton.BUILD/f'{name}.ptx').read_text().replace('.version 8.8', '.version 8.5', 1)
+            ptx = for_gpgpusim((triton.BUILD/f'{name}.ptx').read_text())
             (folder/'kernel.ptx').write_text(ptx)
             for i, case in enumerate(cases):
                 cdir = folder/f'c{i:03d}'

@@ -18,8 +18,11 @@ WORKDIR /opt/gpgpu-sim
 # as CUDA 12 emits it, lost its value (every shuffle read 0), and in functional mode every warp
 # used warp 0's threads (getExecuteWarp did not set the warp id that shfl_impl and mma read).
 # 2026-11-15: its in-range predicate is a zero flag (0 is true), which CUB's inline PTX reads.
-COPY qpel-fixes.patch qpel-shfl.patch /tmp/
-RUN git apply /tmp/qpel-fixes.patch && git apply /tmp/qpel-shfl.patch
+# qpel-setp.patch (2026-11-16, local so far): setp on .b16 and .b32 fell through to the .b64
+# comparison (two missing breaks in CmpOp), so it compared bits above the register's width; after
+# add.s32 1 + (-1) setp.ne.b32 gave true, and Triton's matmul loop never ended.
+COPY qpel-fixes.patch qpel-shfl.patch qpel-setp.patch /tmp/
+RUN git apply /tmp/qpel-fixes.patch && git apply /tmp/qpel-shfl.patch && git apply /tmp/qpel-setp.patch
 RUN bash -c 'set -eo pipefail; export CUDA_INSTALL_PATH=/usr/local/cuda; source setup_environment release; \
       make -j"$(nproc)" > /tmp/make.log 2>&1 || { tail -60 /tmp/make.log; exit 1; }; \
       ls lib/*/*/release/libcudart.so*'

@@ -114,5 +114,16 @@ class Behaviour(unittest.TestCase):
         self.assertIn('triton -> qpel -> cuda', rows)
 
 
+@unittest.skipUnless(__import__('os').environ.get('QPEL_NVIDIA') == '1', 'GPGPU-Sim rows run with QPEL_NVIDIA=1')
+class Nvidia(unittest.TestCase):
+    def test_triton_ptx_rows(self):
+        """Triton's own PTX on GPGPU-Sim against Triton's interpreter and qpel's CUDA."""
+        from differential import triton_nvidia
+        results = list(triton_nvidia.rows())
+        if results and results[0][2] and results[0][2].startswith('skipped'):
+            self.skipTest(results[0][2])
+        self.assertEqual([r for r in results if r[2]], [])
+
+
 if __name__ == '__main__':
     unittest.main()

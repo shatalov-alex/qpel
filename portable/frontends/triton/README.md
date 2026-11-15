@@ -84,6 +84,23 @@ CUDA on the CPU simulator, and qpel's Metal on the Apple GPU.
   output): 10040 of 10048 outputs bit for bit, 8 one float16 ulp apart.
 - qpel's CUDA and Metal agree with each other bit for bit, bounded math functions apart.
 
+## Triton's own NVIDIA code (GPGPU-Sim)
+
+`python3 -m differential.triton_nvidia` (and `QPEL_NVIDIA=1` in the tests) runs the PTX Triton
+compiled for each corpus kernel on GPGPU-Sim (gpgpusim/README.md), on the same cases, against
+Triton's interpreter and against qpel's CUDA. GPGPU-Sim implements none of the driver API Triton's
+launcher uses, so a stub CUDA program with the kernel's name and parameters (and Triton's two
+scratch pointers) is built, then rebuilt from nvcc's own steps after the PTX with Triton's PTX in
+its place; the executable embeds Triton's code and GPGPU-Sim runs it as any CUDA program's.
+Directives GPGPU-Sim's parser does not read, and that do not change the computation, are
+rewritten first (`for_gpgpusim`: the PTX version, `.reqntid`, debug information, pointer
+qualifiers, one-register braces, `.shared::cta`, `atom`'s default order and scope spelled out).
+Triton's NVIDIA code approximates fp32 `/` (`div.full.f32`) and `exp` (`ex2.approx`), so a
+kernel that divides or calls `exp` compares within a few more ulp; the others compare as the
+interpreter rows do. All twelve kernels pass both rows. Getting there found a GPGPU-Sim bug:
+`setp.ne.b32` compared bits above the register's width, and Triton's matmul loop never ended
+(`gpgpusim/qpel-setp.patch`, image `qpel14`).
+
 ## Corpus
 
 `corpus/triton/kernels.py` holds kernels in the style of the Triton tutorials (vector addition,

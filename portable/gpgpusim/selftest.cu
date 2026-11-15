@@ -1,4 +1,4 @@
-// GPGPU-Sim self-test: the PTX behaviour qpel-fixes.patch corrects (bar.red, shfl.sync), and a sweep of the
+// GPGPU-Sim self-test: the PTX behaviour qpel-fixes.patch corrects (bar.red, shfl.sync, setp on bit types), and a sweep of the
 // integer and float conversions qpel's CUDA uses (device against host C semantics, in
 // ranges where C defines them). differential/gpgpusim.py runs it before any NVIDIA row.
 #include <cstdio>
@@ -50,6 +50,13 @@ __global__ void k(const unsigned long long* in, unsigned long long* out) {
   unsigned i = blockIdx.x * blockDim.x + threadIdx.x; if (i < N) eval(in[i], out + i * COUNT);
 }
 // Fixed-value checks of single PTX instructions (results computed independently).
+__global__ void bit_compares(unsigned* out, const unsigned* in) {
+  unsigned a = in[0], b = in[1];
+  asm volatile("{ .reg .b32 r; .reg .pred p; add.s32 r, %1, -1; setp.ne.b32 p, r, 0; selp.u32 %0, 1, 0, p; }" : "=r"(out[0]) : "r"(a));
+  asm volatile("{ .reg .b32 r; .reg .pred p; add.s32 r, %1, -1; setp.eq.b32 p, r, 0; selp.u32 %0, 1, 0, p; }" : "=r"(out[1]) : "r"(a));
+  asm volatile("{ .reg .b16 h; .reg .pred p; cvt.u16.u32 h, %1; setp.eq.b16 p, h, 0; selp.u32 %0, 1, 0, p; }" : "=r"(out[2]) : "r"(b));
+  asm volatile("{ .reg .b16 h; .reg .pred p; cvt.u16.u32 h, %1; setp.ne.b16 p, h, 0; selp.u32 %0, 1, 0, p; }" : "=r"(out[3]) : "r"(b));
+}
 __global__ void asm_checks(unsigned long long* o, const unsigned* in) {
   unsigned a = in[0], b = in[1], s = in[2]; unsigned long long r;
   asm("bfi.b64 %0, %1, %2, 32, 32;" : "=l"(r) : "l"((unsigned long long)a), "l"((unsigned long long)b)); o[0] = r;
@@ -125,6 +132,16 @@ int main() {
       printf("SELFTEST FAIL %s: block %d gives %d, want %d\n", names[i % 5], i / 5, h[i], want[i % 5]);
       ++failures;
     }
+  }
+  { // setp on bit types (qpel-setp.patch): the 32 and 16 low bits are compared, whatever the register
+    // holds above them. add.s32 1 + (-1) leaves bit 32 set in GPGPU-Sim's register; before the fix
+    // setp.ne.b32 fell through to the 64-bit comparison and gave true (Triton's matmul loop never ended).
+    const unsigned in[2] = {1u, 0x10000u}, want[4] = {0u, 1u, 1u, 0u};
+    const char* names[4] = {"setp.ne.b32", "setp.eq.b32", "setp.eq.b16", "setp.ne.b16"};
+    unsigned h[4], *di, *dout; cudaMalloc(&di, sizeof in); cudaMalloc(&dout, sizeof h);
+    cudaMemcpy(di, in, sizeof in, cudaMemcpyHostToDevice);
+    bit_compares<<<1, 1>>>(dout, di); cudaDeviceSynchronize(); cudaMemcpy(h, dout, sizeof h, cudaMemcpyDeviceToHost);
+    for (int i = 0; i < 4; ++i) if (h[i] != want[i]) { printf("SELFTEST FAIL %s: %u, want %u\n", names[i], h[i], want[i]); ++failures; }
   }
   { // asm checks
     const unsigned in[4] = {0xDEADBEEFu, 0xCAFEBABEu, 40u, 0x48435000u};
