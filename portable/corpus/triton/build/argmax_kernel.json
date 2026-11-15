@@ -1,0 +1,22 @@
+{
+ "kernel": "argmax_kernel",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 16,
+ "ptx_name": "argmax_kernel",
+ "signature": {
+  "x_ptr": "*fp32",
+  "index_ptr": "*i32",
+  "value_ptr": "*fp32",
+  "n_cols": "i32",
+  "stride": "i32"
+ },
+ "constexprs": {
+  "BLOCK": 64
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}

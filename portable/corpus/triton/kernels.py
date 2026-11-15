@@ -123,3 +123,43 @@ def row_stats_kernel(x_ptr, max_ptr, mean_ptr, M, N, stride, BLOCK_M: tl.constex
     row_mean = tl.sum(shifted, axis=1) / N
     tl.store(max_ptr + rows, row_max, mask=rows < M)
     tl.store(mean_ptr + rows, row_mean, mask=rows < M)
+
+
+@triton.jit
+def argmax_kernel(x_ptr, index_ptr, value_ptr, n_cols, stride, BLOCK: tl.constexpr):
+    row = tl.program_id(0)
+    cols = tl.arange(0, BLOCK)
+    x = tl.load(x_ptr + row * stride + cols, mask=cols < n_cols, other=-float('inf'))
+    value, index = tl.max(x, axis=0, return_indices=True)
+    tl.store(index_ptr + row, index)
+    tl.store(value_ptr + row, value)
+
+
+@triton.jit
+def cumsum_kernel(x_ptr, out_ptr, n, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    x = tl.load(x_ptr + offs, mask=offs < n, other=0)
+    tl.store(out_ptr + offs, tl.cumsum(x, axis=0), mask=offs < n)
+
+
+@triton.jit
+def clip_rows_kernel(x_ptr, out_ptr, n_cols, stride, limit, BLOCK: tl.constexpr):
+    row = tl.program_id(0)
+    cols = tl.arange(0, BLOCK)
+    mask = cols < n_cols
+    x = tl.load(x_ptr + row * stride + cols, mask=mask, other=0.0)
+    norm = tl.sqrt(tl.sum(x * x, axis=0))
+    if norm > limit:
+        x = x * (limit / norm)
+    tl.store(out_ptr + row * stride + cols, x, mask=mask)
+
+
+@triton.jit
+def histogram_kernel(x_ptr, bins_ptr, n, n_bins, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < n
+    x = tl.load(x_ptr + offs, mask=mask, other=0)
+    bucket = tl.minimum(tl.maximum(x, 0), n_bins - 1)
+    tl.atomic_add(bins_ptr + bucket, 1, mask=mask, sem='relaxed')

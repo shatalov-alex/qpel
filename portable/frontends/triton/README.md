@@ -38,7 +38,10 @@ three kinds (`lower.py`):
 - **Shared tensors**: a data tensor written to the group's shared memory between two barriers,
   where a broadcast, an expanded dimension or a reduction needs any thread to read any element.
 
-Masked loads give the load's `other` (zero without one). A masked store writes only where the
+A combiner region (`tt.reduce`, `tt.scan`) becomes scalar statements in the fold loop. A scan is
+inclusive: element i combines elements 0 to i in index order (n - 1 down to i when reversed).
+An atomic runs per owned element under its mask; only relaxed atomics are read (qpel's atomics
+are relaxed), so `tl.atomic_add(..., sem="relaxed")`. Masked loads give the load's `other` (zero without one). A masked store writes only where the
 mask holds. A reduction folds its axis in index order, 0 to n - 1. Triton leaves the order open
 (its GPU code combines in a layout-dependent tree), so a float sum is Triton's semantics in any
 order. A reduction to a scalar is computed by every thread from shared memory, so every thread has
@@ -46,8 +49,11 @@ the same value, as Triton's scalars do. `scf.for` loops carry scalars and tensor
 
 Supported: `tt.get_program_id`, `tt.get_num_programs`, `tt.make_range`, `tt.splat`,
 `tt.broadcast`, `tt.expand_dims`, `tt.reshape`, `tt.addptr`, `tt.load` (mask, other),
-`tt.store` (mask), `tt.reduce` (one sum, product, min or max, along any axis), `tt.dot`, `scf.for`
-(with scalars, tensors and tensors of pointers carried), `arith` integer and
+`tt.store` (mask), `tt.reduce` and `tt.scan` along any axis with any combiner of scalar operations
+and any number of operands (argmax carries values and indices), `tt.dot`, `tt.atomic_rmw` (relaxed
+add, min, max, and, or, xor, exchange on 32-bit integers; add and exchange on float32), `scf.for`
+(with scalars, tensors and tensors of pointers carried), `scf.if` on a scalar (results yielded by
+both branches), `arith` integer and
 float arithmetic, comparisons, `select`, casts, `maxnumf`/`minnumf`/`maxsi`/`minsi`, and the
 `math` functions qpel has (`exp`, `exp2`, `log`, `log2`, `sqrt`, `absf`, `sin`, `cos`, `tanh`,
 `floor`, `ceil`). Anything else is reported by operation and line (`Unsupported`).
@@ -77,7 +83,8 @@ CUDA on the CPU simulator, and qpel's Metal on the Apple GPU.
 
 `corpus/triton/kernels.py` holds kernels in the style of the Triton tutorials (vector addition,
 fused softmax, layer norm, matrix multiplication with the grouped program order), plus an
-element-wise select with scalar arguments, a 2D strided transpose-copy and per-row statistics of a
-2D tile (reductions along axis 1). Each is a fixture (`triton_<kernel>`), so it is part of the round-trip matrix
+element-wise select with scalar arguments, a 2D strided transpose-copy, per-row statistics of a
+2D tile (reductions along axis 1), a row argmax (`return_indices`), a block cumsum, a row clip
+under `if` and an integer histogram with atomics. Each is a fixture (`triton_<kernel>`), so it is part of the round-trip matrix
 (the TTIR lowers to exactly the fixture, and qpel's own CUDA and Metal import back to it) and of
 the nvcc check.

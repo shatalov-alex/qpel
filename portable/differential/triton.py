@@ -157,7 +157,53 @@ def row_stats_cases(rng):
     return out
 
 
-CASES = {'matmul_kernel': matmul_cases, 'row_stats_kernel': row_stats_cases, 'add_kernel': add_cases, 'scale_shift_kernel': scale_shift_cases, 'softmax_kernel': softmax_cases,
+def argmax_cases(rng):
+    """Per-row maximum and its index: ties (values rounded to integers, the lower index wins), rows
+    shorter than the block (masked with -inf), all-equal rows."""
+    out = []
+    for rows, cols, pad in ((1, 1, 0), (6, 64, 0), (5, 33, 4), (9, 10, 0)):
+        stride = cols + pad
+        x = np.round(rng.standard_normal(rows * stride) * 2).astype(np.float32)
+        if rows > 2:
+            x[stride:2 * stride] = 1.5  # one row of equal values: index 0
+        out.append(Case({'programs': (rows, 1, 1), 'x_ptr_size': (rows * stride, 1, 1), 'index_ptr_size': (rows, 1, 1),
+                         'value_ptr_size': (rows, 1, 1)},
+                        {'x_ptr': x, 'index_ptr': np.zeros(rows, np.int32), 'value_ptr': np.zeros(rows, np.float32)},
+                        {'n_cols': cols, 'stride': stride}, f'{rows}x{cols} stride {stride}'))
+    return out
+
+
+def cumsum_cases(rng):
+    out = []
+    for n in (1, 127, 128, 300, 1024):
+        out.append(Case({'programs': (-(-n // 128), 1, 1), 'x_ptr_size': (n, 1, 1), 'out_ptr_size': (n, 1, 1)},
+                        {'x_ptr': rng.integers(-1000, 1000, n, dtype=np.int32), 'out_ptr': np.zeros(n, np.int32)},
+                        {'n': n}, f'n={n} (per block of 128)'))
+    return out
+
+
+def clip_rows_cases(rng):
+    out = []
+    for rows, cols, pad, limit in ((1, 1, 0, 0.5), (8, 64, 0, 6.0), (5, 40, 3, 4.0), (3, 17, 0, 100.0)):
+        stride = cols + pad
+        x = (rng.standard_normal(rows * stride) * rng.uniform(0.1, 2, rows * stride)).astype(np.float32)
+        out.append(Case({'programs': (rows, 1, 1), 'x_ptr_size': (rows * stride, 1, 1), 'out_ptr_size': (rows * stride, 1, 1)},
+                        {'x_ptr': x, 'out_ptr': np.zeros(rows * stride, np.float32)},
+                        {'n_cols': cols, 'stride': stride, 'limit': limit}, f'{rows}x{cols} limit {limit}'))
+    return out
+
+
+def histogram_cases(rng):
+    out = []
+    for n, bins in ((1, 4), (128, 10), (1000, 16), (5000, 7)):
+        out.append(Case({'programs': (-(-n // 128), 1, 1), 'x_ptr_size': (n, 1, 1), 'bins_ptr_size': (bins, 1, 1)},
+                        {'x_ptr': rng.integers(-3, bins + 3, n, dtype=np.int32), 'bins_ptr': np.zeros(bins, np.int32)},
+                        {'n': n, 'n_bins': bins}, f'n={n} into {bins} bins (out of range clamped)'))
+    return out
+
+
+CASES = {'argmax_kernel': argmax_cases, 'cumsum_kernel': cumsum_cases, 'clip_rows_kernel': clip_rows_cases,
+         'histogram_kernel': histogram_cases, 'matmul_kernel': matmul_cases, 'row_stats_kernel': row_stats_cases, 'add_kernel': add_cases, 'scale_shift_kernel': scale_shift_cases, 'softmax_kernel': softmax_cases,
          'copy2d_kernel': copy2d_cases, 'layer_norm_kernel': layer_norm_cases}
 
 

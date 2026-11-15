@@ -26,7 +26,7 @@ import math
 import re
 import struct
 
-from .ttir import Op, Type, parse
+from .ttir import Op, Type, parse, parse_type, split_top
 from qpel_schema import is_identifier
 
 SCALARS = {'i1': 'bool', 'i8': 'i8', 'i16': 'i16', 'i32': 'i32', 'i64': 'i64', 'f16': 'f16', 'bf16': 'bf16', 'f32': 'f32'}
@@ -45,10 +45,6 @@ CMPI = {'slt': '<', 'sle': '<=', 'sgt': '>', 'sge': '>=', 'eq': '==', 'ne': '!='
 CMPI_UNSIGNED = {'ult': '<', 'ule': '<=', 'ugt': '>', 'uge': '>='}
 CMPF = {'olt': '<', 'ole': '<=', 'ogt': '>', 'oge': '>=', 'oeq': '==', 'une': '!='}
 CASTS = {'arith.sitofp', 'arith.fptosi', 'arith.extf', 'arith.truncf', 'arith.extsi', 'arith.trunci', 'arith.bitcast'}
-COMBINERS = {'arith.addf': lambda a, b: f'({a} + {b})', 'arith.addi': lambda a, b: f'({a} + {b})',
-             'arith.mulf': lambda a, b: f'({a} * {b})', 'arith.maxnumf': lambda a, b: f'math.fmax({a}, {b})',
-             'arith.minnumf': lambda a, b: f'math.fmin({a}, {b})', 'arith.maxsi': lambda a, b: f'max({a}, {b})',
-             'arith.minsi': lambda a, b: f'min({a}, {b})'}
 MATH_BOUNDED = {'math.exp', 'math.exp2', 'math.log', 'math.log2', 'math.sin', 'math.cos', 'math.tanh'}
 
 
@@ -127,7 +123,7 @@ class Lowering:
         self.shared = []  # (name, type text) declared at the kernel's top
         self.lines = []
         self.depth = 1
-        self.reads, self.writes = set(), set()
+        self.reads, self.writes, self.atomics = set(), set(), set()
         self.adaptations = []
         self.k = self.e = None  # the slot and element of the innermost owned() loop
         self.float_sums = []  # lengths of the float axes reduced by + or * (compared within a tolerance)
@@ -306,6 +302,12 @@ class Lowering:
             return self.loop(op)
         if name == 'tt.dot':
             return self.dot(op)
+        if name == 'tt.scan':
+            return self.scan(op)
+        if name == 'scf.if':
+            return self.branch(op)
+        if name == 'tt.atomic_rmw':
+            return self.atomic(op)
         if name in INT_BINARY or name in FLOAT_BINARY or name in CALLS or name in CASTS or \
                 name in ('arith.cmpi', 'arith.cmpf', 'arith.select', 'arith.negf'):
             if name in MATH_BOUNDED:
@@ -469,42 +471,172 @@ class Lowering:
                 self.close()
         self.owned(t, body)
 
+    def combine(self, region, accumulators, elements):
+        """Emit the combiner region of a reduce or scan for accumulators (scalar locals, assigned) and
+        the next elements (expressions): its operations become scalar statements."""
+        for (arg, t), text in zip(region.arguments, accumulators + elements):
+            self.values[arg] = Scalar(t, text)
+        for o in region.ops:
+            if o.name in ('tt.reduce.return', 'tt.scan.return'):
+                results = [self.value(x).text for x in o.operands]
+                for acc, result in zip(accumulators, results):
+                    self.emit(f'{acc} = {result};')
+                return
+            if o.regions or o.name not in INT_BINARY and o.name not in FLOAT_BINARY and o.name not in CALLS and \
+                    o.name not in CASTS and o.name not in ('arith.cmpi', 'arith.cmpf', 'arith.select', 'arith.negf',
+                                                           'arith.constant'):
+                raise Unsupported(o, f'{o.name} in a reduction or scan combiner')
+            self.op(o)
+        raise Unsupported('combiner', 'a reduction or scan region without its return')
+
+    def region_sums(self, region, n):
+        if any(o.name in ('arith.addf', 'arith.mulf') for o in region.ops):
+            self.float_sums.append(n)
+
+    def operands_shared(self, op):
+        return [v if isinstance(v, (Lazy, Shared)) else self.materialize(v, op.results[0])
+                for v in (self.value(x) for x in op.operands)]
+
     def reduce(self, op):
-        src = self.value(op.operands[0])
+        """tt.reduce of one or more tensors (argmax: values and indices) along an axis, its combiner
+        applied in index order 0 to n - 1."""
         axis = op.attribute('axis')
         region = op.regions[0]
-        body = [o for o in region.ops if o.name != 'tt.reduce.return']
-        if len(op.operands) != 1 or len(body) != 1 or body[0].name not in COMBINERS or \
-                body[0].operands != [a for a, _ in region.arguments]:
-            raise Unsupported(op, 'a reduction other than one sum, product, min or max of its two arguments')
-        combine = COMBINERS[body[0].name]
-        t = src.type
-        if body[0].name in ('arith.addf', 'arith.mulf'):
-            self.float_sums.append(t.shape[axis])
-        shared = self.materialize(src, op.results[0]) if not isinstance(src, (Lazy, Shared)) else src
-        term = scalar_term(t.element)
+        sources = self.operands_shared(op)
+        t = sources[0].type
         n = t.shape[axis]
+        self.region_sums(region, n)
+        terms = [scalar_term(s.type.element) for s in sources]
         out_shape = t.shape[:axis] + t.shape[axis + 1:]
-        if not out_shape:
-            name = self.fresh(op.results[0])
-            self.emit(f'let {name}: {term} = {self.element(shared, ["0"], False)};')
+
+        def fold(c, at):
+            accs = [self.fresh(op.results[0].split('#')[0] + '_acc') for _ in sources]
+            for acc, term, s in zip(accs, terms, sources):
+                self.emit(f'let {acc}: {term} = {at(s, "0")};')
             j = self.fresh('j')
             self.open(f'for (let {j}: i32 = 1; {j} < {n}; {j} = {j} + 1)')
-            self.emit(f'{name} = {combine(name, self.element(shared, [j], False))};')
+            self.combine(region, accs, [at(s, j) for s in sources])
             self.close()
-            return self.define(op, Scalar(Type((), t.element), name))
-        rt = Type(out_shape, t.element)
-        out = self.new_data(rt, op.results[0])
-        j = self.fresh('j')
+            return accs
+        if not out_shape:
+            accs = fold([], lambda s, i: self.element(s, [i], False))
+            for result, acc, s in zip(op.results, accs, sources):
+                self.values[result] = Scalar(Type((), s.type.element), acc)
+            return
+        rt = [Type(out_shape, s.type.element) for s in sources]
+        outs = [self.new_data(r, op.results[0].split('#')[0]) for r in rt]
 
-        def fold(c):
-            at = lambda index: self.element(shared, c[:axis] + [index] + c[axis:], False)
-            self.emit(f'{out}[{self.k}] = {at("0")};')
-            self.open(f'for (let {j}: i32 = 1; {j} < {n}; {j} = {j} + 1)')
-            self.emit(f'{out}[{self.k}] = {combine(f"{out}[{self.k}]", at(j))};')
+        def body(c):
+            accs = fold(c, lambda s, i: self.element(s, c[:axis] + [i] + c[axis:], False))
+            for out, acc in zip(outs, accs):
+                self.emit(f'{out}[{self.k}] = {acc};')
+        self.owned(rt[0], body)
+        for result, out, r in zip(op.results, outs, rt):
+            self.values[result] = Data(r, out)
+
+    def scan(self, op):
+        """tt.scan (inclusive) along an axis: element i combines elements 0 to i in index order (n - 1
+        down to i when reversed)."""
+        axis = op.attribute('axis')
+        reverse = str(op.attribute('reverse', 'false')).strip() == 'true'
+        region = op.regions[0]
+        sources = self.operands_shared(op)
+        t = sources[0].type
+        n = t.shape[axis]
+        self.region_sums(region, n)
+        terms = [scalar_term(s.type.element) for s in sources]
+        outs = [self.new_data(Type(t.shape, s.type.element), op.results[0].split('#')[0]) for s in sources]
+
+        def body(c):
+            at = lambda s, i: self.element(s, c[:axis] + [i] + c[axis + 1:], False)
+            first = str(n - 1) if reverse else '0'
+            accs = [self.fresh(op.results[0].split('#')[0] + '_acc') for _ in sources]
+            for acc, term, s in zip(accs, terms, sources):
+                self.emit(f'let {acc}: {term} = {at(s, first)};')
+            j = self.fresh('j')
+            if reverse:
+                self.open(f'for (let {j}: i32 = {n - 2}; {j} >= {c[axis]}; {j} = {j} - 1)')
+            else:
+                self.open(f'for (let {j}: i32 = 1; {j} <= {c[axis]}; {j} = {j} + 1)')
+            self.combine(region, accs, [at(s, j) for s in sources])
             self.close()
-        self.owned(rt, fold)
-        self.define(op, Data(rt, out))
+            for out, acc in zip(outs, accs):
+                self.emit(f'{out}[{self.k}] = {acc};')
+        self.owned(t, body)
+        for result, out, s in zip(op.results, outs, sources):
+            self.values[result] = Data(Type(t.shape, s.type.element), out)
+
+    def branch(self, op):
+        """scf.if on a scalar condition: both branches' yields assign the results (declared before)."""
+        condition = self.value(op.operands[0])
+        results = []
+        types = op.result_types
+        if not types:  # `scf.if %c -> (tensor<64xf32>) {`: the result types follow the arrow
+            found = re.search(r'->\s*\((.*)\)\s*$', op.text) or re.search(r'->\s*(\S+)\s*$', op.text)
+            types = [parse_type(t) for t in split_top(found.group(1))] if found else []
+        for result, t in zip(op.results, types):
+            if t.is_tensor:
+                results.append((result, Data(t, self.new_data(t, result))))
+            else:
+                name = self.fresh(result)
+                self.emit(f'let {name}: {scalar_term(t.element)} = {ZERO.get(scalar_term(t.element), "0")};')
+                results.append((result, Scalar(t, name)))
+        for index, region in enumerate(op.regions):
+            self.open(f'if ({condition.text})' if index == 0 else 'else')
+            self.block(region.ops)
+            yielded = next((o for o in region.ops if o.name == 'scf.yield'), None)
+            for (result, var), x in zip(results, yielded.operands if yielded else []):
+                v = self.value(x)
+                if isinstance(var, Data):
+                    if v.buffer is not None:
+                        var.buffer = v.buffer
+                    self.owned(var.type, lambda c, v=v, var=var: self.emit(f'{var.name}[{self.k}] = {self.element(v, c, True)};'))
+                else:
+                    self.emit(f'{var.text} = {v.text};')
+            self.close()
+        for result, var in results:
+            self.values[result] = var
+
+    def atomic(self, op):
+        """tt.atomic_rmw (relaxed): each owned element of the mask applies the operation to its address."""
+        m = re.match(r'\s*(\w+)\s*,\s*(\w+)\s*,\s*(\w+)\s*,', op.text)
+        kind, order, scope = m.groups() if m else (None, None, None)
+        if order != 'relaxed':
+            raise Unsupported(op, f'a {order} atomic; qpel\'s atomics are relaxed (tl.atomic_*(..., sem="relaxed"))')
+        functions = {'add': 'atomic.add', 'max': 'atomic.max', 'min': 'atomic.min', 'and': 'atomic.and',
+                     'or': 'atomic.or', 'xor': 'atomic.xor', 'exch': 'atomic.exchange'}
+        if kind not in functions:
+            raise Unsupported(op, f'atomic {kind}')
+        ptr, value = self.value(op.operands[0]), self.value(op.operands[1])
+        mask = self.value(op.operands[2]) if len(op.operands) > 2 else None
+        element = scalar_term(ptr.type.pointee)
+        if element not in ('i32', 'u32') and not (element == 'f32' and kind in ('add', 'exch')):
+            raise Unsupported(op, f'atomic {kind} on {element}')
+        self.atomics.add(ptr.buffer)
+        used = any(op.results[0] in o.operands for o in self.function_ops())
+        t = ptr.type
+        if not t.is_tensor:
+            raise Unsupported(op, 'a scalar atomic (once per program)')
+        out = self.new_data(Type(t.shape, ptr.type.pointee), op.results[0]) if used else None
+
+        def body(c):
+            call = f'{functions[kind]}({ptr.buffer} + cast<u32>({self.element(ptr, c, True)}), {self.element(value, c, True)})'
+            if mask is not None:
+                self.open(f'if ({self.element(mask, c, True)})')
+            self.emit(f'{out}[{self.k}] = {call};' if out else f'{call};')
+            if mask is not None:
+                self.close()
+        self.owned(t, body)
+        if out:
+            self.define(op, Data(Type(t.shape, ptr.type.pointee), out))
+
+    def function_ops(self):
+        def walk(ops):
+            for o in ops:
+                yield o
+                for r in o.regions:
+                    yield from walk(r.ops)
+        return walk(self.function.body.ops)
 
     def dot(self, op):
         """acc + a @ b for a [M, K] and b [K, N]: each owned element (m, n) adds a[m, k] * b[k, n] to
@@ -592,7 +724,7 @@ class Lowering:
         params = []
         for i, (name, t) in enumerate(self.params):
             if t.is_pointer:
-                access = 'write' if name in self.writes else 'read'
+                access = 'atomic' if name in self.atomics else 'write' if name in self.writes else 'read'
                 params.append(f'{name}: buffer<{scalar_term(t.pointee)}, {access}> @{i}')
             else:
                 params.append(f'{name}: {scalar_term(t.element)} @{i}')
@@ -610,8 +742,8 @@ class Lowering:
                 lines.append(f'  shape {name}_size;')
         for name, t in self.params:
             if t.is_pointer:
-                kind = 'inout' if name in self.writes else 'input'
-                access = 'write' if name in self.writes else 'read'
+                kind = 'inout' if name in self.writes | self.atomics else 'input'
+                access = 'atomic' if name in self.atomics else 'write' if name in self.writes else 'read'
                 lines.append(f'  {kind} {name}: buffer<{scalar_term(t.pointee)}, {access}> in {name}_size;')
             else:
                 lines.append(f'  value {name}: {scalar_term(t.element)};')
