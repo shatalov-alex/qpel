@@ -92,7 +92,7 @@ class Version4(unittest.TestCase):
         from generate_metal_host import generate as metal_host
         for host in (cuda_host(plan, b''), metal_host(plan, b'')):
             self.assertIn("'slots'", host)
-            self.assertIn("return {'slots': buffers['slots'], 'table': buffers['table']}", host)
+            self.assertIn("result = {'slots': buffers['slots'], 'table': buffers['table']}", host)
 
 
 @unittest.skipUnless(shutil.which('clang') and shutil.which('clang++'), 'clang required')

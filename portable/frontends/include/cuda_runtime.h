@@ -184,7 +184,7 @@ cudaError_t cudaEventRecord(cudaEvent_t, cudaStream_t = 0);
 cudaError_t cudaStreamWaitEvent(cudaStream_t, cudaEvent_t, unsigned = 0);
 }
 // the C++ API's overload (cuda_runtime.h): an event with flags
-inline cudaError_t cudaEventCreate(cudaEvent_t* e, unsigned flags) { return cudaEventCreateWithFlags(e, flags); }
+cudaError_t cudaEventCreate(cudaEvent_t*, unsigned);
 // Device-side libc (provided by the SDK's device runtime).
 extern "C" __device__ int printf(const char*, ...);
 extern "C" __device__ void* memcpy(void*, const void*, size_t);
@@ -341,11 +341,11 @@ namespace std { template <class T> constexpr int bit_width(T x) { int n = 0; whi
 #endif
 struct ushort4 { unsigned short x, y, z, w; };
 cudaError_t cudaMallocAsync(void**, size_t, cudaStream_t);
-template <class T> cudaError_t cudaMallocAsync(T** p, size_t n, cudaStream_t s) { return cudaMallocAsync((void**)p, n, s); }
+template <class T> cudaError_t cudaMallocAsync(T**, size_t, cudaStream_t);  // (declarations only: a header with bodies is copied, see simulate.py)
 cudaError_t cudaFreeAsync(void*, cudaStream_t);
 __device__ int __popcll(unsigned long long);
 __device__ int __clzll(long long);
 __device__ int __ffsll(long long);
 cudaError_t cudaMallocHost(void**, size_t);
-template <class T> cudaError_t cudaMallocHost(T** p, size_t n) { return cudaMallocHost((void**)p, n); }
+template <class T> cudaError_t cudaMallocHost(T**, size_t);
 cudaError_t cudaFreeHost(void*);
