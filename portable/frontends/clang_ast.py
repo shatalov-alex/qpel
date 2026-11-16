@@ -36,10 +36,40 @@ def flags(defines):
     return [d if d.startswith('-std=') else '-D' + d for d in defines]
 
 
+# C++23 sources are parsed with LLVM's own clang (20 or later), not Xcode's: gsplat's Lidars.cuh reads a
+# static member through a reference in a constant expression (`constexpr float k = 1.f /
+# lidar.ANGLE_TO_PIXEL_SCALING_FACTOR`), which P2280 allows and nvcc accepts; LLVM's clang implements
+# P2280 in C++23 mode, Apple clang 17 not at all. QPEL_LLVM_CLANG names it, else Homebrew's llvm.
+MODERN = ('-std=c++23', '-std=c++2b', '-std=c++26', '-std=c++2c')
+LLVM_CLANG_CANDIDATES = ('/opt/homebrew/opt/llvm/bin/clang', '/usr/local/opt/llvm/bin/clang')
+
+
+@functools.lru_cache(maxsize=None)
+def llvm_clang():
+    """LLVM's clang (version 20 or later) for C++23 sources, or None."""
+    for candidate in filter(None, (os.environ.get('QPEL_LLVM_CLANG'), *LLVM_CLANG_CANDIDATES)):
+        if not os.access(candidate, os.X_OK):
+            continue
+        version = re.search(r'clang version (\d+)', subprocess.run([candidate, '--version'], capture_output=True,
+                                                                     text=True).stdout)
+        if version and int(version.group(1)) >= 20:
+            return candidate
+    return None
+
+
+def compiler(extra):
+    if any(flag in MODERN for flag in extra):
+        found = llvm_clang()
+        if found is None:
+            raise SourceError('a C++23 source needs LLVM clang 20 or later (brew install llvm, or QPEL_LLVM_CLANG)')
+        return found
+    return 'clang'
+
+
 def command(path, dialect, include=(), defines=()):
     extra = [arg for folder in include for arg in ('-I', str(folder))] + flags(defines)
     if dialect == 'cuda':
-        return ['clang', '-std=c++17', '-x', 'cuda', '--cuda-host-only', '-nocudainc', '-nocudalib',
+        return [compiler(extra), '-std=c++17', '-x', 'cuda', '--cuda-host-only', '-nocudainc', '-nocudalib',
                 '-I', str(INCLUDE), '-I', str(INCLUDE/'libraries'), '-I', str(INCLUDE/'qpel_cub'), *extra,
                 # clang's cuda_wrappers/new uses ::malloc/::free, which -nocudainc no longer declares;
                 # libc++'s <new> happens to (macOS), libstdc++'s does not (Linux).

@@ -289,7 +289,7 @@ Tensor randn(IntArrayRef, TensorOptions = {});
 Tensor cat(std::initializer_list<Tensor>, int64_t = 0);
 Tensor cat(const std::vector<Tensor>&, int64_t = 0);
 Tensor stack(const std::vector<Tensor>&, int64_t = 0);
-Tensor cumsum(const Tensor&, int64_t);
+Tensor cumsum(const Tensor&, int64_t, std::optional<ScalarType> = std::nullopt);
 Tensor index_select(const Tensor&, int64_t, const Tensor&);
 Tensor where(const Tensor&, const Tensor&, const Tensor&);
 Tensor clamp(const Tensor&, const Scalar&, const Scalar&);

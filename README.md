@@ -47,7 +47,8 @@ Metal source ──┘    typed, validated    └──▶ Metal (Apple GPUs)
 ## Quick start
 
 Requires Python 3.10+. The compiler itself uses only the standard library. Importing source
-needs `clang`; the Metal importer also needs Xcode's `metal`.
+needs `clang`; the Metal importer also needs Xcode's `metal`. C++23 sources (a few of gsplat's)
+need LLVM's clang 20 or later (`brew install llvm`, or `QPEL_LLVM_CLANG`).
 
 ```sh
 git clone https://github.com/shatalov-alex/qpel.git && cd qpel/portable

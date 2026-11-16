@@ -148,5 +148,25 @@ class Coverage(unittest.TestCase):
                 self.assertEqual(hashlib.sha256(data).hexdigest(), digest, sums.parent.name + '/' + name)
 
 
+
+class Compiler(unittest.TestCase):
+    """C++23 sources (gsplat's Lidar sources: P2280) are parsed with LLVM's clang 20 or later."""
+    SOURCE = ('struct P { static constexpr float F = 2.f; };\n'
+              '__global__ void k(const P &p, float *y) { constexpr float s = 1.f / p.F; y[0] = s; }\n')
+
+    def test_other_standards_keep_xcode_clang(self):
+        self.assertEqual(clang_ast.command('k.cu', 'cuda', defines=['-std=c++20'])[0], 'clang')
+
+    def test_a_reference_in_a_constant_expression(self):
+        if clang_ast.llvm_clang() is None:
+            self.skipTest('LLVM clang 20 or later required (brew install llvm, or QPEL_LLVM_CLANG)')
+        self.assertEqual(clang_ast.command('k.cu', 'cuda', defines=['-std=c++23'])[0], clang_ast.llvm_clang())
+        with tempfile.TemporaryDirectory() as work:
+            path = Path(work)/'k.cu'
+            path.write_text(self.SOURCE)
+            unit, _ = clang_ast.parse(path, 'cuda', (), ('-std=c++23',))
+            self.assertTrue(unit['inner'])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
