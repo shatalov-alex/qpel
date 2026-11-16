@@ -31,6 +31,10 @@ def compare(expected, actual, names, defined=None, ulps=0, views=None, zero_sign
     math functions) a float element also matches when it is within that many ulp, or within
     ulps * epsilon * max(1, |value|), which allows for cancellation after a bounded function."""
     for name in names:
+        if name not in expected or name not in actual:  # an optional output the case left out (IR version 9)
+            if (name in expected) != (name in actual):
+                return f'{name}: returned by one side only'
+            continue
         a, b = np.asarray(expected[name]), np.asarray(actual[name])
         if views and name in views:  # a byte buffer holding values of another type
             dtype = DTYPES[views[name]]

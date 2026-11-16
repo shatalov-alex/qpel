@@ -9,6 +9,7 @@
 // every thread of the block that has not exited (as on Volta and later), __shared__ is
 // one copy for the block (blocks run one at a time), and atomics take a lock.
 #pragma once
+#include <cfloat>  // FLT_MAX and friends, which CUDA's own headers bring in
 #include <cmath>
 #include <cstdint>
 #include <cstdio>

@@ -12,6 +12,9 @@ static_assert(sizeof(QpelShape) == 16, "qpel shape ABI must be 16 bytes");
 #define QPEL_WRITE_U32 unsigned int*
 #define QPEL_SHAPE QpelShape
 #define QPEL_PARAM(type, name, binding) type name
+// An optional buffer (IR version 9): the pointer, null when the caller leaves the buffer out.
+#define QPEL_OPTIONAL_PARAM(type, name, binding, presence) type name
+#define QPEL_PRESENT(name) ((name) != nullptr)
 #define QPEL_GRID_PARAM(name)
 #define QPEL_GRID_LOCAL(name) const unsigned int name = blockIdx.x * blockDim.x + threadIdx.x;
 // Legacy CUDA atomics have relaxed ordering at device scope. A zero-add is an

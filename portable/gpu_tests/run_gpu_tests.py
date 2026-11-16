@@ -525,6 +525,25 @@ def run_math_v8(name, host, plan):
     return 1
 
 
+def run_optional_bias(name, host, plan):
+    """An optional input (bias) and an optional output (where), each given or left out (IR version 9)."""
+    rng = np.random.default_rng(20261116)
+    cases = 0
+    for size in (1, 70, 4099):
+        x, b = rng.standard_normal(size).astype(np.float32), rng.standard_normal(size).astype(np.float32)
+        for bias in (True, False):
+            for where in (True, False):
+                inputs = {'x': torch.from_numpy(x).to(DEVICE)} | ({'bias': torch.from_numpy(b).to(DEVICE)} if bias else {})
+                out = host.run(inputs, {'n': (size, 1, 1)}, {'scale': 0.75}, omit=() if where else ('where',))
+                want = (x * np.float32(0.75) + (b if bias else np.float32(0))).astype(np.float32)
+                np.testing.assert_array_equal(out['y'].cpu().numpy(), want)
+                assert ('where' in out) == where
+                if where:
+                    np.testing.assert_array_equal(out['where'].cpu().numpy(), np.arange(size, dtype=np.uint32))
+                cases += 1
+    return cases
+
+
 # --- corpus kernels (llama.cpp operations): the oracle is the original source itself ---
 
 def corpus_fixtures():
@@ -680,7 +699,7 @@ def run_bitcast(name, host, plan):
 TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fma32': run_fma32,
          'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components,
          'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset, 'box_sum': run_box_sum,
-         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride, 'math_ops': run_math_ops, 'math_v8': run_math_v8, 'sort_bytes': run_sort_bytes, 'atomics': run_atomics, 'bitcast': run_bitcast}
+         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride, 'math_ops': run_math_ops, 'math_v8': run_math_v8, 'optional_bias': run_optional_bias, 'sort_bytes': run_sort_bytes, 'atomics': run_atomics, 'bitcast': run_bitcast}
 
 
 def main(argv=None):

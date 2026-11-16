@@ -32,7 +32,9 @@ See `examples/saxpy.qpel`.
       dispatch k over s block (16, 16, 1) groups ("(W + 15)/16", "H", "1") (...);
     }
 
-Helpers come before their callers. Kernel parameters carry their binding (`@0`).
+Helpers come before their callers. Kernel parameters carry their binding (`@0`). An optional
+buffer (IR version 9) is `optional bias: buffer<f32, read> @1`, its pipeline resource
+`optional input bias: ...`, and `qpel.present(bias)` tells whether the caller gave it.
 `groups` gives a Groups kernel's group counts as expressions of the dispatch shape's
 W, H and N (NUMERICS.md, launch geometry).
 
@@ -77,4 +79,4 @@ Literals: `7u` (u32), `7` (i32), `7_i64` (any integer type; negative ones
 | `atomic.max(p, v)`, `atomic.and(p, v)`, `atomic.or(p, v)`, `atomic.xor(p, v)`, `atomic.exchange(p, v)` | IR version 6, also `buffer<f32, atomic>` and `buffer<u64, atomic>` (NUMERICS.md, Atomics) |
 | `b[i]`, `s.field`, `f(args)` | Index, Member, Call |
 
-`let fn module pipeline dispatch cast bitcast view math atomic qpel` are reserved names.
+`let fn module pipeline dispatch cast bitcast view math atomic qpel optional` are reserved names.

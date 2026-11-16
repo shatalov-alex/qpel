@@ -94,18 +94,23 @@ def generate(plan, shader):
     validate_resources(plan)
     resources = plan['resources']
     inputs = [r['name'] for r in resources if r['kind'] in ('input', 'inout')]
+    required = [r['name'] for r in resources if r['kind'] in ('input', 'inout') and not r.get('optional')]
+    optional = sorted(r['name'] for r in resources if r.get('optional'))
     shapes = [r['name'] for r in resources if r['kind'] == 'shape']
     outputs = [r['name'] for r in resources if r['kind'] in ('output', 'inout')]
     values = [r['name'] for r in resources if r['kind'] == 'value']
     lines = [PRELUDE, 'SHADER_FILE = ' + repr(plan['module'] + '.cu'),
              'SHADER_SHA256 = ' + repr(hashlib.sha256(shader).hexdigest()), '',
-             'def run(inputs, shapes, values=None, *, device=0):',
-             '    """CuPy arrays in/out; shapes are (W,H,N); values are scalars; each stage completes before the next."""',
+             'def run(inputs, shapes, values=None, *, device=0, omit=()):',
+             '    """CuPy arrays in/out; shapes are (W,H,N); values are scalars; each stage completes before the next.',
+             '    An optional input is left out by leaving it out of inputs, an optional output by naming it in omit:',
+             '    the kernel receives a null pointer."""',
              '    values = {} if values is None else values',
              '    if type(device) is not int or device < 0:',
              '        raise ValueError("CUDA device must be a nonnegative integer")',
-             f'    if set(inputs) != set({inputs!r}) or set(shapes) != set({shapes!r}) or set(values) != set({values!r}):',
+             f'    if not set({required!r}) <= set(inputs) <= set({inputs!r}) or set(shapes) != set({shapes!r}) or set(values) != set({values!r}) or not set(omit) <= set({optional!r}):',
              '        raise ValueError("Input/shape/value names do not match Pipeline")',
+             f'    present = {{name: name not in omit and (name in inputs or name not in {inputs!r}) for name in {optional!r}}}',
              '    buffers, sizes = {}, {}']
     for name in shapes:
         lines.append(f'    buffers[{name!r}], sizes[{name!r}] = _shape(shapes[{name!r}])')
@@ -122,20 +127,29 @@ def generate(plan, shader):
     for r in resources:
         if r['kind'] in ('input', 'inout'):
             name = r['name']
-            lines += [f'    value = inputs[{name!r}]',
-                      f"    if not isinstance(value, cp.ndarray) or value.device.id != device or value.dtype != cp.{CUPY_BUFFERS[element(r['type'])]} or value.size != {_count(r)}:",
-                      '        raise ValueError("Input device, dtype or element count does not match Pipeline")']
+            if r.get('optional'):
+                lines.append(f'    if present[{name!r}]:')
+            pad = '    ' if r.get('optional') else ''
+            lines += [pad + f'    value = inputs[{name!r}]',
+                      pad + f"    if not isinstance(value, cp.ndarray) or value.device.id != device or value.dtype != cp.{CUPY_BUFFERS[element(r['type'])]} or value.size != {_count(r)}:",
+                      pad + '        raise ValueError("Input device, dtype or element count does not match Pipeline")']
     lines += ['    with cp.cuda.Device(device):', '        stream = cp.cuda.get_current_stream()',
               '        lib = _library(device)']
     for r in resources:
         name = r['name']
         if r['kind'] == 'input':
-            lines.append(f'        buffers[{name!r}] = cp.ascontiguousarray(inputs[{name!r}]).reshape(-1)')
+            line = f'buffers[{name!r}] = cp.ascontiguousarray(inputs[{name!r}]).reshape(-1)'
         elif r['kind'] == 'inout':  # updated in a copy, returned as an output
-            lines.append(f'        buffers[{name!r}] = cp.array(inputs[{name!r}], copy=True, order="C").reshape(-1)')
+            line = f'buffers[{name!r}] = cp.array(inputs[{name!r}], copy=True, order="C").reshape(-1)'
         elif r['kind'] not in ('shape', 'value'):
             allocate = 'zeros' if r['kind'] == 'zeroed' else 'empty'  # zeroed scratch starts at zero
-            lines.append(f"        buffers[{name!r}] = cp.{allocate}({_count(r)}, dtype=cp.{CUPY_BUFFERS[element(r['type'])]})")
+            line = f"buffers[{name!r}] = cp.{allocate}({_count(r)}, dtype=cp.{CUPY_BUFFERS[element(r['type'])]})"
+        else:
+            continue
+        if r.get('optional'):  # left out: a null pointer
+            lines += [f'        if present[{name!r}]:', '            ' + line, '        else:', f'            buffers[{name!r}] = np.uint64(0)']
+        else:
+            lines.append('        ' + line)
     for s in plan['stages']:
         args = ', '.join(f"buffers[{b['resource']!r}]" for b in s['bindings'])
         block = s['blockSize']
@@ -154,5 +168,6 @@ def generate(plan, shader):
         else:
             lines += [f"        lib.get_function({s['kernel']!r})(((sizes[{s['grid']!r}] + {block - 1}) // {block},), ({block},), ({args},), stream=stream)",
                       '        stream.synchronize()']
-    lines.append('    return {' + ', '.join(f'{n!r}: buffers[{n!r}]' for n in outputs) + '}')
+    lines.append('    result = {' + ', '.join(f'{n!r}: buffers[{n!r}]' for n in outputs) + '}')
+    lines.append('    return {name: value for name, value in result.items() if present.get(name, True)}')
     return '\n'.join(lines) + '\n'

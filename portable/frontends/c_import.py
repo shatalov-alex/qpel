@@ -152,6 +152,8 @@ def peel(node):
             cast = node.get('castKind')
             if cast == 'BitCast' and scalar_of(node) == 'pointer':
                 return node  # a pointer reinterpretation: a qpel View, read by Importer.core
+            if cast in ('NullToPointer', 'PointerToBoolean'):
+                return node  # a null pointer, or a pointer as a condition: Importer.presence reads the tests
             if cast and cast not in VALUE_CASTS:
                 raise Unsupported(node, 'conversion', f'{cast} has no qpel equivalent')
             node = node['inner'][0]
@@ -1158,6 +1160,12 @@ class Importer:
         self.assigned = assigned_decls(body_of(decl))
         self.names = {self.safe_name(p['name']) for p in params_of(decl) if p.get('name')}  # unique per function
         self.conditional_exchanges = conditional_exchanges(body_of(decl))
+        # optional buffers (IR version 9): kernel pointer parameters the body tests against null, and
+        # (qpel's own Metal read back) the buffers whose presence flag qpel_present_<name> it receives
+        tested = {t[0] for t in (null_tested(x) for x in walk(body_of(decl))) if t} if kernel else set()
+        flags = {p['name'][len('qpel_present_'):]: p['id'] for p in params_of(decl)
+                 if kernel and p.get('name', '').startswith('qpel_present_')}
+        optional_ids = tested | {p['id'] for p in params_of(decl) if p.get('name') in flags}
         params = []
         position = 0
         shape_param = None
@@ -1189,6 +1197,10 @@ class Importer:
             if builtin:
                 self.scope[p['id']] = ('builtin', p['name'])
                 continue
+            if kernel and p.get('name', '').startswith('qpel_present_') and p['name'][len('qpel_present_'):] in \
+                    {q.get('name') for q in params_of(decl)}:
+                self.scope[p['id']] = ('presence', p['name'][len('qpel_present_'):])  # qpel's Metal presence flag
+                continue
             kind = types[(name, i)]
             if kind is None:  # a survey already recorded why this parameter has no qpel type
                 self.scope[p['id']] = ('untyped', p['name'])
@@ -1200,6 +1212,8 @@ class Importer:
                 attrs['reference'] = True  # the caller's variable, written in place (IR version 4)
             if kernel:
                 attrs.update(binding=self.dialect.binding(p, position), isBuffer=True)
+                if p['id'] in optional_ids and type_is_buffer(kind):
+                    attrs['optional'] = True  # the caller may pass no buffer (IR version 9)
                 if kind == 'shape3':
                     shape_param = p
                 elif count is not None and p['id'] == count['id'] or p['id'] in sized:
@@ -1332,6 +1346,8 @@ class Importer:
                 item.update(source='extent', parameter=self.graph.nodes[entry[1]]['attributes']['name'], axis=entry[2])
             elif entry[0] == 'count':
                 item.update(source='volume', parameter=self.safe_name(p['name']))
+            elif entry[0] == 'presence':  # qpel's Metal: whether the optional buffer was given (IR version 9)
+                item.update(source='presence', parameter=self.safe_name(entry[1]))
             else:
                 item.update(source='parameter', parameter=self.safe_name(p['name']))
             out.append(item)
@@ -2433,6 +2449,9 @@ class Importer:
         kind = n['kind']
         if '_facade_error' in n:
             raise Unsupported(n, 'library', n['_facade_error'])
+        present = self.presence(n)
+        if present is not None:
+            return present
         if kind == 'UnaryExprOrTypeTraitExpr':
             value = integer_constant(n)
             if value is None or scalar_of(n) not in INTEGER_TERMS:
@@ -2711,6 +2730,29 @@ class Importer:
         message = f'{self.current}: plain accesses to atomic buffer {decl_name(base)} became relaxed atomic loads and stores'
         if message not in self.adaptations:
             self.adaptations.append(message)
+
+    def presence(self, n):
+        """BufferPresent (IR version 9) for a null test of an optional buffer parameter, or for qpel's
+        Metal test of a presence flag (`qpel_present_x != 0u`); None for anything else."""
+        add = self.graph.add
+        found = null_tested(n)
+        if found:
+            entry = self.scope.get(found[0])
+            if entry and entry[0] == 'param' and self.graph.nodes[entry[1]]['attributes'].get('optional'):
+                test = add('BufferPresent', links={'parameter': entry[1]})
+                return add('Unary', {'operator': '!'}, {'operand': test}) if found[1] else test
+            return None
+        if n.get('kind') == 'BinaryOperator' and n.get('opcode') in ('==', '!=') and len(n.get('inner', ())) == 2:
+            for a, b in (n['inner'], n['inner'][::-1]):
+                core = peel(a)
+                entry = self.scope.get(core.get('referencedDecl', {}).get('id')) if core.get('kind') == 'DeclRefExpr' else None
+                if entry and entry[0] == 'presence' and integer_constant(b) == 0:
+                    param = next(i for i in self.graph.nodes.values() if i['kind'] == 'Parameter'
+                                 and i['attributes']['name'] == self.safe_name(entry[1])
+                                 and i['attributes'].get('optional'))
+                    test = add('BufferPresent', links={'parameter': param['id']})
+                    return add('Unary', {'operator': '!'}, {'operand': test}) if n['opcode'] == '==' else test
+        return None
 
     def callee_name(self, node):
         """The callee of node when it is a call, else None."""
@@ -2997,10 +3039,14 @@ class Importer:
     def dispatch(self, module, plan):
         add = self.graph.add
         resources, ids = [], {}
+        optional = {b['resource'] for s in plan['stages'] if s['kernel'] in self.kernel_params for b in s['bindings']
+                    if b['parameter'] in self.kernel_params[s['kernel']] and
+                    self.graph.nodes[self.kernel_params[s['kernel']][b['parameter']]]['attributes'].get('optional')}
         for r in plan['resources']:
             kind, attributes = node_spec(r['type'])
             attrs = {'name': r['name'], 'kind': r['kind']} | ({'scale': r['scale']} if r.get('scale', 1) != 1 else {}) \
-                | ({'length': r['length']} if r.get('length') else {})
+                | ({'length': r['length']} if r.get('length') else {}) \
+                | ({'optional': True} if r.get('optional') or r['name'] in optional else {})
             ids[r['name']] = add('Resource', attrs, {'type': add(kind, attributes)})
             resources.append((r, ids[r['name']]))
         for r, ident in resources:
@@ -3330,6 +3376,36 @@ def contains_any(node, ids):
         return True
     return any(contains_any(c, ids) for c in node.get('inner', ())
                if c.get('kind') in ('FunctionDecl', 'FunctionTemplateDecl', 'NamespaceDecl', 'LinkageSpecDecl'))
+
+
+def is_null_pointer(node):
+    """True for a null pointer constant: nullptr, NULL (__null) or 0 converted to a pointer."""
+    converted = False
+    while node.get('kind') in ('ImplicitCastExpr', 'CStyleCastExpr', 'ParenExpr', 'CXXStaticCastExpr') and node.get('inner'):
+        converted |= node.get('castKind') == 'NullToPointer'
+        node = node['inner'][0]
+    return node.get('kind') in ('CXXNullPtrLiteralExpr', 'GNUNullExpr') or \
+        converted and node.get('kind') == 'IntegerLiteral' and int(node.get('value', '1')) == 0
+
+
+def null_tested(node):
+    """(clang id of a parameter tested against null, True when the test is p == null) for a test
+    `p != nullptr`, `p == NULL`, `nullptr != p` or `if (p)`, else None."""
+    def parameter(x):
+        while x.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and x.get('inner') and x.get('castKind') != 'PointerToBoolean':
+            x = x['inner'][0]
+        ref = x.get('referencedDecl', {}) if x.get('kind') == 'DeclRefExpr' else {}
+        return ref.get('id') if ref.get('kind') == 'ParmVarDecl' else None
+    if node.get('kind') == 'BinaryOperator' and node.get('opcode') in ('==', '!=') and len(node.get('inner', ())) == 2:
+        left, right = node['inner']
+        for a, b in ((left, right), (right, left)):
+            if is_null_pointer(b) and parameter(a):
+                return parameter(a), node['opcode'] == '=='
+    if node.get('kind') == 'ImplicitCastExpr' and node.get('castKind') == 'PointerToBoolean' and node.get('inner'):
+        found = parameter(node['inner'][0])
+        if found:
+            return found, False
+    return None
 
 
 def peel_void(node):

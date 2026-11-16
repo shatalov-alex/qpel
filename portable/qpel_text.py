@@ -67,7 +67,8 @@ class Printer:
         params = []
         for p in self.children(f, 'parameters'):
             pa = p['attributes']
-            text = ('ref ' if pa.get('reference') else '') + f'{pa["name"]}: {self.type(self.child(p, "type"))}'
+            text = ('ref ' if pa.get('reference') else '') + ('optional ' if pa.get('optional') else '') + \
+                f'{pa["name"]}: {self.type(self.child(p, "type"))}'
             if pa.get('isBuffer'):
                 text += f' @{pa.get("binding", 0)}'
             params.append(text)
@@ -165,6 +166,8 @@ class Printer:
             return f'qpel.barrier_count({e("value")})'
         if k == 'GridIndex':
             return 'qpel.index'
+        if k == 'BufferPresent':
+            return f'qpel.present({self.link(n, "parameter")["attributes"]["name"]})'
         if k in SUBGROUP_BUILTINS:
             return f'qpel.{SUBGROUP_BUILTINS[k]}'
         if k == 'SubgroupShuffle':
@@ -196,7 +199,7 @@ class Printer:
         lines = [f'pipeline {p["attributes"]["name"]} {{']
         for r in self.children(p, 'resources'):
             a = r['attributes']
-            text = f'  {a["kind"]} {a["name"]}'
+            text = f'  {"optional " if a.get("optional") else ""}{a["kind"]} {a["name"]}'
             if a['kind'] != 'shape':
                 text += f': {self.type(self.child(r, "type"))}'
             if 'extent' in r['links']:
@@ -397,10 +400,13 @@ class Parser:
             reference = self.peek()[1] == 'ref' and self.peek(1)[0] == 'name'
             if reference:
                 self.take('ref')
+            optional = self.peek()[1] == 'optional' and self.peek(1)[0] == 'name'
+            if optional:
+                self.take('optional')
             pname = self.take(kind='name')
             self.take(':')
             ptype = self.type()
-            attrs = {'name': pname} | ({'reference': True} if reference else {})
+            attrs = {'name': pname} | ({'reference': True} if reference else {}) | ({'optional': True} if optional else {})
             if self.accept('@'):
                 attrs.update(binding=int(self.take(kind='number')), isBuffer=True)
             params.append(self.add('Parameter', attrs, {'type': ptype}))
@@ -645,6 +651,11 @@ class Parser:
                 return self.add('Barrier')
             if what == 'barrier_count':
                 return self.add('BarrierCount', children={'value': self.arguments()[0]})
+            if what == 'present':  # qpel.present(x): an optional buffer parameter was given (IR version 9)
+                self.take('(')
+                name = self.take(kind='name')
+                self.take(')')
+                return self.add('BufferPresent', links={'parameter': self.lookup(name)})
             if what in SUBGROUP_BUILTINS.values():
                 return self.add({v: k for k, v in SUBGROUP_BUILTINS.items()}[what])
             if what in SHUFFLES.values():
@@ -686,13 +697,16 @@ class Parser:
             if word == 'dispatch':
                 stages.append(self.dispatch(ids))
                 continue
+            optional = word == 'optional'
+            if optional:
+                word = self.take(kind='name')
             rname = self.take(kind='name')
             if word == 'shape':
                 rtype = self.add('Shape3DType')
             else:
                 self.take(':')
                 rtype = self.type()
-            ident = self.add('Resource', {'name': rname, 'kind': word}, {'type': rtype})
+            ident = self.add('Resource', {'name': rname, 'kind': word} | ({'optional': True} if optional else {}), {'type': rtype})
             if self.accept('['):  # a fixed-length buffer: buffer<f32, read> [16]
                 self.graph.nodes[ident]['attributes']['length'] = int(self.take(kind='number'))
                 self.take(']')

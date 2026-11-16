@@ -17,10 +17,10 @@ LEGACY_MACROS={'void':'void','bool':'bool','u8':'QPEL_U8','u32':'QPEL_U32','i32'
        'buffer<i32, write>':'QPEL_WRITE_I32','buffer<f32, read>':'QPEL_READ_F32','buffer<f32, write>':'QPEL_WRITE_F32',
        'buffer<f16, read>':'QPEL_READ_F16','buffer<f16, write>':'QPEL_WRITE_F16'}
 TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType','StructType','ArrayType','VectorType','SharedType','SharedViewType'}
-KINDS=TYPE_KINDS|set('ArrayValue VectorValue Barrier BarrierCount View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange AtomicMax AtomicAnd AtomicOr AtomicXor AtomicExchange Bitcast SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce Pipeline Resource Dispatch Binding'.split())
+KINDS=TYPE_KINDS|set('ArrayValue VectorValue Barrier BarrierCount View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange AtomicMax AtomicAnd AtomicOr AtomicXor AtomicExchange Bitcast SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce BufferPresent Pipeline Resource Dispatch Binding'.split())
 COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage','groups','math_exact','math_bounded','subgroups','atomics_f32','atomics_u64'}
 PROFILES={'metal':COMMON_FEATURES,'cuda':COMMON_FEATURES}
-SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3',4:'qpel-portable-core-v4',5:'qpel-portable-core-v5',6:'qpel-portable-core-v6',7:'qpel-portable-core-v7',8:'qpel-portable-core-v8'}
+SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3',4:'qpel-portable-core-v4',5:'qpel-portable-core-v5',6:'qpel-portable-core-v6',7:'qpel-portable-core-v7',8:'qpel-portable-core-v8',9:'qpel-portable-core-v9'}
 # Version 2 adds else, for/do/break/continue, signed 32-bit integers and their atomics,
 # shifts, ~, conversion to u8, scalar arguments and 2D/3D kernels.
 V2_KINDS={'Grid3D','ThreadIndex','For','DoWhile','Break','Continue','I32Type','ReadOnlyI32BufferType','I32BufferType','AtomicI32BufferType','I32Literal','I32Cast','U32Cast','U8Cast'}
@@ -125,9 +125,16 @@ def version_8_features(nodes):
     return {'math.'+n['attributes']['function'] for n in nodes if n['kind']=='Math' and n['attributes'].get('function') in V8_MATH}
 
 
+def version_9_features(nodes):
+    """Version 9: optional buffers (a kernel buffer parameter the caller may leave out, and the test)."""
+    used={'qpel.present' for n in nodes if n['kind']=='BufferPresent'}
+    if any(n['kind'] in ('Parameter','Resource') and n['attributes'].get('optional') for n in nodes):used.add('optional buffer')
+    return used
+
+
 def minimum_version(program):
     nodes=program['nodes']
-    return 8 if version_8_features(nodes) else 7 if version_7_features(nodes) else 6 if version_6_features(nodes) else 5 if version_5_features(nodes) else 4 if version_4_features(nodes) else 3 if version_3_features(nodes) else 2 if version_2_features(nodes) else 1
+    return 9 if version_9_features(nodes) else 8 if version_8_features(nodes) else 7 if version_7_features(nodes) else 6 if version_6_features(nodes) else 5 if version_5_features(nodes) else 4 if version_4_features(nodes) else 3 if version_3_features(nodes) else 2 if version_2_features(nodes) else 1
 
 
 def validate(program, backend=None):
@@ -148,6 +155,8 @@ def validate(program, backend=None):
         raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_7_features(program['nodes'])))+'; declare version 7')
     if program['version']<8 and version_8_features(program['nodes']):
         raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_8_features(program['nodes'])))+'; declare version 8')
+    if program['version']<9 and version_9_features(program['nodes']):
+        raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_9_features(program['nodes'])))+'; declare version 9')
     nodes={n['id']:n for n in program['nodes']}
     if len(nodes)!=len(program['nodes']):raise ValueError('Duplicate IR node id')
     required={'integer_buffers','grid_1d'}
@@ -215,6 +224,15 @@ class Lowering:
         if len(values)!=1:raise ValueError('Required single child: '+n['kind']+'.'+role)
         return values[0]
     def link(self,n,role):return self.nodes[n['links'][role]]
+    def presence_binding(self,param):
+        """The Metal buffer index of an optional parameter's presence flag: after all of its kernel's
+        parameters, in the order of the optional ones (hosts bind them the same way)."""
+        for f in self.nodes.values():
+            if f['kind']=='Function' and param['id'] in f['children'].get('parameters',[]):
+                params=[self.nodes[i] for i in f['children']['parameters']]
+                optional=[q['id'] for q in params if q['attributes'].get('optional')]
+                return len(params)+optional.index(param['id'])
+        raise ValueError('optional parameter outside a function')
     def emit(self,n):
         k=n['kind'];a=n['attributes']
         e=lambda role:self.emit(self.child(n,role))
@@ -245,7 +263,10 @@ class Lowering:
             if not a.get('isBuffer',False):return e('type')+' '+a['name']
             declared=term(self.child(n,'type'))
             macro='QPEL_PARAM(' if is_buffer(declared) or declared=='shape3' else 'QPEL_VALUE('  # structs travel as values
+            if a.get('optional'):  # CUDA: the pointer (null when left out); Metal: the buffer and a presence flag
+                return 'QPEL_OPTIONAL_PARAM('+e('type')+', '+a['name']+', '+str(a.get('binding',0))+', '+str(self.presence_binding(n))+')'
             return macro+e('type')+', '+a['name']+', '+str(a.get('binding',0))+')'
+        if k=='BufferPresent':return 'QPEL_PRESENT('+self.link(n,'parameter')['attributes']['name']+')'
         if k=='Name':return self.link(n,'declaration')['attributes']['name']
         if k=='GridIndex':return 'qpel_index'
         if k=='ThreadIndex':
@@ -434,6 +455,7 @@ class Lowering:
             resources.append(dict(name=r['attributes']['name'],kind=r['attributes']['kind'],type=term(self.child(r,'type')),extent=self.link(r,'extent')['attributes']['name'] if 'extent' in r['links'] else None))
             if 'scale' in r['attributes']:resources[-1]['scale']=r['attributes']['scale']
             if 'length' in r['attributes']:resources[-1]['length']=r['attributes']['length']
+            if r['attributes'].get('optional'):resources[-1]['optional']=True  # the caller may leave it out (IR version 9)
         stages=[]
         for s in self.children(p,'stages'):
             stage=dict(kernel=self.link(s,'kernel')['attributes']['name'],grid=self.link(s,'grid')['attributes']['name'],blockSize=s['attributes']['blockSize'],completionBarrier=s['attributes']['completionBarrier'],bindings=[dict(parameter=self.link(b,'parameter')['attributes']['name'],resource=self.link(b,'resource')['attributes']['name']) for b in self.children(s,'bindings')])

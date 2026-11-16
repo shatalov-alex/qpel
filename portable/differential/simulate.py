@@ -62,13 +62,22 @@ WIDE = {'u64', 'i64'}  # passed as two 32-bit words, low word first
 class Case:
     """One set of test data: shapes {name: (W, H, N)}, inputs {name: array}, values {name: number}."""
 
-    def __init__(self, shapes, inputs=None, values=None, label='', defined=None):
+    def __init__(self, shapes, inputs=None, values=None, label='', defined=None, omit=()):
         """defined: {output: number of leading elements the kernel writes}, when it leaves the rest
         undefined (a grid-stride loop up to n), or {output: other output}, when it is defined only
         where the original's other output is nonzero (TRELLIS.2's depth, where alpha is 1);
         outputs not listed are compared in full."""
         self.shapes, self.inputs, self.values, self.label = shapes, inputs or {}, values or {}, label
         self.defined = defined or {}
+        # optional resources the case leaves out (IR version 9): an optional input is also left out
+        # by not giving it; a left-out buffer reaches the kernel as a null pointer
+        self.omit = set(omit)
+
+
+def absent(resource, case):
+    """True when a case leaves an optional resource out: named in case.omit, or an input not given."""
+    return resource['name'] in getattr(case, 'omit', ()) or \
+        (resource['kind'] in ('input', 'inout') and resource['name'] not in case.inputs)
 
 
 def sized_shared(text, lengths):
@@ -302,6 +311,8 @@ class Program:
                 kind = VALUE_TYPES[r['type']]
                 words = [self.word('value.' + name)] + ([self.word('value.' + name + '.hi')] if kind in WIDE else [])
                 return f'{C_VALUE[kind]}({", ".join(words)})'
+            if r.get('optional'):  # null when the case leaves it out (IR version 9)
+                return f'(qpel_sim_u32({self.word("present." + name)}) ? {self.buffer(name)} : Ptr{{nullptr}})'
             return self.buffer(name)
         if self.original:
             args = []
@@ -312,6 +323,8 @@ class Program:
                     args.append(resource_arg(params[a['parameter']], 'volume'))
                 elif a['source'] == 'parameter':
                     args.append(resource_arg(params[a['parameter']]))
+                elif a['source'] == 'presence':  # qpel's Metal presence flag of an optional buffer
+                    args.append(f'qpel_sim_u32({self.word("present." + params[a["parameter"]])})')
                 else:
                     raise ValueError(f'{kernel}: argument {a["name"]} has no qpel equivalent')
             callee = self.original['qualified'][kernel]
@@ -369,7 +382,7 @@ class Program:
                 raise RuntimeError(f'simulator failed on {case.label}: an access past the end of a buffer, or another invalid address')
             if result.returncode:
                 raise RuntimeError(f'simulator failed on {case.label}: {result.stderr[-3000:]}')
-            return self.read_outputs(folder)
+            return self.read_outputs(folder, case)
 
     def write_case(self, case, folder):
         """Write a case's scalars and input buffers into `folder`, where the program reads them."""
@@ -398,10 +411,18 @@ class Program:
                 grid = tuple(evaluate(e, names) for e in self.grids[s['kernel']])
             for a, gv, bv in zip('xyz', grid, block):
                 words[f'grid.{s["kernel"]}.{a}'], words[f'block.{s["kernel"]}.{a}'] = gv, bv
+        for r in self.plan['resources']:
+            if r.get('optional') and f'present.{r["name"]}' in self.scalars:
+                words[f'present.{r["name"]}'] = int(not absent(r, case))
         (folder/'scalars.bin').write_bytes(struct.pack(f'<{len(self.scalars)}I', *(words[n] for n in self.scalars)))
         for r in self.plan['resources']:
             if r['kind'] in ('shape', 'value'):
                 continue
+            if r.get('optional'):
+                present = not absent(r, case)
+                if not present:  # a one-element placeholder, never read (the kernel sees a null pointer)
+                    (folder/(r['name'] + '.bin')).write_bytes(np.zeros(1, DTYPES[r['type']]).tobytes())
+                    continue
             count = buffer_length(r, case.shapes)
             if r['kind'] in ('input', 'inout'):
                 array = np.ascontiguousarray(case.inputs[r['name']], dtype=DTYPES[r['type']]).reshape(-1)
@@ -411,9 +432,12 @@ class Program:
                 array = np.zeros(count, DTYPES[r['type']])
             (folder/(r['name'] + '.bin')).write_bytes(array.tobytes())
 
-    def read_outputs(self, folder):
+    def read_outputs(self, folder, case=None):
+        """{resource: array} after a run; an optional resource the case left out is not returned."""
         outputs = {}
         for r in self.plan['resources']:
+            if case is not None and r.get('optional') and absent(r, case):
+                continue
             if r['kind'] not in ('shape', 'value'):
                 outputs[r['name']] = np.frombuffer((folder/(r['name'] + '.out')).read_bytes(), DTYPES[r['type']]).copy()
         return outputs

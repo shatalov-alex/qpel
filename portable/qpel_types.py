@@ -512,6 +512,13 @@ class TypeChecker:
                 self.require(item, fits(array_element(expected), actual), 'ARRAY_VALUE',
                              f'Expected {array_element(expected)}, got {actual}')
             return expected
+        if k == 'BufferPresent':  # IR version 9
+            param = self.target(node, 'parameter')
+            check(param['attributes'].get('optional', False), 'PRESENT_OPTIONAL',
+                  'qpel.present() takes an optional buffer parameter')
+            check(param['id'] in function['children'].get('parameters', []), 'PRESENT_SCOPE',
+                  'qpel.present() takes a parameter of the kernel it is in')
+            return 'bool'
         if k in ('SubgroupLane', 'SubgroupIndex', 'SubgroupSize'):  # IR version 5
             check(function['attributes'].get('isKernel', False) and self.domain(function) == 'Groups', 'GRID_CONTEXT',
                   k + ' requires a Groups kernel')

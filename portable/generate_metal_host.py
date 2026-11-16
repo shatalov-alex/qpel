@@ -118,16 +118,20 @@ def generate(plan, shader):
     validate_resources(plan)
     resources = plan['resources']
     inputs = [r['name'] for r in resources if r['kind'] in ('input', 'inout')]
+    required = [r['name'] for r in resources if r['kind'] in ('input', 'inout') and not r.get('optional')]
+    optional = {r['name'] for r in resources if r.get('optional')}
     shapes = [r['name'] for r in resources if r['kind'] == 'shape']
     outputs = [r['name'] for r in resources if r['kind'] in ('output', 'inout')]
     values = [r['name'] for r in resources if r['kind'] == 'value']
     lines = [PRELUDE, 'SHADER_FILE = ' + repr(plan['module'] + '.metal'),
              'SHADER_SHA256 = ' + repr(hashlib.sha256(shader).hexdigest()), '',
-             'def run(inputs, shapes, values=None, *, device="mps"):',
-             '    """Inputs are tensors; shapes map names to (W,H,N); values are scalars; outputs are flat tensors."""',
+             'def run(inputs, shapes, values=None, *, device="mps", omit=()):',
+             '    """Inputs are tensors; shapes map names to (W,H,N); values are scalars; outputs are flat tensors.',
+             '    An optional input is left out by leaving it out of inputs, an optional output by naming it in omit."""',
              '    values = {} if values is None else values',
-             '    if set(inputs) != set(' + repr(inputs) + ') or set(shapes) != set(' + repr(shapes) + ') or set(values) != set(' + repr(values) + '):',
+             '    if not set(' + repr(required) + ') <= set(inputs) <= set(' + repr(inputs) + ') or set(shapes) != set(' + repr(shapes) + ') or set(values) != set(' + repr(values) + ') or not set(omit) <= set(' + repr(sorted(optional)) + '):',
              '        raise ValueError("Input/shape/value names do not match Pipeline")',
+             '    present = {name: name not in omit and (name in inputs or name not in ' + repr(inputs) + ') for name in ' + repr(sorted(optional)) + '}',
              '    device = torch.device(device)',
              '    if device.type != "mps":',
              '        raise ValueError("This generated backend requires MPS")',
@@ -149,8 +153,15 @@ def generate(plan, shader):
     # Validate all inputs before compiling or allocating GPU resources.
     for r in resources:
         if r['kind'] in ('input', 'inout'):  # an inout buffer is updated in a copy, returned as an output
-            lines.append(f"    buffers[{r['name']!r}] = _input(inputs[{r['name']!r}], torch.{BUFFER_TYPES[element(r['type'])]}, {_count(r)}, device)"
-                         + ('.clone()' if r['kind'] == 'inout' else ''))
+            line = (f"buffers[{r['name']!r}] = _input(inputs[{r['name']!r}], torch.{BUFFER_TYPES[element(r['type'])]}, {_count(r)}, device)"
+                    + ('.clone()' if r['kind'] == 'inout' else ''))
+            if r.get('optional'):  # left out: a one-element placeholder, and its presence flag 0
+                lines.append(f"    if present[{r['name']!r}]:")
+                lines.append('        ' + line)
+                lines.append('    else:')
+                lines.append(f"        buffers[{r['name']!r}] = torch.zeros(1, device=device, dtype=torch.{BUFFER_TYPES[element(r['type'])]})")
+            else:
+                lines.append('    ' + line)
     lines.append('    lib = _library()')
     for r in resources:
         name = r['name']
@@ -163,9 +174,14 @@ def generate(plan, shader):
                 lines.append(f"    buffers[{name!r}] = torch.tensor([scalar_{name}], device=device, dtype=torch.{VALUE_TYPES[r['type']]})")
         elif r['kind'] not in ('input', 'inout'):
             allocate = 'zeros' if r['kind'] == 'zeroed' else 'empty'  # zeroed scratch starts at zero
-            lines.append(f"    buffers[{name!r}] = torch.{allocate}({_count(r)}, device=device, dtype=torch.{BUFFER_TYPES[element(r['type'])]})")
+            count = f"({_count(r)} if present[{name!r}] else 1)" if r.get('optional') else _count(r)
+            lines.append(f"    buffers[{name!r}] = torch.{allocate}({count}, device=device, dtype=torch.{BUFFER_TYPES[element(r['type'])]})")
+    for r in resources:
+        if r.get('optional'):  # its presence flag, bound after the kernel's parameters (qpel_ir presence_binding)
+            lines.append(f"    buffers[{('present', r['name'])!r}] = torch.tensor([1 if present[{r['name']!r}] else 0], device=device, dtype=torch.int32)")
     for s in plan['stages']:
-        args = ', '.join(f"buffers[{b['resource']!r}]" for b in s['bindings'])
+        flags = [b['resource'] for b in s['bindings'] if b['resource'] in optional]
+        args = ', '.join([f"buffers[{b['resource']!r}]" for b in s['bindings']] + [f"buffers[{('present', f)!r}]" for f in flags])
         if s.get('domain') == 'groups':  # whole threadgroups, as CUDA launches whole blocks
             lines.append(f"    _, threads = _groups({tuple(s['groups'])!r}, dims[{s['grid']!r}], {tuple(s['blockShape'])!r})")
             lines.append(f"    getattr(lib, {s['kernel']!r})({args}, threads=threads, group_size={tuple(s['blockShape'])!r})")
@@ -174,5 +190,6 @@ def generate(plan, shader):
         else:
             lines.append(f"    getattr(lib, {s['kernel']!r})({args}, threads=sizes[{s['grid']!r}], group_size={s['blockSize']})")
         lines.append('    torch.mps.synchronize()')
-    lines.append('    return {' + ', '.join(f'{n!r}: buffers[{n!r}]' for n in outputs) + '}')
+    lines.append('    result = {' + ', '.join(f'{n!r}: buffers[{n!r}]' for n in outputs) + '}')
+    lines.append('    return {name: value for name, value in result.items() if present.get(name, True)}')
     return '\n'.join(lines) + '\n'

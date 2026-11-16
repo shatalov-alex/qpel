@@ -160,7 +160,7 @@ class GpuProgram(Program):
                 '    cudaError_t e = cudaGetLastError(); if (e == cudaSuccess) e = cudaDeviceSynchronize();',
                 f'    if (e != cudaSuccess) {{ std::fprintf(stderr, "{kernel}: %s\\n", cudaGetErrorString(e)); return 3; }} }}']
 
-    def outcome(self, folder):
+    def outcome(self, folder, case=None):
         """(outputs, None) after the container ran this case, or (None, error)."""
         folder = Path(folder)
         status = (folder/'status').read_text().strip() if (folder/'status').exists() else 'not run'
@@ -170,7 +170,7 @@ class GpuProgram(Program):
         if status != '0':
             log = (folder/'run.log').read_text(errors='replace') if (folder/'run.log').exists() else ''
             return None, f'GPGPU-Sim run failed (status {status}):\n{log[-2000:]}'
-        return self.read_outputs(folder), None
+        return self.read_outputs(folder, case), None
 
 
 def image_ready(build=True):
@@ -296,7 +296,7 @@ def prepared_rows(names, gpu, execute, keep=False, prefix='qpel-nvidia-', device
         if pending:
             execute(root)
         for row, label, p, program, case, folder, expected in pending:
-            actual, error = program.outcome(folder)
+            actual, error = program.outcome(folder, case)
             yield row, label, error or p.compare(expected, actual, case)
     finally:
         if keep:

@@ -14,6 +14,10 @@ using namespace metal;
 #define QPEL_WRITE_U32 device uint*
 #define QPEL_SHAPE constant uint3&
 #define QPEL_PARAM(type, name, binding) type name [[buffer(binding)]]
+// An optional buffer (IR version 9): Metal cannot ask whether a buffer is bound, so the host
+// passes a presence flag after all of the kernel's parameters (a placeholder buffer when absent).
+#define QPEL_OPTIONAL_PARAM(type, name, binding, presence) type name [[buffer(binding)]], constant uint& qpel_present_##name [[buffer(presence)]]
+#define QPEL_PRESENT(name) (qpel_present_##name != 0u)
 #define QPEL_GRID_PARAM(name) , uint name [[thread_position_in_grid]]
 #define QPEL_GRID_LOCAL(name)
 #define QPEL_LOAD(address) atomic_load_explicit((address), memory_order_relaxed)

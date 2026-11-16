@@ -33,7 +33,7 @@ THREAD_OWN = {'GridIndex', 'ThreadIndex', 'LocalIndex', 'SubgroupLane'}
 SUBGROUP_OPS = {'SubgroupShuffle', 'SubgroupReduce'}
 SUBGROUP_WIDE = {'SubgroupIndex', 'SubgroupSize', 'SubgroupReduce'}
 LANE_ROWS = {'LocalIndex', 'ThreadIndex', 'GridIndex'}  # x / 32 is the same for the 32 lanes of a subgroup
-GROUP_WIDE = {'GroupIndex', 'GroupSize', 'GroupCount', 'BarrierCount', 'Literal', 'I32Literal', 'Constant',
+GROUP_WIDE = {'GroupIndex', 'GroupSize', 'GroupCount', 'BarrierCount', 'BufferPresent', 'Literal', 'I32Literal', 'Constant',
               'F32Literal', 'WorkgroupSumF32'}
 
 

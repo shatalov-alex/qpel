@@ -127,7 +127,8 @@ def run_original(source, plan, report, case, include=(), constants=None, whole_g
 def run_generated(host, plan, case):
     """{output resource: array} from a qpel-generated Metal host module."""
     inputs = {r['name']: tensor(np.asarray(case.inputs[r['name']], DTYPES[r['type']]), DTYPES[r['type']])
-              for r in plan['resources'] if r['kind'] in ('input', 'inout')}
-    result = host.run(inputs, case.shapes, case.values)
+              for r in plan['resources'] if r['kind'] in ('input', 'inout') and r['name'] in case.inputs}
+    omit = tuple(name for name in getattr(case, 'omit', ()))  # optional resources left out (IR version 9)
+    result = host.run(inputs, case.shapes, case.values, omit=omit) if omit else host.run(inputs, case.shapes, case.values)
     types = {r['name']: DTYPES[r['type']] for r in plan['resources'] if r['kind'] not in ('shape', 'value')}
     return {name: numpy(t, types[name]) for name, t in result.items()}

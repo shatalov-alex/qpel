@@ -1,0 +1,164 @@
+{
+ "schema": 2,
+ "module": "mmcv_roi_pool_forward",
+ "resources": [
+  {
+   "name": "pooled",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "feature",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "boxes",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "nthreads",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "input",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "feature"
+  },
+  {
+   "name": "rois",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "boxes",
+   "scale": 5
+  },
+  {
+   "name": "output",
+   "kind": "inout",
+   "type": "buffer<f32, write>",
+   "extent": "pooled"
+  },
+  {
+   "name": "argmax",
+   "kind": "inout",
+   "type": "buffer<i32, write>",
+   "extent": "pooled",
+   "optional": true
+  },
+  {
+   "name": "pooled_height",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "pooled_width",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "spatial_scale",
+   "kind": "value",
+   "type": "f32",
+   "extent": null
+  },
+  {
+   "name": "channels",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "height",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "width",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "roi_pool_forward_cuda_kernel",
+   "grid": "pooled",
+   "blockSize": 256,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "nthreads",
+     "resource": "nthreads"
+    },
+    {
+     "parameter": "input",
+     "resource": "input"
+    },
+    {
+     "parameter": "rois",
+     "resource": "rois"
+    },
+    {
+     "parameter": "output",
+     "resource": "output"
+    },
+    {
+     "parameter": "argmax",
+     "resource": "argmax"
+    },
+    {
+     "parameter": "pooled_height",
+     "resource": "pooled_height"
+    },
+    {
+     "parameter": "pooled_width",
+     "resource": "pooled_width"
+    },
+    {
+     "parameter": "spatial_scale",
+     "resource": "spatial_scale"
+    },
+    {
+     "parameter": "channels",
+     "resource": "channels"
+    },
+    {
+     "parameter": "height",
+     "resource": "height"
+    },
+    {
+     "parameter": "width",
+     "resource": "width"
+    }
+   ],
+   "domain": "groups",
+   "blockShape": [
+    256,
+    1,
+    1
+   ],
+   "groups": [
+    "(W*H*N + 255) / 256",
+    "1",
+    "1"
+   ]
+  }
+ ],
+ "features": [
+  "float_to_int",
+  "groups",
+  "int32",
+  "math",
+  "scalar_arguments"
+ ]
+}

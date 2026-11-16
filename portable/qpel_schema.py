@@ -9,7 +9,7 @@ import struct
 from qpel_types import INTEGER_TERMS, INTEGERS_BITS, MATH, SCALAR_TERMS, array, buffer, is_valid, vector, shared, shared_view
 
 TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType StructType ArrayType VectorType SharedType SharedViewType'.split())
-EXPRESSIONS = set('ArrayValue VectorValue Barrier BarrierCount Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange AtomicMax AtomicAnd AtomicOr AtomicXor AtomicExchange Bitcast SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce'.split())
+EXPRESSIONS = set('ArrayValue VectorValue Barrier BarrierCount Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange AtomicMax AtomicAnd AtomicOr AtomicXor AtomicExchange Bitcast SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce BufferPresent'.split())
 STATEMENTS = set('Block Variable Assign Evaluate If While DoWhile For Break Continue Return'.split())
 
 # Child role -> (allowed concepts, minimum count, maximum count or None).
@@ -28,6 +28,7 @@ CHILDREN = {
     'Field': {'type': one(TYPE_KINDS)},
     'Function': {'parameters': many('Parameter'), 'resultType': one(TYPE_KINDS), 'body': one('Block'), 'domain': optional('Grid1D Grid3D Groups')},
     'Parameter': {'type': one(TYPE_KINDS)},
+    'BufferPresent': {},
     'F32Cast': {'operand': one(EXPRESSIONS)},
     'I32Cast': {'operand': one(EXPRESSIONS)},
     'U32Cast': {'operand': one(EXPRESSIONS)},
@@ -88,14 +89,15 @@ LINKS = {
     'Resource': {'extent': {'Resource'}},
     'Dispatch': {'kernel': {'Function'}, 'grid': {'Resource'}},
     'Binding': {'parameter': {'Parameter'}, 'resource': {'Resource'}},
+    'BufferPresent': {'parameter': {'Parameter'}},  # IR version 9: an optional buffer was given
 }
 ATTRIBUTES = {
     'GpuModule': {'name': str}, 'Function': {'name': str, 'isKernel': bool},
-    'Parameter': {'name': str, 'binding': int, 'isBuffer': bool, 'reference': bool},
+    'Parameter': {'name': str, 'binding': int, 'isBuffer': bool, 'reference': bool, 'optional': bool},
     'Variable': {'name': str}, 'Literal': {'value': str}, 'I32Literal': {'value': str}, 'F32Literal': {'value': str},
     'Binary': {'operator': str}, 'Unary': {'operator': str},
     'Member': {'member': str}, 'Pipeline': {'name': str},
-    'Resource': {'name': str, 'kind': str, 'scale': int, 'length': int},
+    'Resource': {'name': str, 'kind': str, 'scale': int, 'length': int, 'optional': bool},
     'Dispatch': {'blockSize': int, 'blockHeight': int, 'blockDepth': int, 'completionBarrier': bool,
                  'groupsX': str, 'groupsY': str, 'groupsZ': str},
     'ThreadIndex': {'axis': str},
@@ -116,12 +118,12 @@ SHUFFLE_MODES = ('index', 'xor', 'down', 'up')
 REDUCE_OPERATORS = ('add', 'min', 'max', 'and', 'or', 'xor')
 SUBGROUP_SIZE = 32  # lanes per subgroup on every backend qpel targets (NVIDIA warps, Apple SIMD-groups)
 MAX_SCALE = 4096  # elements per element of a buffer's extent: `in M * 4` for an [M, 4] tensor
-DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer', 'reference'}, 'Resource': {'scale', 'length'},
+DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer', 'reference', 'optional'}, 'Resource': {'scale', 'length', 'optional'},
              'Dispatch': {'blockHeight', 'blockDepth', 'groupsX', 'groupsY', 'groupsZ'}}
 # Every qpel name is emitted verbatim into both CUDA C++ and Metal Shading Language, so it
 # must avoid qpel keywords, C++ keywords, CUDA built-ins and Metal keywords and type names.
 QPEL_KEYWORDS = set('void bool uint int float return if while for true false kernel device min max'.split()) | \
-    set('let fn module pipeline dispatch cast bitcast view math atomic qpel vec ref'.split())  # the text syntax (TEXT.md)
+    set('let fn module pipeline dispatch cast bitcast view math atomic qpel vec ref optional'.split())  # the text syntax (TEXT.md)
 CPP_KEYWORDS = set('''alignas alignof and and_eq asm auto bitand bitor bool break case catch char char8_t char16_t
     char32_t class compl concept const consteval constexpr constinit const_cast continue co_await co_return
     co_yield decltype default delete do double dynamic_cast else enum explicit export extern false float for

@@ -77,6 +77,10 @@ Barriers in helper functions, as library code has them (LIBRARIES.md, qpel's CUB
 
 Three more bounded math functions, which Metal does not have: `erf`, `expm1` and `log1p` (`Math {function}`, text `math.erf(x)` and so on). qpel's Metal defines them itself; NUMERICS.md (Math functions) gives how and how accurately. A program that uses one is version 8.
 
+## IR version 9
+
+Optional buffers, as PyTorch extensions pass optional tensors (`if (bias != nullptr)`). A kernel buffer `Parameter` may be `optional` (text `optional bias: buffer<f32, read> @1`); `BufferPresent` (text `qpel.present(bias)`, a bool the same for every thread) tells whether the caller gave it, linked to a parameter of the kernel it is in. A pipeline `Resource` bound to it is `optional` too (text `optional input bias: ...`), and only such a resource binds such a parameter (`OPTIONAL_BINDING`). Hosts leave an optional input out when the caller does not give it and an optional output when the caller names it in `omit`; reading or writing a buffer that was left out is undefined, as in CUDA. CUDA keeps the pointer (null when left out) and tests `bias != nullptr`. Metal cannot ask whether a buffer is bound, so its kernel also takes `constant uint& qpel_present_bias`, bound after all of the kernel's parameters in the order of the optional ones, which the host sets (a one-element placeholder buffer stands in for the missing one). The CUDA importer reads `p != nullptr`, `p != NULL`, `p == nullptr`, `nullptr != p` and `if (p)` on a kernel pointer parameter as presence tests and makes the parameter optional; the Metal importer reads qpel's own presence flags back. A program with an optional buffer is version 9.
+
 ## Numeric revision
 
 New exports use `qpel-portable-core-v1` and the `u32-modulo-v1` numeric emitter. See NUMERICS.md for exact rules, migration limitations and CPU UBSan evidence. Earlier sections describing exact native source parity and incomplete numeric lowering refer to the preceding revision; only the compatibility rendering now has native token parity. Dynamic division-by-zero, pointer validity and GPU execution remain unchecked.

@@ -1,0 +1,27 @@
+// An optional buffer (IR version 9): y = x * scale, plus bias where the caller gives one, and the
+// index of each element written to `where` when the caller asks for it (PyTorch extensions'
+// optional tensors, CUDA's `if (bias != nullptr)`).
+module optional_bias {
+  kernel optional_bias(x: buffer<f32, read> @0, optional bias: buffer<f32, read> @1, y: buffer<f32, write> @2, optional where: buffer<u32, write> @3, scale: f32 @4, n: shape3 @5) grid1d {
+    if (qpel.index >= ((n.x * n.y) * n.z)) {
+      return;
+    }
+    let v: f32 = x[qpel.index] * scale;
+    if (qpel.present(bias)) {
+      v = v + bias[qpel.index];
+    }
+    y[qpel.index] = v;
+    if (qpel.present(where)) {
+      where[qpel.index] = qpel.index;
+    }
+  }
+}
+pipeline optional_bias_launch {
+  input x: buffer<f32, read> in n;
+  optional input bias: buffer<f32, read> in n;
+  output y: buffer<f32, write> in n;
+  optional output where: buffer<u32, write> in n;
+  value scale: f32;
+  shape n;
+  dispatch optional_bias over n block (64) (x = x, bias = bias, y = y, where = where, scale = scale, n = n);
+}

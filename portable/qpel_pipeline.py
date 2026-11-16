@@ -135,6 +135,8 @@ class PipelineChecker(TypeChecker):
                 self.require(binding, rid not in seen, 'ALIAS', 'Aliasing within a dispatch is unsupported')
                 seen.add(rid)
                 self.require(binding, typ == self.declared(param), 'BIND_TYPE', 'Resource and parameter types must match')
+                self.require(binding, bool(resource['attributes'].get('optional')) == bool(param['attributes'].get('optional')),
+                             'OPTIONAL_BINDING', 'An optional parameter binds an optional resource, and only it')
                 if typ in VALUE_TERMS or is_struct(typ):
                     self.require(binding, resource['attributes']['kind'] == 'value', 'VALUE_BINDING', 'Scalar parameters bind value resources')
                 if typ == 'shape3':
