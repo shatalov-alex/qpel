@@ -117,6 +117,32 @@ DECLARATION_LIMIT = int(os.environ.get('QPEL_AST_DECLARATION_MB', 1024)) << 20  
 UNIT_LIMIT = int(os.environ.get('QPEL_AST_UNIT_MB', 1024)) << 20  # kept JSON for a whole source (about 10x in Python)
 
 
+TRAIT_NAMES = ('is_same_v',)  # std:: variable templates whose instances qpel evaluates (statics.constant_values)
+
+
+def system_traits(text):
+    """The instances of std::is_same_v (TRAIT_NAMES) in a system declaration's JSON, which read_unit
+    leaves out with the rest of the system headers: {'id', 'name', 'arguments': [type spellings]}."""
+    if not any(f'"name": "{name}"' in text for name in TRAIT_NAMES):
+        return []
+    lines, found = text.split('\n'), []
+    for i, line in enumerate(lines):
+        if line.strip() != '"kind": "VarTemplateSpecializationDecl",':
+            continue
+        indent = len(line) - len(line.lstrip()) - 2
+        start = next((j for j in range(i - 1, -1, -1) if lines[j] == ' ' * indent + '{'), None)
+        end = next((j for j in range(i + 1, len(lines)) if lines[j].rstrip(',') == ' ' * indent + '}'), None)
+        if start is None or end is None:
+            continue
+        decl = json.loads('\n'.join(lines[start:end]) + '\n' + ' ' * indent + '}')
+        if decl.get('name') not in TRAIT_NAMES:
+            continue
+        arguments = [c['type'].get('desugaredQualType', c['type'].get('qualType', '')) for c in decl.get('inner', ())
+                     if c.get('kind') == 'TemplateArgument' and 'type' in c]
+        found.append({'id': decl.get('id'), 'name': decl['name'], 'arguments': arguments})
+    return found
+
+
 def read_unit(stream):
     """The translation unit from clang's JSON dump, without system-header declarations.
 
@@ -129,7 +155,7 @@ def read_unit(stream):
     make 100 GB of JSON for one function), and a source whose kept JSON passes UNIT_LIMIT is
     refused (SourceError), so that importing never takes the machine's memory."""
     head, decls, chunk, state, started = [], [], None, {'file': None, 'line': None}, False
-    size, kept, skipped, oversized = 0, 0, [], None
+    size, kept, skipped, oversized, kept_traits = 0, 0, [], None, []
     for line in stream:
         if chunk is None and oversized is None:
             if line == '    {\n':
@@ -162,7 +188,9 @@ def read_unit(stream):
             at = dict(state)  # where the declaration itself is: its "loc", written before its "range"
             last_location(text[:text.find('"range"')], at)
             last_location(text, state)
-            if not is_system(at['file']):
+            if is_system(at['file']):
+                kept_traits.extend(system_traits(text))
+            else:
                 kept += len(text)
                 if kept > UNIT_LIMIT:
                     raise SourceError(f'the source\'s AST passes {UNIT_LIMIT >> 20} MB of JSON; qpel does not read it '
@@ -174,6 +202,7 @@ def read_unit(stream):
     unit = json.loads(re.sub(r',\s*"inner": \[\s*$', '', ''.join(head)) + '}')
     unit['inner'] = decls
     unit['_skipped'] = skipped
+    unit['_system_traits'] = kept_traits
     unit['_kept_bytes'] = kept
     return unit
 

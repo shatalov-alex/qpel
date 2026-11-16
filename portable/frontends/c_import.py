@@ -19,8 +19,9 @@ from qpel_types import is_shared_view, view_element, shared_bytes, BITCASTS
 from . import clang_ast
 from .clang_ast import position
 from .facades import inline_facades
+from .views import dead_parameters, shared_views
 from .demote import demote_unit
-from .statics import lift_statics, read_enums, local_pointers_as_references
+from .statics import constant_values, desugar_aliases, flatten_argument_structs, lift_statics, single_rows, read_enums, local_pointers_as_references
 
 IR_HEADER = {'format': 'qpel.ir', 'version': 1, 'semantics': 'qpel-portable-core-v1'}
 U32_MAX = 2**32 - 1
@@ -84,9 +85,21 @@ def has_effects(node):
 
 def view_spelling(decl):
     """The type of a declaration as describe() reads it: qpel's CUDA spells a shared view
-    `qpel_shared_view<float>` (an alias of float*, backends/cuda.h), which clang desugars."""
+    `qpel_shared_view<float>` (an alias of float*, backends/cuda.h), which clang desugars. A type
+    that names a template's typedef (`input_t *`, `typename Ktraits::input_t *` in an instance of
+    a traits template) is read desugared too, when its spelling names no type qpel knows."""
     t = decl['type']
-    return t.get('desugaredQualType', t['qualType']) if 'qpel_shared_view<' in t['qualType'] else t['qualType']
+    if 'qpel_shared_view<' in t['qualType']:
+        return t.get('desugaredQualType', t['qualType'])
+    desugared = t.get('desugaredQualType')
+    if desugared and desugared != t['qualType']:
+        spelled = describe(t['qualType'])
+        if spelled[0] in ('pointer', 'scalar') and spelled[-1] not in SCALAR_TERMS \
+                and not str(spelled[-1]).startswith('vec<') and 'qpel_' not in t['qualType']:
+            plain = describe(desugared)
+            if plain[0] == spelled[0] and (plain[-1] in SCALAR_TERMS or str(plain[-1]).startswith('vec<')):
+                return desugared
+    return t['qualType']
 
 
 ARRAY_REFERENCE = None  # set below: re.compile of `[const] [thread] T (&)[N]`
@@ -587,10 +600,16 @@ class Graph:
 class Importer:
     def __init__(self, unit, source, path, dialect, module, survey=False):
         self.dialect = DIALECT[dialect]
+        desugar_aliases(unit)  # typename Traits<...>::input_t *: float * (statics.py)
+        single_rows(unit)  # for (int r = 0; r < kNRows; ++r) with kNRows = 1, T a[1][N] (statics.py)
+        flatten_argument_structs(unit)  # SSMParamsBase params: params_u_ptr, params_seqlen, ... (statics.py)
         read_enums(unit)  # SUM, MEAN, ...: their values; enum-typed expressions: the underlying integer
         lift_statics(unit)  # Reducer<T, R>::update(...) -> Reducer_f32_0_update(...), __ldg(p) -> *p (statics.py)
         self.local_references = local_pointers_as_references(unit)  # update(&result, ...) of update(T *val, ...): T &val (statics.py)
         inline_facades(unit)  # cub::BlockScan(storage).InclusiveSum(...) -> the function it forwards to
+        removed = dead_parameters(unit)  # a TempStorage passed on and no longer read (views.py)
+        view_notes = shared_views(unit)  # extern __shared__ char smem_[] carved into views: shared memory each (views.py)
+        view_notes += [f'unused parameter {r} (a TempStorage qpel\'s CUB subset does not read) was removed' for r in removed]
         demote_unit(unit)  # T hy = 1. - ly; and the like: float arithmetic in double's clothes (demote.py)
         self.unit = unit
         self.sites = None  # launch sites of the original's host code, read when first needed
@@ -626,6 +645,7 @@ class Importer:
         self.domains = {}  # kernel name -> 'grid1d' | 'grid3d'
         self.grid3d = False
         self.adaptations = []
+        self.adaptations.extend(view_notes)
         self.instances = {}  # clang id of a template instantiation -> its qpel function name
         self.bool_params = set()  # clang ids of bool kernel arguments, passed as u32
         self.records = records(unit)  # struct name -> its clang record, for argument structs
@@ -658,10 +678,24 @@ class Importer:
                 decls.extend(self.attempt(lambda: self.top_level(node), []))
         self.header = False
 
-        def header_constants(nodes):  # `int const threadsPerBlock = 64;` in a library header
+        evaluated = constant_values(unit)  # a traits class's static constexpr members (statics.py)
+
+        def header_constants(nodes, member=False):  # `int const threadsPerBlock = 64;` in a library header
             for node in nodes:
-                if node.get('kind') in ('NamespaceDecl', 'LinkageSpecDecl'):
+                if member and node.get('kind') == 'VarDecl' and node.get('id') in evaluated and \
+                        -2**31 <= evaluated[node['id']] < 2**32 and node['id'] not in self.global_values:
+                    value = evaluated[node['id']]
+                    literal = {'kind': 'CXXBoolLiteralExpr', 'value': value, 'type': {'qualType': 'bool'}} \
+                        if isinstance(value, bool) else \
+                        {'kind': 'IntegerLiteral', 'value': str(value), 'type': {'qualType': 'int'}}
+                    literal['valueCategory'] = 'prvalue'
+                    self.global_values[node['id']] = (node['name'], literal)
+                    continue
+                if node.get('kind') in ('NamespaceDecl', 'LinkageSpecDecl', 'ClassTemplateDecl'):
                     header_constants(node.get('inner', ()))
+                elif node.get('kind') in ('ClassTemplateSpecializationDecl', 'CXXRecordDecl'):
+                    # static constexpr members of a traits class (mamba's Ktraits::kNItems): constants
+                    header_constants([c for c in node.get('inner', ()) if c.get('kind') == 'VarDecl'], True)
                 elif node.get('kind') == 'VarDecl' and id(node) not in main_ids and 'init' in node and node.get('inner'):
                     t = describe(node['type']['qualType'])
                     if t[0] == 'scalar' and t[1] in SCALAR_TERMS and 'const' in node['type']['qualType'].split():
@@ -1351,13 +1385,25 @@ class Importer:
 
     def argument_map(self, decl):
         """How to call the original kernel with a qpel pipeline's data: one entry per argument."""
-        out, position = [], 0
+        out, position, structs = [], 0, {}
         for p in params_of(decl):
             if self.dialect.builtin(p):
                 continue
             entry = self.scope.get(p['id'])
             item = {'name': p['name'], 'binding': self.dialect.binding(p, position), 'type': describe(p['type']['qualType'])[-1]}
-            position += 1
+            if p.get('_qpel_field_of'):  # a field of a struct argument (statics.flatten_argument_structs)
+                whole = structs.get(p['_qpel_field_of'])
+                if whole is None:
+                    whole = structs[p['_qpel_field_of']] = {
+                        'name': p['_qpel_field_of'], 'binding': self.dialect.binding(p, position),
+                        'source': 'struct', 'struct': p['_qpel_struct'], 'fields': []}
+                    out.append(whole)
+                    position += 1
+                item = {'name': p['name'], 'field': p['_qpel_field'], 'type': item['type']}
+                whole['fields'].append(item)
+            else:
+                out.append(item)
+                position += 1
             if entry is None or entry[0] == 'untyped':
                 item['source'] = 'unknown'
             elif entry[0] == 'extent':
@@ -1368,7 +1414,6 @@ class Importer:
                 item.update(source='presence', parameter=self.safe_name(entry[1]))
             else:
                 item.update(source='parameter', parameter=self.safe_name(p['name']))
-            out.append(item)
         return out
 
     def threadgroup_parameter(self, p, kernel):
@@ -1890,6 +1935,10 @@ class Importer:
         initializer leaves out are zero, as in C; an array without one starts all zero (C leaves
         it undefined)."""
         element = describe(array.group(1))
+        if element[0] != 'scalar' or element[1] not in SCALAR_TERMS:  # `input_t[4]` of a traits class: float[4]
+            plain = LOCAL_ARRAY.fullmatch(decl['type'].get('desugaredQualType', '').strip())
+            if plain and plain.group(2) == array.group(2):
+                array, element = plain, describe(plain.group(1))
         length = int(array.group(2))
         space = set(decl['type']['qualType'].replace('[', ' ').split()) & {'threadgroup', 'constant', 'device'}
         if 'CUDASharedAttr' in attributes(decl) or 'threadgroup' in space:

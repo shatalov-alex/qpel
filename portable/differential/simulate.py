@@ -325,6 +325,13 @@ class Program:
                     args.append(resource_arg(params[a['parameter']]))
                 elif a['source'] == 'presence':  # qpel's Metal presence flag of an optional buffer
                     args.append(f'qpel_sim_u32({self.word("present." + params[a["parameter"]])})')
+                elif a['source'] == 'struct':  # a struct of pointers, flattened by the import: rebuilt field by field
+                    fields = []
+                    for f in a['fields']:
+                        if f.get('source') != 'parameter':
+                            raise ValueError(f'{kernel}: field {f["field"]} of {a["name"]} has no qpel equivalent')
+                        fields.append(f' s.{f["field"]} = {resource_arg(params[f["parameter"]])};')
+                    args.append(f'[&] {{ {a["struct"]} s{{}};{"".join(fields)} return s; }}()')
                 else:
                     raise ValueError(f'{kernel}: argument {a["name"]} has no qpel equivalent')
             callee = self.original['qualified'][kernel]

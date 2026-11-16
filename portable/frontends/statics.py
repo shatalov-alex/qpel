@@ -194,6 +194,514 @@ def read_enums(unit):
     unit['_qpel_enums'] = True
 
 
+ALIAS_KINDS = ('TypeAliasDecl', 'TypedefDecl')
+NAME = re.compile(r'\b([A-Za-z_][\w:]*)<')
+
+
+def _enumerators(unit):
+    """{qualified enum name: {value: qualified enumerator}}, `cub::BlockScanAlgorithm`: {2: 'cub::BLOCK_SCAN_WARP_SCANS'}
+    (an unscoped enum's enumerators are named in the enclosing namespace)."""
+    out = {}
+
+    def visit(node, scope):
+        kind = node.get('kind')
+        if kind == 'NamespaceDecl':
+            scope = scope + [node.get('name', '')]
+        if kind == 'EnumDecl' and node.get('name'):
+            prefix = '::'.join(scope + ([node['name']] if node.get('scopedEnumTag') else []))
+            values, last = {}, -1
+            for c in node.get('inner', ()):
+                if c.get('kind') != 'EnumConstantDecl':
+                    continue
+                given = _literal(c['inner'][0]) if c.get('inner') else None
+                last = given if given is not None else last + 1
+                values.setdefault(last, (prefix + '::' if prefix else '') + c['name'])
+            out['::'.join(scope + [node['name']])] = values
+            out.setdefault(node['name'], values)  # as a template parameter inside its namespace spells it
+            return
+        for c in node.get('inner', ()) or ():
+            if isinstance(c, dict) and c.get('kind') in ('NamespaceDecl', 'EnumDecl', 'LinkageSpecDecl'):
+                visit(c, scope)
+    visit(unit, [])
+    return out
+
+
+def _template_parameters(unit):
+    """{class template name: [parameter kind: 'type' | 'bool' | 'value' | {enum value: enumerator}]}."""
+    out, enums = {}, _enumerators(unit)
+    for node in walk(unit):
+        if node.get('kind') == 'ClassTemplateDecl' and node.get('name'):
+            kinds = []
+            for c in node.get('inner', ()):
+                if c.get('kind') == 'TemplateTypeParmDecl':
+                    kinds.append('type')
+                elif c.get('kind') == 'NonTypeTemplateParmDecl':
+                    t = c.get('type', {}).get('qualType', '')
+                    kinds.append('bool' if t == 'bool' else enums.get(t, enums.get(t.split('::')[-1], 'value'))
+                                 if t not in ('int', 'unsigned int', 'size_t', 'long') else 'value')
+            out.setdefault(node['name'], kinds)
+    return out
+
+
+def _specialization_spelling(record, kinds):
+    """`Traits<32, 4, true, float>` as clang spells the specialization in types (bools are -1 and 0
+    in the JSON's template arguments)."""
+    parts = []
+    for i, c in enumerate(c for c in record.get('inner', ()) if c.get('kind') == 'TemplateArgument'):
+        if c.get('isPack') or not ('type' in c or 'value' in c):
+            return None
+        if 'type' in c:
+            parts.append(c['type'].get('qualType', ''))
+        elif i < len(kinds) and kinds[i] == 'bool':
+            parts.append('true' if c['value'] else 'false')
+        elif i < len(kinds) and isinstance(kinds[i], dict) and c['value'] in kinds[i]:
+            parts.append(kinds[i][c['value']])  # an enum: by its enumerator, as types spell it
+        else:
+            parts.append(str(c['value']))
+    return f'{record["name"]}<{", ".join(parts)}>'
+
+
+def _aliases(scope):
+    """{alias name: the type it names} of the type aliases directly in a record or a function body."""
+    out = {}
+    for c in scope.get('inner', ()):
+        decls = c.get('inner', ()) if c.get('kind') == 'DeclStmt' else [c]
+        for d in decls:
+            if d.get('kind') in ALIAS_KINDS and d.get('name') and 'type' in d:
+                out[d['name']] = d['type'].get('desugaredQualType', d['type'].get('qualType', ''))
+    return out
+
+
+def _closing(text, start):
+    """Index of the `>` that closes the `<` at text[start]."""
+    depth = 0
+    for i in range(start, len(text)):
+        depth += {'<': 1, '>': -1}.get(text[i], 0)
+        if depth == 0:
+            return i
+    return -1
+
+
+def _specialization(members, key):
+    """The alias table of the class specialization a type spells `cub::BlockLoad<uint4, 32, 1>`: by its
+    name with or without the namespace, and, where the spelling leaves default arguments out, the one
+    specialization whose arguments begin with those given."""
+    if key in members:
+        return members[key]
+    name, _, rest = key.partition('<')
+    short = name.split('::')[-1] + '<' + rest
+    if short in members:
+        return members[short]
+    found = [k for k in members if k.startswith(short[:-1] + ', ')]
+    return members[found[0]] if len(found) == 1 else None
+
+
+def resolve_aliases(text, members, local):
+    """A type spelling with the aliases of class specializations (`typename Traits<32, float>::input_t`)
+    and of the enclosing function (`input_t`) replaced by the types they name, until none is left."""
+    for _ in range(8):
+        new, at = [], 0
+        for m in NAME.finditer(text):
+            if m.start() < at:
+                continue
+            end = _closing(text, m.end() - 1)
+            if end < 0:
+                break
+            key = text[m.start():end + 1].replace('typename ', '')
+            member = re.match(r'::(\w+)', text[end + 1:])
+            table = _specialization(members, key) if member else None
+            if table and member.group(1) in table:
+                begin = m.start()
+                if text[max(0, begin - 9):begin] == 'typename ':
+                    begin -= 9
+                new.append(text[at:begin] + table[member.group(1)])
+                at = end + 1 + member.end()
+        new.append(text[at:])
+        out = ''.join(new)
+        if local:
+            out = re.sub(r'(?<![\w:])(' + '|'.join(map(re.escape, local)) + r')(?![\w<])',
+                         lambda m: local[m.group(1)], out)
+        if out == text:
+            return out
+        text = out
+    return text
+
+
+def desugar_aliases(unit):
+    """Types that clang spells through type aliases give their desugared spelling only at the top
+    (`scan_t` names float2, but `scan_t *` and `scan_t[16]` say nothing more), so in an instance of
+    a template over a traits class (`typename Ktraits::input_t *`, mamba's kernels) qpel would not
+    know the types. Every type in a function instance that names an alias of a class specialization
+    or of the function's own body gets desugaredQualType: the spelling with the aliases replaced."""
+    if unit.get('_qpel_aliases'):
+        return
+    kinds = _template_parameters(unit)
+    members = {}
+    for node in walk(unit):
+        if node.get('kind') == 'ClassTemplateSpecializationDecl' and node.get('inner'):
+            spelled = _specialization_spelling(node, kinds.get(node.get('name'), []))
+            if spelled:
+                found = _aliases(node)
+                if found:
+                    members.setdefault(spelled, {}).update(found)
+    if members:
+        for function in walk(unit):
+            if function.get('kind') != 'FunctionDecl':
+                continue
+            body = _body(function)
+            local = _aliases(body) if body else {}
+            named = re.compile(r'(?<![\w:])(' + '|'.join(map(re.escape, local)) + r')(?![\w<])') if local else None
+            for node in walk(function):
+                t = node.get('type')
+                if node is function or not isinstance(t, dict):
+                    continue
+                spelled = t.get('desugaredQualType', t.get('qualType', ''))
+                if '::' not in spelled and not (named and named.search(spelled)):
+                    continue
+                resolved = resolve_aliases(spelled, members, local)
+                if resolved != spelled:
+                    t['desugaredQualType'] = resolved
+    unit['_qpel_aliases'] = True
+
+
+SIZES = {'char': 1, 'signed char': 1, 'unsigned char': 1, 'bool': 1, 'int8_t': 1, 'uint8_t': 1, 'short': 2,
+         'unsigned short': 2, 'int16_t': 2, 'uint16_t': 2, '__half': 2, 'half': 2, 'at::Half': 2, 'c10::Half': 2,
+         '__nv_bfloat16': 2, 'at::BFloat16': 2, 'c10::BFloat16': 2, 'int': 4, 'unsigned int': 4, 'float': 4,
+         'int32_t': 4, 'uint32_t': 4, 'long': 8, 'unsigned long': 8, 'long long': 8, 'unsigned long long': 8,
+         'int64_t': 8, 'uint64_t': 8, 'double': 8, 'float2': 8, 'int2': 8, 'uint2': 8, 'float4': 16, 'int4': 16,
+         'uint4': 16, 'c10::complex<float>': 8, 'complex<float>': 8}  # sizeof, for constants (constant_values)
+PASS = ('ImplicitCastExpr', 'ParenExpr', 'ConstantExpr', 'ExprWithCleanups', 'MaterializeTemporaryExpr',
+        'CXXFunctionalCastExpr', 'CStyleCastExpr', 'CXXStaticCastExpr', 'SubstNonTypeTemplateParmExpr')
+BINARY = {'+': lambda a, b: a + b, '-': lambda a, b: a - b, '*': lambda a, b: a * b,
+          '/': lambda a, b: int(a / b) if b else None, '%': lambda a, b: a - b * int(a / b) if b else None,
+          '<<': lambda a, b: a << b, '>>': lambda a, b: a >> b, '&': lambda a, b: a & b, '|': lambda a, b: a | b,
+          '^': lambda a, b: a ^ b, '<': lambda a, b: a < b, '>': lambda a, b: a > b, '<=': lambda a, b: a <= b,
+          '>=': lambda a, b: a >= b, '==': lambda a, b: a == b, '!=': lambda a, b: a != b,
+          '&&': lambda a, b: bool(a) and bool(b), '||': lambda a, b: bool(a) or bool(b)}
+
+
+def constant_values(unit):
+    """{VarDecl id: int or bool} of the static constexpr members of class specializations (a traits
+    class's `kNItems`, `kIsComplex = std::is_same_v<weight_t, complex_t>`), which clang's JSON gives
+    only as expressions: literals, operators, other such constants, `std::is_same_v` and calls of
+    constexpr functions whose body returns one expression (`constexpr_min`, `std::min`). A member
+    whose value needs more (sizeof, initializer lists) is left out."""
+    if '_qpel_constant_values' in unit:
+        return unit['_qpel_constant_values']
+    decls, functions = {}, {}
+    for node in walk(unit):
+        kind = node.get('kind')
+        if kind in ('VarDecl', 'VarTemplateSpecializationDecl') and node.get('constexpr') and node.get('id'):
+            if len(node.get('inner', ())) >= len(decls.get(node['id'], {}).get('inner', ())):
+                decls[node['id']] = node  # clang lists some declarations twice, once without their initializer
+        elif kind == 'FunctionDecl' and node.get('constexpr') and _body(node) is not None:
+            functions[node['id']] = node
+    memo, busy = {}, set()
+    for trait in unit.get('_system_traits', ()):  # std::is_same_v<A, B> instances (clang_ast.system_traits)
+        if trait['name'] == 'is_same_v' and len(trait['arguments']) == 2:
+            a, b = (t.replace('const ', '').strip() for t in trait['arguments'])
+            memo.setdefault(trait['id'], a == b)
+
+    def type_of(arg):
+        t = arg.get('type', {})
+        return t.get('desugaredQualType', t.get('qualType', '')).replace('const ', '').strip()
+
+    def decl_value(decl):
+        if decl['id'] in memo:
+            return memo[decl['id']]
+        if decl['id'] in busy:
+            return None
+        busy.add(decl['id'])
+        value = None
+        if decl.get('kind') == 'VarTemplateSpecializationDecl' and decl.get('name') == 'is_same_v':
+            args = [c for c in decl.get('inner', ()) if c.get('kind') == 'TemplateArgument' and 'type' in c]
+            if len(args) == 2:
+                value = type_of(args[0]) == type_of(args[1])
+        else:
+            init = [c for c in decl.get('inner', ()) if c.get('kind') not in ('TemplateArgument',)]
+            if init:
+                value = ev(init[-1], {})
+        if isinstance(value, bool) or isinstance(value, int):
+            if 'bool' in decl.get('type', {}).get('qualType', '').split():
+                value = bool(value)
+        busy.discard(decl['id'])
+        memo[decl['id']] = value
+        return value
+
+    def ev(n, env):
+        kind = n.get('kind')
+        inner = [c for c in n.get('inner', ()) if isinstance(c, dict)]
+        if kind in PASS and inner:
+            value = ev(inner[-1], env)
+            if value is not None and n.get('type', {}).get('qualType') == 'bool':
+                return bool(value)
+            return value
+        if kind == 'IntegerLiteral':
+            return int(n['value'])
+        if kind == 'UnaryExprOrTypeTraitExpr' and n.get('name') == 'sizeof' and 'argType' in n:
+            return SIZES.get(type_of({'type': n['argType']}))
+        if kind == 'CXXBoolLiteralExpr':
+            return bool(n['value'])
+        if kind == 'UnaryOperator' and inner:
+            value = ev(inner[0], env)
+            if value is None:
+                return None
+            return {'!': lambda v: not v, '-': lambda v: -v, '+': lambda v: v, '~': lambda v: ~v}.get(
+                n.get('opcode'), lambda v: None)(value)
+        if kind == 'BinaryOperator' and len(inner) == 2 and n.get('opcode') in BINARY:
+            a, b = ev(inner[0], env), ev(inner[1], env)
+            return None if a is None or b is None else BINARY[n['opcode']](a, b)
+        if kind == 'ConditionalOperator' and len(inner) == 3:
+            c = ev(inner[0], env)
+            return None if c is None else ev(inner[1] if c else inner[2], env)
+        if kind == 'DeclRefExpr':
+            ref = n.get('referencedDecl', {})
+            if ref.get('id') in env:
+                return env[ref['id']]
+            if ref.get('id') in decls:
+                return decl_value(decls[ref['id']])
+            return memo.get(ref.get('id'))  # a system trait
+        if kind == 'CallExpr' and inner:
+            callee = _peel(inner[0])
+            ref = callee.get('referencedDecl', {}) if callee.get('kind') == 'DeclRefExpr' else {}
+            args = [ev(a, env) for a in inner[1:]]
+            if any(a is None for a in args):
+                return None
+            if ref.get('name') in ('min', 'max') and len(args) == 2:  # std::min, std::max
+                return (min if ref['name'] == 'min' else max)(args)
+            function = functions.get(ref.get('id'))
+            body = _body(function) if function else None
+            params = [c for c in function.get('inner', ()) if c.get('kind') == 'ParmVarDecl'] if function else []
+            statements = body.get('inner', ()) if body else ()
+            if len(statements) == 1 and statements[0].get('kind') == 'ReturnStmt' and len(params) == len(args) \
+                    and statements[0].get('inner'):
+                return ev(statements[0]['inner'][0], {p['id']: a for p, a in zip(params, args)})
+        return None
+
+    values = {}
+    for decl_id, decl in decls.items():
+        value = decl_value(decl)
+        if value is not None:
+            values[decl_id] = value
+    unit['_qpel_constant_values'] = values
+    return values
+
+
+CASTS = ('CXXReinterpretCastExpr', 'CStyleCastExpr', 'CXXStaticCastExpr')
+
+
+def _spelling(t):
+    return t.get('desugaredQualType', t.get('qualType', ''))
+
+
+def _plain(spelled):
+    return ' '.join(w for w in spelled.replace('*', ' * ').split() if w not in ('__restrict__', '__restrict', 'restrict', 'struct'))
+
+
+def flatten_argument_structs(unit):
+    """A kernel argument that is a struct holding pointers (mamba's `SSMParamsBase params`, with
+    `void *u_ptr` and strides) becomes one argument per field the kernel reads, `params_u_ptr`,
+    `params_seqlen`: `params.f` reads that argument. qpel buffers are kernel arguments, so this is
+    how a struct of pointers maps onto qpel; the originals are still called with the struct (the
+    harness rebuilds it field by field from the argument map, `source: 'struct'`). A `void *` field
+    takes the type every use casts it to (`reinterpret_cast<float *>(params.u_ptr)`); the cast is
+    then of a float* to float* and is read as the argument itself. A struct that is used otherwise
+    than through its fields (passed on whole) is left as it is."""
+    if unit.get('_qpel_flattened') is not None:
+        return unit['_qpel_flattened']
+    records = {}
+    for node in walk(unit):
+        if node.get('kind') == 'CXXRecordDecl' and node.get('completeDefinition') and node.get('name'):
+            fields = [c for c in node.get('inner', ()) if c.get('kind') == 'FieldDecl']
+            if fields:
+                records.setdefault(node['name'], fields)
+    flattened = {}
+    for function in walk(unit):
+        if function.get('kind') != 'FunctionDecl' or not any(a.get('kind') == 'CUDAGlobalAttr' for a in function.get('inner', ())):
+            continue
+        body = _body(function)
+        if body is None:
+            continue
+        for p in [c for c in function['inner'] if c.get('kind') == 'ParmVarDecl']:
+            struct = _plain(_spelling(p.get('type', {})))
+            fields = {f.get('name'): f for f in records.get(struct, ())}
+            if not fields or not any('*' in _spelling(f['type']) for f in fields.values()):
+                continue
+            members, references = [], 0
+            for node in walk(body):
+                if node.get('kind') == 'DeclRefExpr' and node.get('referencedDecl', {}).get('id') == p['id']:
+                    references += 1
+                elif node.get('kind') == 'MemberExpr' and node.get('inner') and \
+                        _peel(node['inner'][0]).get('kind') == 'DeclRefExpr' and \
+                        _peel(node['inner'][0]).get('referencedDecl', {}).get('id') == p['id'] and not node.get('isArrow'):
+                    members.append(node)
+            if not members or len(members) != references or any(m.get('name') not in fields for m in members):
+                continue
+            casts = {}  # field -> {the pointer types its uses are cast to}
+            for node in walk(body):
+                if node.get('kind') in CASTS and node.get('inner'):
+                    inner = _peel(node['inner'][0])
+                    if inner.get('kind') == 'MemberExpr' and any(inner is m for m in members):
+                        casts.setdefault(inner['name'], set()).add(_plain(_spelling(node['type'])))
+            used = [name for name in fields if any(m['name'] == name for m in members)]
+            synthetic = {}
+            for name in used:
+                t = dict(fields[name]['type'])
+                if _plain(_spelling(t)).replace(' ', '') in ('void*', 'constvoid*'):
+                    if len(casts.get(name, ())) != 1:
+                        break  # cast to several types, or never: the struct stays (the importer reports it)
+                    t = {'qualType': next(iter(casts[name]))}
+                elif '*' in _spelling(t):
+                    t = {'qualType': _plain(_spelling(t))}
+                synthetic[name] = {'id': f'{p["id"]}.{name}', 'kind': 'ParmVarDecl', 'name': f'{p["name"]}_{name}',
+                                   'type': t, 'loc': p.get('loc'), 'range': p.get('range'),
+                                   '_qpel_field_of': p['name'], '_qpel_field': name, '_qpel_struct': struct}
+            else:
+                for m in members:
+                    target = synthetic[m['name']]
+                    reference = {'kind': 'DeclRefExpr', 'id': m.get('id'), 'range': m.get('range'),
+                                 'type': dict(target['type']), 'valueCategory': 'lvalue',
+                                 'referencedDecl': {'id': target['id'], 'kind': 'ParmVarDecl', 'name': target['name'],
+                                                    'type': dict(target['type'])}}
+                    m.clear()
+                    m.update(reference)
+                ids = {t['id']: t for t in synthetic.values()}
+                for node in walk(body):  # casts of a field to its own type: the argument itself
+                    if node.get('kind') in CASTS and node.get('inner'):
+                        inner = _peel(node['inner'][0])
+                        target = ids.get(inner.get('referencedDecl', {}).get('id')) if inner.get('kind') == 'DeclRefExpr' else None
+                        if target and _plain(_spelling(node['type'])) == _plain(_spelling(target['type'])):
+                            node.clear()
+                            node.update(dict(inner, valueCategory='prvalue'))
+                at = function['inner'].index(p)
+                function['inner'][at:at + 1] = [synthetic[name] for name in used]
+                flattened.setdefault(function.get('name'), {})[p['name']] = {
+                    'struct': struct, 'fields': [(name, synthetic[name]['name']) for name in used]}
+    unit['_qpel_flattened'] = flattened
+    return flattened
+
+
+LOOPS = ('ForStmt', 'WhileStmt', 'DoStmt', 'CXXForRangeStmt')
+UNIT_ROWS = re.compile(r'(.*\S)\s*\[1\]\[([0-9]+)\]')
+
+
+def _literal(node):
+    """The value of an expression of integer literals and operators, or None."""
+    node = _peel(node)
+    kind = node.get('kind')
+    inner = [c for c in node.get('inner', ()) if isinstance(c, dict)]
+    if kind == 'IntegerLiteral':
+        return int(node['value'])
+    if kind == 'CXXBoolLiteralExpr':
+        return int(bool(node['value']))
+    if kind == 'BinaryOperator' and len(inner) == 2 and node.get('opcode') in BINARY:
+        a, b = _literal(inner[0]), _literal(inner[1])
+        return None if a is None or b is None else int(BINARY[node['opcode']](a, b))
+    if kind == 'UnaryOperator' and node.get('opcode') == '!' and inner:
+        a = _literal(inner[0])
+        return None if a is None else int(not a)
+    return None
+
+
+def _refers(node, decl_id):
+    node = _peel(node)
+    return node.get('kind') == 'DeclRefExpr' and node.get('referencedDecl', {}).get('id') == decl_id
+
+
+def _escapes(body):
+    """True when a break or continue in body leaves it (one not inside a nested loop or switch)."""
+    def visit(node):
+        if node.get('kind') in ('BreakStmt', 'ContinueStmt'):
+            return True
+        if node.get('kind') in LOOPS + ('SwitchStmt',):
+            return False
+        return any(visit(c) for c in node.get('inner', ()) if isinstance(c, dict))
+    return visit(body)
+
+
+def _assigns(body, decl_id):
+    for node in walk(body):
+        inner = node.get('inner') or ()
+        if node.get('kind') in ('BinaryOperator', 'CompoundAssignOperator') and node.get('opcode', '').endswith('=') \
+                and node.get('opcode') not in ('==', '!=', '<=', '>=') and inner and _refers(inner[0], decl_id):
+            return True
+        if node.get('kind') == 'UnaryOperator' and node.get('opcode') in ('++', '--', '&') and inner and _refers(inner[0], decl_id):
+            return True
+    return False
+
+
+def single_rows(unit):
+    """mamba's kernels keep kNRows rows of everything (`float vals[kNRows][kNItems]`, loops
+    `for (int r = 0; r < kNRows; ++r)`) and are only built with kNRows = 1. Such a loop with one
+    trip is its body with r = 0; an `if` that is then constant (`if (r > 0) __syncthreads();`) is
+    folded; and a local array of one row, `T a[1][N]`, is the row `T a[N]` (`a[0][i]` is `a[i]`,
+    and `a[0]` passed on is `a`). Rows other than 0 (kNRows > 1) are left as they are."""
+    if unit.get('_qpel_single_rows'):
+        return
+    values = constant_values(unit)
+
+    def bound(node):
+        node = _peel(node)
+        if node.get('kind') == 'DeclRefExpr':
+            return values.get(node.get('referencedDecl', {}).get('id'))
+        return _literal(node)
+
+    for function in walk(unit):
+        if function.get('kind') != 'FunctionDecl' or _body(function) is None:
+            continue
+        body = _body(function)
+        for node in [n for n in walk(body) if n.get('kind') == 'ForStmt' and len(n.get('inner', ())) == 5]:
+            init, _, cond, step, loop_body = node['inner']
+            decls = init.get('inner', ()) if init.get('kind') == 'DeclStmt' else ()
+            if len(decls) != 1 or decls[0].get('kind') != 'VarDecl' or not decls[0].get('inner') or \
+                    _literal(decls[0]['inner'][0]) != 0:
+                continue
+            index = decls[0]['id']
+            if not (cond.get('kind') == 'BinaryOperator' and cond.get('opcode') == '<' and _refers(cond['inner'][0], index)
+                    and bound(cond['inner'][1]) == 1):
+                continue
+            if not (step.get('kind') == 'UnaryOperator' and step.get('opcode') == '++' and _refers(step['inner'][0], index)):
+                continue
+            if _escapes(loop_body) or _assigns(loop_body, index):
+                continue
+            for ref in walk(loop_body):
+                if ref.get('kind') == 'DeclRefExpr' and ref.get('referencedDecl', {}).get('id') == index:
+                    ref.clear()
+                    ref.update({'kind': 'IntegerLiteral', 'type': {'qualType': 'int'}, 'valueCategory': 'prvalue', 'value': '0'})
+            node.clear()
+            node.update(loop_body if loop_body.get('kind') == 'CompoundStmt' else
+                        {'kind': 'CompoundStmt', 'inner': [loop_body]})
+        for node in walk(body):
+            if node.get('kind') == 'IfStmt' and not node.get('hasVar') and not node.get('hasInit') and node.get('inner'):
+                value = _literal(node['inner'][0])
+                if value is None:
+                    continue
+                branches = node['inner'][1:]
+                taken = branches[0] if value else (branches[1] if len(branches) > 1 and node.get('hasElse') else None)
+                node.clear()
+                node.update(taken if taken is not None else {'kind': 'NullStmt'})
+        for decl in [n for n in walk(body) if n.get('kind') == 'VarDecl' and 'init' not in n]:
+            rows = UNIT_ROWS.fullmatch(_spelling(decl.get('type', {})).strip())
+            if not rows:
+                continue
+            uses = [n for n in walk(body) if n.get('kind') == 'DeclRefExpr' and n.get('referencedDecl', {}).get('id') == decl['id']]
+            outer = [n for n in walk(body) if n.get('kind') == 'ArraySubscriptExpr' and n.get('inner') and
+                     _refers(n['inner'][0], decl['id'])]
+            if len(outer) != len(uses) or any(_literal(n['inner'][1]) != 0 for n in outer):
+                continue
+            for key in ('qualType', 'desugaredQualType'):
+                if key in decl['type']:
+                    found = UNIT_ROWS.fullmatch(decl['type'][key].strip())
+                    if found:
+                        decl['type'][key] = f'{found.group(1)}[{found.group(2)}]'
+            for n in outer:
+                ref = _peel(n['inner'][0])
+                ref = dict(ref, type=dict(decl['type']), referencedDecl=dict(ref['referencedDecl'], type=dict(decl['type'])))
+                n.clear()
+                n.update(ref)
+    unit['_qpel_single_rows'] = True
+
+
 def _peel(node):
     while node.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and node.get('inner'):
         node = node['inner'][0]
