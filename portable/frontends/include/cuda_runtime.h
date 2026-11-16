@@ -9,6 +9,7 @@
 #define __constant__ __attribute__((constant))
 #define __launch_bounds__(...) __attribute__((launch_bounds(__VA_ARGS__)))
 #define __forceinline__ __attribute__((always_inline)) inline
+#define __align__(n) __attribute__((aligned(n)))
 #define __grid_constant__
 struct uint3 { unsigned int x, y, z; };
 static constexpr int warpSize = 32;  // a constant on every NVIDIA GPU so far
@@ -175,10 +176,15 @@ cudaError_t cudaMemsetAsync(void*, int, size_t, cudaStream_t);
 cudaError_t cudaStreamCreateWithFlags(cudaStream_t*, unsigned);
 cudaError_t cudaStreamDestroy(cudaStream_t);
 cudaError_t cudaEventCreateWithFlags(cudaEvent_t*, unsigned);
+cudaError_t cudaEventCreate(cudaEvent_t*);
+cudaError_t cudaStreamSynchronize(cudaStream_t);
+cudaError_t cudaMemPrefetchAsync(const void*, size_t, int, cudaStream_t = 0);
 cudaError_t cudaEventDestroy(cudaEvent_t);
 cudaError_t cudaEventRecord(cudaEvent_t, cudaStream_t = 0);
 cudaError_t cudaStreamWaitEvent(cudaStream_t, cudaEvent_t, unsigned = 0);
 }
+// the C++ API's overload (cuda_runtime.h): an event with flags
+inline cudaError_t cudaEventCreate(cudaEvent_t* e, unsigned flags) { return cudaEventCreateWithFlags(e, flags); }
 // Device-side libc (provided by the SDK's device runtime).
 extern "C" __device__ int printf(const char*, ...);
 extern "C" __device__ void* memcpy(void*, const void*, size_t);
@@ -335,9 +341,11 @@ namespace std { template <class T> constexpr int bit_width(T x) { int n = 0; whi
 #endif
 struct ushort4 { unsigned short x, y, z, w; };
 cudaError_t cudaMallocAsync(void**, size_t, cudaStream_t);
+template <class T> cudaError_t cudaMallocAsync(T** p, size_t n, cudaStream_t s) { return cudaMallocAsync((void**)p, n, s); }
 cudaError_t cudaFreeAsync(void*, cudaStream_t);
 __device__ int __popcll(unsigned long long);
 __device__ int __clzll(long long);
 __device__ int __ffsll(long long);
 cudaError_t cudaMallocHost(void**, size_t);
+template <class T> cudaError_t cudaMallocHost(T** p, size_t n) { return cudaMallocHost((void**)p, n); }
 cudaError_t cudaFreeHost(void*);

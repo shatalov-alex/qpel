@@ -37,6 +37,10 @@ template <class Op, class = void> struct known : std::false_type {};
 template <class Op> struct known<Op, decltype((void)Op::qpel_op)> : std::true_type {};
 template <class Op> using if_known = typename std::enable_if<known<Op>::value, int>::type;
 template <class Op> using if_unknown = typename std::enable_if<!known<Op>::value, int>::type;
+// The body of a method outside qpel's subset: it marks it for the importer (facades.py reports a call
+// to it as not in the subset), and gives the method a definition, which C++ requires when a type
+// without linkage (a struct in an anonymous namespace) instantiates it.
+__device__ inline void qpel_unsupported() {}
 
 template <int OP, typename T>
 __device__ __forceinline__ T combine(T a, T b) {
@@ -320,9 +324,10 @@ class BlockScan {
   template <int ITEMS, typename Op, typename Callback>
   __device__ void ExclusiveScan(T (&input)[ITEMS], T (&output)[ITEMS], Op op, Callback& prefix);
   template <typename Op, typename Callback> __device__ void InclusiveScan(T input, T& output, Op op, Callback& prefix);
-  template <typename Op, qpel_detail::if_unknown<Op> = 0> __device__ void InclusiveScan(T input, T& output, Op op);
+  template <typename Op, qpel_detail::if_unknown<Op> = 0> __device__ void InclusiveScan(T input, T& output, Op op) {
+    qpel_detail::qpel_unsupported(); output = input; }
   template <typename Op, qpel_detail::if_unknown<Op> = 0>
-  __device__ void ExclusiveScan(T input, T& output, T initial_value, Op op);
+  __device__ void ExclusiveScan(T input, T& output, T initial_value, Op op) { qpel_detail::qpel_unsupported(); output = input; }
   template <typename Op, typename Callback> __device__ void ExclusiveScan(T input, T& output, Op op, Callback& prefix);
 
  private:
@@ -359,8 +364,10 @@ class BlockReduce {
   // Declared only (not in the subset yet): several items per thread, and other operators.
   template <int ITEMS> __device__ T Sum(T (&inputs)[ITEMS]);
   template <int ITEMS, typename Op> __device__ T Reduce(T (&inputs)[ITEMS], Op op);
-  template <typename Op, qpel_detail::if_unknown<Op> = 0> __device__ T Reduce(T input, Op op);
-  template <typename Op, qpel_detail::if_unknown<Op> = 0> __device__ T Reduce(T input, Op op, int num_valid);
+  template <typename Op, qpel_detail::if_unknown<Op> = 0> __device__ T Reduce(T input, Op op) {
+    qpel_detail::qpel_unsupported(); return input; }
+  template <typename Op, qpel_detail::if_unknown<Op> = 0> __device__ T Reduce(T input, Op op, int num_valid) {
+    qpel_detail::qpel_unsupported(); return input; }
 
  private:
   T* storage;
@@ -400,7 +407,9 @@ template <typename Key> struct DoubleBuffer {
   __host__ __device__ Key* Alternate();
 };
 #define QPEL_CUB_DEVICE(NAME, ...) struct NAME { template <typename... A> static cudaError_t __VA_ARGS__(A...); };
-QPEL_CUB_DEVICE(DeviceSegmentedRadixSort, SortKeys); QPEL_CUB_DEVICE(DeviceMergeSort, SortKeys);
+#define QPEL_CUB_SORT(NAME) struct NAME { template <typename... A> static cudaError_t SortKeys(A...); \
+                                          template <typename... A> static cudaError_t SortPairs(A...); };
+QPEL_CUB_SORT(DeviceSegmentedRadixSort) QPEL_CUB_SORT(DeviceMergeSort)
 QPEL_CUB_DEVICE(DeviceSelect, Flagged); QPEL_CUB_DEVICE(DeviceRunLengthEncode, Encode);
 QPEL_CUB_DEVICE(DeviceSegmentedReduce, Sum); QPEL_CUB_DEVICE(DeviceHistogram, HistogramEven);
 QPEL_CUB_DEVICE(DevicePartition, Flagged);
@@ -409,6 +418,7 @@ struct DeviceRadixSort {
   template <typename... A> static cudaError_t SortKeys(A...);
   template <typename... A> static cudaError_t SortPairs(A...);
 };
+
 
 // Device-wide algorithms are host calls (temporary storage, several launches): declared so that
 // host code using them parses; qpel does not translate them (a library mapping, ROADMAP Phase 7).

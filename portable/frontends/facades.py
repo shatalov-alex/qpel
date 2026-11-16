@@ -101,7 +101,10 @@ def inline_facades(unit):
             if len(args) != len(params) or any(a.get('kind') == 'CXXDefaultArgExpr' for a in args):
                 return dict(call, _facade_error=f'{name}: default arguments are not in qpel\'s library subset')
             body = next((c for c in method.get('inner', ()) if c.get('kind') == 'CompoundStmt'), None)
-            if body is None:
+            unsupported = body is not None and any(n.get('kind') == 'DeclRefExpr' and
+                                                   n.get('referencedDecl', {}).get('name') == 'qpel_unsupported'
+                                                   for n in walk(body))  # (cub.cuh marks these)
+            if body is None or unsupported:
                 return dict(call, _facade_error=f'{name} with these arguments is not in qpel\'s CUB subset '
                                                 '(LIBRARIES.md)')
             statements = body.get('inner', ())

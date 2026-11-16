@@ -2,3 +2,23 @@
 // libcu++ stand-in (importing only): the standard header, as cuda::std.
 #include <atomic>
 namespace cuda { namespace std { using namespace ::std; } }
+// cuda::atomic_ref (libcu++): declared so that code using it parses; qpel reads atomics as CUDA's
+// atomicAdd and friends, not through it.
+namespace cuda {
+enum thread_scope { thread_scope_system, thread_scope_device, thread_scope_block, thread_scope_thread };
+using ::std::memory_order; using ::std::memory_order_relaxed; using ::std::memory_order_acquire;
+using ::std::memory_order_release; using ::std::memory_order_acq_rel; using ::std::memory_order_seq_cst;
+template <class T, thread_scope S = thread_scope_system> struct atomic_ref {
+  __host__ __device__ explicit atomic_ref(T&);
+  __host__ __device__ T load(memory_order = memory_order_seq_cst) const;
+  __host__ __device__ void store(T, memory_order = memory_order_seq_cst) const;
+  __host__ __device__ T fetch_add(T, memory_order = memory_order_seq_cst) const;
+  __host__ __device__ T fetch_sub(T, memory_order = memory_order_seq_cst) const;
+  __host__ __device__ T fetch_or(T, memory_order = memory_order_seq_cst) const;
+  __host__ __device__ T fetch_and(T, memory_order = memory_order_seq_cst) const;
+  __host__ __device__ T fetch_max(T, memory_order = memory_order_seq_cst) const;
+  __host__ __device__ T fetch_min(T, memory_order = memory_order_seq_cst) const;
+  __host__ __device__ T exchange(T, memory_order = memory_order_seq_cst) const;
+  __host__ __device__ bool compare_exchange_strong(T&, T, memory_order = memory_order_seq_cst) const;
+};
+}  // namespace cuda

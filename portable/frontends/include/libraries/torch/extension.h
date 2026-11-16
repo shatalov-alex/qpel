@@ -10,6 +10,7 @@
 #include <cfloat>  // FLT_MAX: ATen's headers bring it in, and extensions use it
 #include <cstdint>
 #include <cstddef>
+#include <functional>
 #include <initializer_list>
 #include <limits>
 #include <string>
@@ -279,6 +280,7 @@ Tensor zeros_like(const Tensor&, TensorOptions = {});
 Tensor ones_like(const Tensor&, TensorOptions = {});
 Tensor full_like(const Tensor&, const Scalar&, TensorOptions = {});
 Tensor from_blob(void*, IntArrayRef, TensorOptions = {});
+Tensor from_blob(void*, IntArrayRef, const std::function<void(void*)>&, TensorOptions = {});
 Tensor rand(IntArrayRef, TensorOptions = {});
 Tensor sparse_coo_tensor(const Tensor&, const Tensor&, IntArrayRef, TensorOptions = {});
 template <class... A> Tensor sparse_coo_tensor(const Tensor&, const Tensor&, IntArrayRef, A&&...);
@@ -318,7 +320,12 @@ template <class T> bool operator!=(ArrayRef<T>, ArrayRef<T>);
 using std::nullopt;
 using std::nullopt_t;
 namespace cuda {
-namespace CUDACachingAllocator { void* raw_alloc(size_t); void* raw_alloc_with_stream(size_t, cudaStream_t); void raw_delete(void*); }
+namespace CUDACachingAllocator {
+void* raw_alloc(size_t); void* raw_alloc_with_stream(size_t, cudaStream_t); void raw_delete(void*);
+struct DataPtr { void* get() const; };
+struct CUDAAllocator { DataPtr allocate(size_t); void* raw_allocate(size_t); void raw_deallocate(void*); };
+CUDAAllocator* get();
+}
 inline void MaybeSetDevice(int) {} inline DeviceIndex current_device() { return 0; } inline DeviceIndex device_count() { return 1; } }
 // c10/util/irange.h
 template <class T> struct integer_range { struct iterator { T v; T operator*() const { return v; } iterator& operator++() { ++v; return *this; } bool operator!=(iterator o) const { return v != o.v; } }; T b, e; iterator begin() const { return {b}; } iterator end() const { return {e}; } };
@@ -348,7 +355,10 @@ struct IValue {
 }
 
 namespace at {
-template <class T> using opmath_type = T;  // ATen/OpMathType.h (float stays float; half math is float)
+template <class T> struct OpMathType { using type = T; };  // ATen/OpMathType.h: half types compute in float
+template <> struct OpMathType<c10::Half> { using type = float; };
+template <> struct OpMathType<c10::BFloat16> { using type = float; };
+template <class T> using opmath_type = typename OpMathType<T>::type;
 struct GradMode { static bool is_enabled(); static void set_enabled(bool); };
 struct AutoGradMode { AutoGradMode(bool); };
 struct NoGradGuard {};
@@ -390,6 +400,9 @@ using at::Tensor;
 // Type dispatch: the stand-in instantiates float (and the half types where the real macro
 // adds them). The real macros also instantiate double, which Metal cannot run.
 #define AT_PRIVATE_CASE(scalar, ...) [&] { using scalar_t = scalar; return __VA_ARGS__(); }()
+// ATen/Dispatch_v2.h: AT_DISPATCH_V2(TYPE, NAME, AT_WRAP(body), types...)
+#define AT_WRAP(...) __VA_ARGS__
+#define AT_DISPATCH_V2(TYPE, NAME, BODY, ...) AT_PRIVATE_CASE(float, BODY)
 #define AT_DISPATCH_FLOATING_TYPES(TYPE, NAME, ...) AT_PRIVATE_CASE(float, __VA_ARGS__)
 #define AT_DISPATCH_FLOATING_TYPES_AND_HALF(TYPE, NAME, ...) AT_PRIVATE_CASE(float, __VA_ARGS__)
 #define AT_DISPATCH_FLOATING_TYPES_AND(EXTRA, TYPE, NAME, ...) AT_PRIVATE_CASE(float, __VA_ARGS__)
