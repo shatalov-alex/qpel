@@ -100,8 +100,39 @@ __global__ void shuffle_predicates(unsigned* out) {
   }
   out[blockIdx.x * blockDim.x + threadIdx.x] = x;
 }
+// ldmatrix (qpel-ldmatrix.patch): 4 8x8 matrices of 16-bit values m * 64 + r * 8 + c in shared memory;
+// lane l gives row l % 8 of matrix l / 8. Per lane: the x1 load, the four x4 registers, the four .trans.
+__global__ void load_matrices(unsigned* out) {
+  __shared__ unsigned short tile[4 * 64];
+  unsigned lane = threadIdx.x;
+  for (unsigned i = lane; i < 256u; i += 32u) tile[i] = (unsigned short)i;
+  __syncwarp();
+  unsigned addr = (unsigned)__cvta_generic_to_shared(&tile[(lane / 8u) * 64u + (lane % 8u) * 8u]);
+  unsigned* o = out + lane * 9u;
+  asm volatile("ldmatrix.sync.aligned.m8n8.x1.shared.b16 {%0}, [%1];" : "=r"(o[0]) : "r"(addr));
+  asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0, %1, %2, %3}, [%4];"
+               : "=r"(o[1]), "=r"(o[2]), "=r"(o[3]), "=r"(o[4]) : "r"(addr));
+  asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0, %1, %2, %3}, [%4];"
+               : "=r"(o[5]), "=r"(o[6]), "=r"(o[7]), "=r"(o[8]) : "r"(addr));
+}
 int main() {
   int failures = 0;
+  { // ldmatrix: lane l gets columns 2 (l % 4) and 2 (l % 4) + 1 of row l / 4 (.trans: rows of column l / 4)
+    static unsigned h[32 * 9]; unsigned* d; cudaMalloc(&d, sizeof h);
+    load_matrices<<<1, 32>>>(d); cudaDeviceSynchronize(); cudaMemcpy(h, d, sizeof h, cudaMemcpyDeviceToHost);
+    for (unsigned l = 0; l < 32u; ++l) {
+      unsigned r = l / 4u, c = 2u * (l % 4u);
+      for (unsigned m = 0; m < 9u; ++m) {
+        unsigned mat = m == 0 ? 0u : (m - 1u) % 4u;
+        unsigned want = m < 5u ? ((mat * 64u + r * 8u + c) | ((mat * 64u + r * 8u + c + 1u) << 16))
+                               : ((mat * 64u + c * 8u + r) | ((mat * 64u + (c + 1u) * 8u + r) << 16));
+        if (h[l * 9u + m] != want) {
+          printf("SELFTEST FAIL ldmatrix%s: lane %u register %u gives %08x, want %08x\n", m < 5u ? "" : ".trans", l, m, h[l * 9u + m], want);
+          ++failures; l = 32u; break;
+        }
+      }
+    }
+  }
   { // warp shuffles, 3 blocks of 2 warps
     static unsigned h[3 * 64 * 4]; unsigned* d; cudaMalloc(&d, sizeof h);
     shuffles<<<3, 64>>>(d); cudaDeviceSynchronize(); cudaMemcpy(h, d, sizeof h, cudaMemcpyDeviceToHost);

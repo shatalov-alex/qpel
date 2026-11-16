@@ -313,3 +313,62 @@ def complex_mul_kernel(a_ptr, b_ptr, out_ptr, n_elements, BLOCK_SIZE: tl.constex
     br, bi = tl.split(tl.load(b_ptr + pair, mask=mask, other=0.0))
     product = tl.join(ar * br - ai * bi, ar * bi + ai * br)
     tl.store(out_ptr + pair, product, mask=mask)
+
+
+# Attention backward (non-causal, float32 with ieee dots), in the structure of the Triton tutorial's
+# fused attention: the forward pass's row logsumexp (natural log) is an input; delta = rowsum(o * do);
+# one program per block of keys accumulates dK and dV over every query block, one program per block of
+# queries accumulates dQ over every key block.
+@triton.jit
+def attention_bwd_preprocess_kernel(o_ptr, do_ptr, delta_ptr, N_CTX, HEAD_DIM: tl.constexpr, BLOCK_M: tl.constexpr):
+    offs_m = tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_d = tl.arange(0, HEAD_DIM)
+    mask = offs_m[:, None] < N_CTX
+    o = tl.load(o_ptr + offs_m[:, None] * HEAD_DIM + offs_d[None, :], mask=mask, other=0.0)
+    do = tl.load(do_ptr + offs_m[:, None] * HEAD_DIM + offs_d[None, :], mask=mask, other=0.0)
+    tl.store(delta_ptr + offs_m, tl.sum(o * do, axis=1), mask=offs_m < N_CTX)
+
+
+@triton.jit
+def attention_bwd_dkdv_kernel(q_ptr, k_ptr, v_ptr, do_ptr, lse_ptr, delta_ptr, dk_ptr, dv_ptr, sm_scale, N_CTX,
+                              HEAD_DIM: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
+    offs_n = tl.program_id(0) * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_d = tl.arange(0, HEAD_DIM)
+    k = tl.load(k_ptr + offs_n[:, None] * HEAD_DIM + offs_d[None, :])
+    v = tl.load(v_ptr + offs_n[:, None] * HEAD_DIM + offs_d[None, :])
+    dk = tl.zeros([BLOCK_N, HEAD_DIM], dtype=tl.float32)
+    dv = tl.zeros([BLOCK_N, HEAD_DIM], dtype=tl.float32)
+    for start_m in range(0, N_CTX, BLOCK_M):
+        offs_m = start_m + tl.arange(0, BLOCK_M)
+        qT = tl.load(q_ptr + offs_m[None, :] * HEAD_DIM + offs_d[:, None])
+        lse = tl.load(lse_ptr + offs_m)
+        pT = tl.exp(tl.dot(k, qT, input_precision="ieee") * sm_scale - lse[None, :])
+        do = tl.load(do_ptr + offs_m[:, None] * HEAD_DIM + offs_d[None, :])
+        dv += tl.dot(pT, do, input_precision="ieee")
+        dpT = tl.dot(v, tl.trans(do), input_precision="ieee")
+        delta = tl.load(delta_ptr + offs_m)
+        dsT = pT * (dpT - delta[None, :])
+        dk += tl.dot(dsT, tl.trans(qT), input_precision="ieee")
+    tl.store(dk_ptr + offs_n[:, None] * HEAD_DIM + offs_d[None, :], dk * sm_scale)
+    tl.store(dv_ptr + offs_n[:, None] * HEAD_DIM + offs_d[None, :], dv)
+
+
+@triton.jit
+def attention_bwd_dq_kernel(q_ptr, k_ptr, v_ptr, do_ptr, lse_ptr, delta_ptr, dq_ptr, sm_scale, N_CTX,
+                            HEAD_DIM: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
+    offs_m = tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_d = tl.arange(0, HEAD_DIM)
+    q = tl.load(q_ptr + offs_m[:, None] * HEAD_DIM + offs_d[None, :])
+    do = tl.load(do_ptr + offs_m[:, None] * HEAD_DIM + offs_d[None, :])
+    lse = tl.load(lse_ptr + offs_m)
+    delta = tl.load(delta_ptr + offs_m)
+    dq = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
+    for start_n in range(0, N_CTX, BLOCK_N):
+        offs_n = start_n + tl.arange(0, BLOCK_N)
+        kT = tl.load(k_ptr + offs_n[None, :] * HEAD_DIM + offs_d[:, None])
+        vT = tl.load(v_ptr + offs_n[None, :] * HEAD_DIM + offs_d[:, None])
+        p = tl.exp(tl.dot(q, kT, input_precision="ieee") * sm_scale - lse[:, None])
+        dp = tl.dot(do, vT, input_precision="ieee")
+        ds = p * (dp - delta[:, None])
+        dq += tl.dot(ds, tl.trans(kT), input_precision="ieee")
+    tl.store(dq_ptr + offs_m[:, None] * HEAD_DIM + offs_d[None, :], dq * sm_scale)

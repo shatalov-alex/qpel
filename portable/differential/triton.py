@@ -321,7 +321,61 @@ def complex_mul_cases(rng):
     return out
 
 
-CASES = {'newton_sqrt_kernel': newton_sqrt_cases, 'complex_mul_kernel': complex_mul_cases, 'gelu_libdevice_kernel': gelu_cases, 'precise_ops_kernel': precise_ops_cases, 'block_ptr_matmul_kernel': block_ptr_matmul_cases, 'transpose_kernel': transpose_cases,
+def attention_inputs(rng, n, d=16):
+    """q, k, v, do (float32) and, in float64, the forward pass (S = q k^T * scale, its row logsumexp,
+    P, o = P v) and delta = rowsum(o * do), the backward kernels' inputs."""
+    q, k, v, do = (rng.standard_normal((n, d)) * 0.7).astype(np.float32), (rng.standard_normal((n, d)) * 0.7).astype(np.float32), \
+        rng.standard_normal((n, d)).astype(np.float32), rng.standard_normal((n, d)).astype(np.float32)
+    scale = np.float32(0.25)
+    s64 = q.astype(np.float64) @ k.astype(np.float64).T * float(scale)
+    lse = np.log(np.exp(s64 - s64.max(axis=1, keepdims=True)).sum(axis=1)) + s64.max(axis=1)
+    p = np.exp(s64 - lse[:, None])
+    o = p @ v.astype(np.float64)
+    delta = (o * do).sum(axis=1)
+    return q, k, v, do, scale, lse.astype(np.float32), o.astype(np.float32), delta.astype(np.float32), p, s64
+
+
+def attention_scales(q, k, v, do, scale, delta, p, s64):
+    """Error scales of dK, dV and dQ: the gradients' formulas over magnitudes. P = exp(S - lse) carries
+    the dot's error of S (relative to |q| |k| * scale) and exp's; dS = P * (dP - delta) cancels."""
+    q, k, v, do = (np.abs(x.astype(np.float64)) for x in (q, k, v, do))
+    s_abs = q @ k.T * float(scale)
+    p_err = p * (1 + s_abs)
+    dp = np.abs((do @ v.T))
+    ds_abs = p_err * (dp + np.abs(delta)[:, None]) + p * (do @ v.T + np.abs(delta)[:, None])
+    return {'dk_ptr': (float(scale) * ds_abs.T @ q).reshape(-1), 'dv_ptr': (p_err.T @ do).reshape(-1),
+            'dq_ptr': (float(scale) * ds_abs @ k).reshape(-1)}
+
+
+def attention_bwd_preprocess_cases(rng):
+    out = []
+    for n in (16, 40, 64):  # 40: the last block of 16 rows is partly masked
+        q, k, v, do, scale, lse, o, delta, p, s64 = attention_inputs(rng, n)
+        out.append(Case({'programs': (-(-n // 16), 1, 1), 'o_ptr_size': (n * 16, 1, 1), 'do_ptr_size': (n * 16, 1, 1),
+                         'delta_ptr_size': (n, 1, 1)},
+                        {'o_ptr': o.reshape(-1), 'do_ptr': do.reshape(-1), 'delta_ptr': np.zeros(n, np.float32)},
+                        {'N_CTX': n}, f'n={n}'))
+        out[-1].scales = {'delta_ptr': (np.abs(o.astype(np.float64)) * np.abs(do)).sum(axis=1)}
+    return out
+
+
+def attention_bwd_cases(outputs):
+    def cases(rng):
+        out = []
+        for n in (16, 48, 64):
+            q, k, v, do, scale, lse, o, delta, p, s64 = attention_inputs(rng, n)
+            buffers = {'q_ptr': q, 'k_ptr': k, 'v_ptr': v, 'do_ptr': do, 'lse_ptr': lse, 'delta_ptr': delta}
+            buffers = {name: a.reshape(-1) for name, a in buffers.items()} | {name: np.zeros(n * 16, np.float32) for name in outputs}
+            out.append(Case({'programs': (n // 16, 1, 1)} | {f'{name}_size': (a.size, 1, 1) for name, a in buffers.items()},
+                            buffers, {'sm_scale': float(scale), 'N_CTX': n}, f'n={n}'))
+            out[-1].scales = {name: x for name, x in attention_scales(q, k, v, do, scale, delta, p, s64).items() if name in outputs}
+        return out
+    return cases
+
+
+CASES = {'attention_bwd_preprocess_kernel': attention_bwd_preprocess_cases,
+         'attention_bwd_dkdv_kernel': attention_bwd_cases(('dk_ptr', 'dv_ptr')),
+         'attention_bwd_dq_kernel': attention_bwd_cases(('dq_ptr',)), 'newton_sqrt_kernel': newton_sqrt_cases, 'complex_mul_kernel': complex_mul_cases, 'gelu_libdevice_kernel': gelu_cases, 'precise_ops_kernel': precise_ops_cases, 'block_ptr_matmul_kernel': block_ptr_matmul_cases, 'transpose_kernel': transpose_cases,
          'collatz_kernel': collatz_cases, 'attention_fwd_kernel': attention_cases, 'argmax_kernel': argmax_cases, 'cumsum_kernel': cumsum_cases, 'clip_rows_kernel': clip_rows_cases,
          'histogram_kernel': histogram_cases, 'matmul_kernel': matmul_cases, 'row_stats_kernel': row_stats_cases, 'add_kernel': add_cases, 'scale_shift_kernel': scale_shift_cases, 'softmax_kernel': softmax_cases,
          'copy2d_kernel': copy2d_cases, 'layer_norm_kernel': layer_norm_cases}

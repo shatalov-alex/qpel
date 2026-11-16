@@ -121,6 +121,14 @@ bits above the register's width that earlier instructions left there. After `add
 comparisons never met a register with such bits); Triton's PTX counts its loops down and tests
 them with `setp.ne.b32`, and Triton's matmul ran forever. The self-test checks `setp.ne` and `setp.eq` on `.b32` and `.b16`.
 
+**Added (2026-11-16), `qpel-ldmatrix.patch`, image `qpel15` (local so far):** `ldmatrix.sync.aligned.m8n8.x{1,2,4}[.trans].shared.b16`
+(sm_75), which GPGPU-Sim did not parse ("Syntax error"). Triton emits it to move a tile into a
+`tl.dot` operand's layout (a transposed operand: the attention backward kernels) or to convert a 2D
+block's layout (Liger's 2D-block RMSNorm). A warp instruction like `shfl`: lanes 8i to 8i+7 give the
+row addresses of matrix i, each lane receives its pairs of 16-bit elements as the PTX ISA lays out
+the fragments (with `.trans`, of the transposed matrix). The self-test checks `.x1`, `.x4` and
+`.x4.trans` for every lane, in functional mode and the timing model.
+
 Timing (performance) mode still aborts on shuffles, before and after the fixes
 (`bitset::test` out of range in `shader_core_ctx::execute`); qpel runs functional mode only.
 

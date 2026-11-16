@@ -38,7 +38,7 @@ from . import matrix  # noqa: E402
 from .simulate import Program  # noqa: E402
 from frontends import clang_ast  # noqa: E402
 
-IMAGE = 'qpel/gpgpu-sim:dev-4195dd4-qpel14'  # change the tag whenever gpgpusim/ changes
+IMAGE = 'qpel/gpgpu-sim:dev-4195dd4-qpel15'  # change the tag whenever gpgpusim/ changes
 DOCKERFILE = HERE/'gpgpusim'
 # Programs GPGPU-Sim cannot run correctly yet, for the original and qpel's CUDA alike, while
 # the CPU simulator and the Apple GPU agree (gpgpusim/README.md, Open). Real NVIDIA hardware

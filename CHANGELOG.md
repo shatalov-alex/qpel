@@ -7,6 +7,9 @@ older programs keep building.
 ## [Unreleased] — Phase 5
 
 ### Added
+- **GPGPU-Sim `ldmatrix`** (`gpgpusim/qpel-ldmatrix.patch`, image `qpel15`, with a self-test check):
+  Triton's PTX uses it for transposed `tl.dot` operands and 2D layouts. Triton attention backward
+  (preprocess, dK/dV, dQ) joins the corpus; all 49 Triton kernels run as Triton's PTX on GPGPU-Sim.
 - **Liger-Kernel as a Triton corpus** (`portable/corpus/liger`, BSD-2, vendored unmodified):
   twenty-seven kernels (norms, gated activations, softmax, RoPE, DyT, KL divergence, TVD, fused cross
   entropy; forward and backward) pass Triton's interpreter against qpel's CUDA (CPU simulator) and

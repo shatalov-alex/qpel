@@ -1,0 +1,29 @@
+{
+ "kernel": "attention_bwd_dkdv_kernel",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 5120,
+ "ptx_name": "attention_bwd_dkdv_kernel",
+ "signature": {
+  "q_ptr": "*fp32",
+  "k_ptr": "*fp32",
+  "v_ptr": "*fp32",
+  "do_ptr": "*fp32",
+  "lse_ptr": "*fp32",
+  "delta_ptr": "*fp32",
+  "dk_ptr": "*fp32",
+  "dv_ptr": "*fp32",
+  "sm_scale": "fp32",
+  "N_CTX": "i32"
+ },
+ "constexprs": {
+  "HEAD_DIM": 16,
+  "BLOCK_M": 16,
+  "BLOCK_N": 16
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}

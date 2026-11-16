@@ -74,8 +74,8 @@ def for_gpgpusim(ptx):
     `.reqntid` (the block size, which the launch gives), debug line information (`.loc`, `.file`
     and the `.debug_*` sections), pointer qualifiers on parameters (`.ptr .global .align 1`), and
     one-register braces (`ld.global.b32 { %r1 }`, which ptxas reads as `%r1` and GPGPU-Sim as a
-    vector), `.shared::cta` (`.shared` without clusters) and `atom.global.gpu.relaxed` (atom's
-    default order and scope)."""
+    vector; `ldmatrix ... .x1` keeps them, as CUDA 12.6's ptxas requires), `.shared::cta` (`.shared`
+    without clusters) and `atom.global.gpu.relaxed` (atom's default order and scope)."""
     import re
     ptx = ptx.replace('.version 8.8', '.version 8.5', 1)
     ptx = re.sub(r'^\s*\.reqntid[^\n]*\n', '', ptx, flags=re.M)
@@ -83,6 +83,8 @@ def for_gpgpusim(ptx):
     ptx = re.sub(r'\.section\s+\.debug_\w+\s*\{[^}]*\}', '', ptx)
     ptx = re.sub(r'\.ptr\s+\.global\s+\.align\s+\d+\s+', '', ptx)
     ptx = re.sub(r'\{\s*(%\w+)\s*\}', r'\1', ptx)  # ld.global.b32 { %r1 }: one register, not a vector
+    # but ldmatrix .x1 takes a one-register vector: Triton (PTX 8.8) writes `%r17`, CUDA 12.6's ptxas wants `{%r17}`
+    ptx = re.sub(r'(ldmatrix\.sync\.aligned\.m8n8\.x1(?:\.trans)?\.shared\.b16\s+)(%\w+)', r'\1{\2}', ptx)
     ptx = ptx.replace('.shared::cta', '.shared')  # the CTA's shared memory (no clusters on sm_75)
     ptx = re.sub(r'\batom\.global\.gpu\.relaxed\.', 'atom.global.', ptx)  # atom's defaults, spelled out
     return ptx
@@ -192,9 +194,7 @@ def run(jobs):
 
 
 # Kernels whose PTX GPGPU-Sim cannot run (their CPU-simulator and Apple GPU rows still run).
-UNSUPPORTED = {
-    'liger_block_rms_norm_forward': 'Triton converts its 2D layout with ldmatrix (sm_75), which GPGPU-Sim does not parse',
-}
+UNSUPPORTED = {}  # (ldmatrix, which Triton uses for tl.dot operands and 2D layouts: qpel-ldmatrix.patch, image qpel15)
 
 
 def rows(names=None):
