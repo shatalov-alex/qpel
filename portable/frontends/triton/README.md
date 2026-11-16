@@ -54,7 +54,8 @@ and any number of operands (argmax carries values and indices), `tt.dot`, `tt.at
 add, min, max, and, or, xor, exchange on 32-bit integers; add and exchange on float32), `scf.for`
 (with scalars, tensors and tensors of pointers carried), `scf.if` on a scalar (results yielded by
 both branches), `scf.while` carrying scalars (`while (true)` with the condition's `break`),
-`tt.trans`, block pointers (`tl.make_block_ptr`, `tl.advance`: Triton's own TTIR passes
+`tt.trans`, exact operations (`tl.maximum`/`tl.minimum` with `propagate_nan`, `tl.clamp`,
+`tl.math.div_rn`, `tl.math.sqrt_rn`, `tl.math.fma`, `tl.umulhi`, bitcasts), block pointers (`tl.make_block_ptr`, `tl.advance`: Triton's own TTIR passes
 rewrite them to pointer tensors with boundary masks, which the lowering reads like any others), `arith` integer and
 float arithmetic, comparisons, `select`, casts, `maxnumf`/`minnumf`/`maxsi`/`minsi`, and the
 `math` functions qpel has (`exp`, `exp2`, `log`, `log2`, `sqrt`, `absf`, `sin`, `cos`, `tanh`,
@@ -84,6 +85,11 @@ CUDA on the CPU simulator, and qpel's Metal on the Apple GPU.
 - **float16 outputs** of a program with any tolerance may differ by one float16 ulp: a float32
   result within the tolerance can round to either neighbour. Fused attention (float16 Q, K, V and
   output): 10040 of 10048 outputs bit for bit, 8 one float16 ulp apart.
+- **`tl.math.fma`**: Triton's interpreter computes it as x * y + z with two roundings (numpy
+  has no fused multiply-add); Triton's NVIDIA code (`fma.rn.f32`) and qpel round once. An fma's
+  result compares with the interpreter within one epsilon of |x * y| + |z|, and with Triton's own
+  PTX on GPGPU-Sim bit for bit (precise_ops_kernel: 137 of 1000 values differ from the interpreter,
+  none from Triton's PTX).
 - qpel's CUDA and Metal agree with each other bit for bit, bounded math functions apart.
 
 ## Triton's own NVIDIA code (GPGPU-Sim)
@@ -99,7 +105,7 @@ rewritten first (`for_gpgpusim`: the PTX version, `.reqntid`, debug information,
 qualifiers, one-register braces, `.shared::cta`, `atom`'s default order and scope spelled out).
 Triton's NVIDIA code approximates fp32 `/` (`div.full.f32`) and `exp` (`ex2.approx`), so a
 kernel that divides or calls `exp` compares within a few more ulp; the others compare as the
-interpreter rows do. All fifteen kernels pass both rows. Getting there found a GPGPU-Sim bug:
+interpreter rows do. All sixteen kernels pass both rows. Getting there found a GPGPU-Sim bug:
 `setp.ne.b32` compared bits above the register's width, and Triton's matmul loop never ended
 (`gpgpusim/qpel-setp.patch`, image `qpel14`).
 

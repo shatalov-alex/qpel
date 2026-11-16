@@ -227,7 +227,8 @@ def rows(names=None):
                     yield 'nvidia: triton ptx', label, got
                     continue
                 reduction = bool(lowering.float_sums)
-                yield 'nvidia: triton ptx', label, triton.check(references[(name, i)], got, outputs, ulps, case, reduction)
+                yield 'nvidia: triton ptx', label, triton.check(references[(name, i)], got, outputs, ulps, case, reduction,
+                                                                lowering.fused)  # (the interpreter's fma is unfused)
                 yield 'nvidia: triton ptx = qpel', label, triton.check(got, simulated.run(case), outputs, ulps, case, reduction)
 
 

@@ -43,6 +43,11 @@ from .compare import compare  # noqa: E402
 from .simulate import Case, Program  # noqa: E402
 
 CORPUS = HERE/'corpus/triton'
+# Triton's interpreter computes tl.math.fma as x * y + z with two roundings (numpy has no fused
+# multiply-add); Triton's NVIDIA code (fma.rn.f32) and qpel's qpel.fma round once. Programs with an
+# fma compare with the interpreter within this many more ulp; against Triton's PTX they must agree
+# exactly (differential/triton_nvidia.py).
+FMA_ULPS = 1  # (in epsilons of the case's scale where it gives one: |x * y| + |z|)
 BUILD = CORPUS/'build'
 IMAGE = 'qpel/triton:3.8.0'
 
@@ -247,7 +252,27 @@ def collatz_cases(rng):
     return out
 
 
-CASES = {'block_ptr_matmul_kernel': block_ptr_matmul_cases, 'transpose_kernel': transpose_cases,
+def precise_ops_cases(rng):
+    """Edges of the exact operations: NaN in either operand, -0 against +0, infinities, huge values,
+    division by zero, values on both sides of the clamp bounds; and random bits for umulhi."""
+    out = []
+    edges = np.array([np.nan, 1.0, -0.0, 0.0, np.inf, -np.inf, 3.4e38, -2.0, 2.5, -1.5, 0.0, 1e-30], np.float32)
+    partners = np.array([1.0, np.nan, 0.0, -0.0, 2.0, np.inf, 3.4e38, 0.0, -0.0, 7.0, -0.0, 3.0], np.float32)
+    for n in (len(edges), 128, 1000):
+        x, y = (rng.standard_normal(n) * 3).astype(np.float32), (rng.standard_normal(n) * 3).astype(np.float32)
+        x[:len(edges)], y[:len(edges)] = edges, partners
+        out.append(Case({'programs': (-(-n // 128), 1, 1), 'x_ptr_size': (n, 1, 1), 'y_ptr_size': (n, 1, 1),
+                         'out_ptr_size': (n, 1, 1), 'fma_ptr_size': (n, 1, 1), 'bits_ptr_size': (n, 1, 1)},
+                        {'x_ptr': x, 'y_ptr': y, 'out_ptr': np.zeros(n, np.float32), 'fma_ptr': np.zeros(n, np.float32),
+                         'bits_ptr': np.zeros(n, np.int32)},
+                        {'n': n}, f'n={n} with the edges'))
+        clamped = np.minimum(np.maximum(x, np.float32(-1.5)), np.float32(2.0)).astype(np.float64)
+        with np.errstate(all='ignore'):  # what an unfused x * y + c's extra rounding is relative to
+            out[-1].scales = {'fma_ptr': np.abs(x.astype(np.float64) * y) + np.abs(clamped)}
+    return out
+
+
+CASES = {'precise_ops_kernel': precise_ops_cases, 'block_ptr_matmul_kernel': block_ptr_matmul_cases, 'transpose_kernel': transpose_cases,
          'collatz_kernel': collatz_cases, 'attention_fwd_kernel': attention_cases, 'argmax_kernel': argmax_cases, 'cumsum_kernel': cumsum_cases, 'clip_rows_kernel': clip_rows_cases,
          'histogram_kernel': histogram_cases, 'matmul_kernel': matmul_cases, 'row_stats_kernel': row_stats_cases, 'add_kernel': add_cases, 'scale_shift_kernel': scale_shift_cases, 'softmax_kernel': softmax_cases,
          'copy2d_kernel': copy2d_cases, 'layer_norm_kernel': layer_norm_cases}
@@ -305,7 +330,7 @@ def tolerance(prog, lowering):
     return ulps
 
 
-def check(expected, actual, outputs, ulps, case, reduction):
+def check(expected, actual, outputs, ulps, case, reduction, fused=False):
     """compare(), and for a program with float reductions, a case may give each output a scale (for a
     dot, the sum of |products|, which bounds its rounding error): an element then also matches
     within `reduction` epsilons of max(1, |value|, scale)."""
@@ -315,10 +340,14 @@ def check(expected, actual, outputs, ulps, case, reduction):
         if error:
             return error
         outputs = [o for o in outputs if o not in halves]
-    error = compare(expected, actual, outputs, None, ulps)
     scales = getattr(case, 'scales', {})
-    if error is None or not reduction or not scales:
-        return error
+    error = compare(expected, actual, [o for o in outputs if o not in scales], None, ulps)
+    if error:
+        return error  # outputs without a scale: as compare() says
+    ulps = ulps + (FMA_ULPS if fused else 0)
+    error = compare(expected, actual, [o for o in outputs if o in scales], None, ulps)
+    if error is None:
+        return None
     epsilon = float(np.finfo(np.float32).eps)
     for name in outputs:
         a, b = np.asarray(expected[name], np.float64), np.asarray(actual[name], np.float64)
@@ -372,11 +401,11 @@ def rows(names=None, gpu=None):
                 expected = expected_all[(name, i)]
                 cuda = simulated.run(case)
                 reduction = bool(lowering.float_sums)
-                yield 'triton -> qpel -> cuda', label, check(expected, cuda, outputs, ulps, case, reduction)
+                yield 'triton -> qpel -> cuda', label, check(expected, cuda, outputs, ulps, case, reduction, lowering.fused)
                 if gpu:
                     from . import metal
                     apple = metal.run_generated(host, plan, case)
-                    yield 'triton -> qpel -> metal', label, check(expected, apple, outputs, ulps, case, reduction)
+                    yield 'triton -> qpel -> metal', label, check(expected, apple, outputs, ulps, case, reduction, lowering.fused)
                     same = 2 * MATH_ULPS if lowering.bounded else 0
                     yield 'qpel cuda = metal', label, compare(cuda, apple, outputs, None, same)
                 else:

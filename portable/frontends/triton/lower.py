@@ -46,6 +46,29 @@ CMPI = {'slt': '<', 'sle': '<=', 'sgt': '>', 'sge': '>=', 'eq': '==', 'ne': '!='
 CMPI_UNSIGNED = {'ult': '<', 'ule': '<=', 'ugt': '>', 'uge': '>='}
 CMPF = {'olt': '<', 'ole': '<=', 'ogt': '>', 'oge': '>=', 'oeq': '==', 'une': '!='}
 CASTS = {'arith.sitofp', 'arith.fptosi', 'arith.extf', 'arith.truncf', 'arith.extsi', 'arith.trunci', 'arith.bitcast'}
+def _maximum(a, b):  # arith.maximumf: NaN if either is NaN; +0 above -0 (equal values: the and of their bits)
+    return (f'(({a} != {a}) ? {a} : (({b} != {b}) ? {b} : (({a} > {b}) ? {a} : (({b} > {a}) ? {b} : '
+            f'bitcast<f32>(bitcast<u32>({a}) & bitcast<u32>({b}))))))')
+
+
+def _minimum(a, b):  # arith.minimumf: NaN if either is NaN; -0 below +0 (the or of their bits)
+    return (f'(({a} != {a}) ? {a} : (({b} != {b}) ? {b} : (({a} < {b}) ? {a} : (({b} < {a}) ? {b} : '
+            f'bitcast<f32>(bitcast<u32>({a}) | bitcast<u32>({b}))))))')
+
+
+EXACT_OPS = {
+    'arith.maximumf': _maximum, 'arith.minimumf': _minimum,
+    # tl.clamp with propagate_nan none: min(max(x, lo), hi) (Triton leaves a NaN x unspecified)
+    'tt.clampf': lambda x, lo, hi: f'math.fmin(math.fmax({x}, {lo}), {hi})',
+    'tt.precise_divf': lambda a, b: f'({a} / {b})',  # qpel's division is correctly rounded
+    'tt.precise_sqrt': lambda a: f'math.sqrt({a})',
+    'math.fma': lambda a, b, c: f'qpel.fma({a}, {b}, {c})',
+    # the high 32 bits of the 64-bit product of two unsigned 32-bit values
+    'tt.mulhiui': lambda a, b: f'cast<i32>((cast<u64>(cast<u32>({a})) * cast<u64>(cast<u32>({b}))) >> 32_u64)',
+    'tt.bitcast': None,  # (set below: needs the result type)
+}
+
+
 MATH_BOUNDED = {'math.exp', 'math.exp2', 'math.log', 'math.log2', 'math.sin', 'math.cos', 'math.tanh',
                 'math.erf', 'math.expm1', 'math.log1p'}
 
@@ -128,6 +151,7 @@ class Lowering:
         self.reads, self.writes, self.atomics = set(), set(), set()
         self.adaptations = []
         self.k = self.e = None  # the slot and element of the innermost owned() loop
+        self.fused = False  # a tl.math.fma (Triton's interpreter computes it unfused: differential/triton.py)
         self.divides = False  # a float division (Triton's NVIDIA code approximates it: div.full.f32)
         self.float_sums = []  # lengths of the float axes reduced by + or * (compared within a tolerance)
         self.bounded = False  # a bounded math function is used (exp, log, ...): compared within MATH_ULPS
@@ -315,12 +339,14 @@ class Lowering:
             return self.transpose(op)
         if name == 'tt.atomic_rmw':
             return self.atomic(op)
-        if name in INT_BINARY or name in FLOAT_BINARY or name in CALLS or name in CASTS or \
+        if name in INT_BINARY or name in FLOAT_BINARY or name in CALLS or name in CASTS or name in EXACT_OPS or \
                 name in ('arith.cmpi', 'arith.cmpf', 'arith.select', 'arith.negf'):
             if name in MATH_BOUNDED:
                 self.bounded = True
             if name == 'arith.divf':
                 self.divides = True
+            if name == 'math.fma':
+                self.fused = True
             return self.elementwise(op)
         raise Unsupported(op, f'{name} is not in qpel\'s Triton subset')
 
@@ -397,6 +423,8 @@ class Lowering:
             return lambda a, b, s=FLOAT_BINARY[name]: f'({a} {s} {b})'
         if name == 'arith.negf':
             return lambda a: f'(-{a})'
+        if name in EXACT_OPS and EXACT_OPS[name] is not None:
+            return EXACT_OPS[name]
         if name in CALLS:
             return lambda *a, f=CALLS[name]: f'{f}({", ".join(a)})'
         if name == 'arith.select':
@@ -415,8 +443,10 @@ class Lowering:
             if predicate == 'one':
                 return lambda a, b: f'(({a} < {b}) || ({a} > {b}))'
             raise Unsupported(op, f'comparison {predicate}')
-        if name in CASTS:
+        if name in CASTS or name == 'tt.bitcast':
             target = scalar_term(self.result_type(op).element)
+            if name == 'tt.bitcast':
+                return lambda a, s=target: f'bitcast<{s}>({a})'
             if name == 'arith.bitcast':
                 return lambda a, s=target: f'bitcast<{s}>({a})'
             return lambda a, s=target: f'cast<{s}>({a})'

@@ -243,3 +243,25 @@ def collatz_kernel(x_ptr, steps_ptr, n, BLOCK: tl.constexpr):
             v = tl.where(v % 2 == 0, v // 2, 3 * v + 1)
             steps += 1
         tl.store(steps_ptr + pid, steps)
+
+
+@triton.jit
+def precise_ops_kernel(x_ptr, y_ptr, out_ptr, fma_ptr, bits_ptr, n, BLOCK: tl.constexpr):
+    """Exact operations: NaN-propagating maximum and minimum, clamp, correctly rounded division and
+    square root, fused multiply-add, and the high half of a 32-bit product."""
+    offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < n
+    x = tl.load(x_ptr + offs, mask=mask, other=1.0)
+    y = tl.load(y_ptr + offs, mask=mask, other=1.0)
+    hi = tl.maximum(x, y, propagate_nan=tl.PropagateNan.ALL)
+    lo = tl.minimum(x, y, propagate_nan=tl.PropagateNan.ALL)
+    c = tl.clamp(x, -1.5, 2.0)
+    q = tl.math.div_rn(x, y)
+    r = tl.math.sqrt_rn(tl.abs(y))
+    f = tl.math.fma(x, y, c)
+    out = hi + lo * 2.0 + c * 3.0 + q * 5.0 + r * 7.0
+    tl.store(out_ptr + offs, out, mask=mask)
+    tl.store(fma_ptr + offs, f, mask=mask)
+    u = x.to(tl.uint32, bitcast=True)
+    v = y.to(tl.uint32, bitcast=True)
+    tl.store(bits_ptr + offs, tl.umulhi(u, v), mask=mask)
