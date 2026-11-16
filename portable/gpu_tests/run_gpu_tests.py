@@ -544,6 +544,20 @@ def run_optional_bias(name, host, plan):
     return cases
 
 
+def run_array_refs(name, host, plan):
+    """Helpers that take an array by reference (IR version 10): load fills it, total reads it."""
+    rng = np.random.default_rng(20261116)
+    cases = 0
+    for size in (1, 50, 4099):
+        x = rng.standard_normal(4 * size).astype(np.float32)
+        out = host.run({'x': torch.from_numpy(x).to(DEVICE)}, {'n': (size, 1, 1)})
+        items = (x.reshape(-1, 4) * np.float32(2)).astype(np.float32)
+        want = (((items[:, 0] + items[:, 1]) + items[:, 2]) + items[:, 3]).astype(np.float32)
+        np.testing.assert_array_equal(out['y'].cpu().numpy(), want)
+        cases += 1
+    return cases
+
+
 # --- corpus kernels (llama.cpp operations): the oracle is the original source itself ---
 
 def corpus_fixtures():
@@ -699,7 +713,7 @@ def run_bitcast(name, host, plan):
 TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fma32': run_fma32,
          'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components,
          'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset, 'box_sum': run_box_sum,
-         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride, 'math_ops': run_math_ops, 'math_v8': run_math_v8, 'optional_bias': run_optional_bias, 'sort_bytes': run_sort_bytes, 'atomics': run_atomics, 'bitcast': run_bitcast}
+         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride, 'math_ops': run_math_ops, 'math_v8': run_math_v8, 'optional_bias': run_optional_bias, 'array_refs': run_array_refs, 'sort_bytes': run_sort_bytes, 'atomics': run_atomics, 'bitcast': run_bitcast}
 
 
 def main(argv=None):

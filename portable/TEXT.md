@@ -42,7 +42,8 @@ W, H and N (NUMERICS.md, launch geometry).
 
 `bool u8 i8 u16 i16 u32 i32 u64 i64 f16 bf16 f32 void`, `shape3`,
 `buffer<T, read|write|atomic>`, `struct S`, and for locals `array<T, N>` (IR version 4),
-initialized with an array value `[a, b, c]` of exactly N elements and indexed as `a[i]`.
+initialized with an array value `[a, b, c]` of exactly N elements and indexed as `a[i]`; a helper
+may take one by reference (`ref items: array<f32, 4>`, IR version 10).
 Shared memory is `shared<T, N>` (`let tile: shared<f32, 64>;` at a Groups kernel's top), and a
 view into it is `shared<T>` (IR version 5): `let row: shared<f32> = tile + 32u;`, indexed as
 `row[i]`, and a helper parameter type (`fn f(row: shared<f32>)`, called as `f(tile)`).

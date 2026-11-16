@@ -294,6 +294,13 @@ class TypeChecker:
         self.require(node, name not in names, 'DUPLICATE', 'Duplicate identifier: ' + name)
         names.add(name)
 
+    def array_reference(self, call, arg):
+        """True when arg is passed to an array parameter by reference (IR version 10)."""
+        params = self.children(self.target(call, 'function'), 'parameters')
+        args = call['children'].get('arguments', [])
+        index = args.index(arg['id'])
+        return index < len(params) and params[index]['attributes'].get('reference') and is_array(self.declared(params[index]))
+
     def expr(self, node, env, function):
         result = self._expr(node, env, function)
         self.expression_types[node["id"]] = result
@@ -331,7 +338,10 @@ class TypeChecker:
                     parent['kind'] == 'Binary' and parent['children']['left'] == [node['id']] or
                     parent['kind'] in ('Variable', 'Call', 'Select') or
                     parent['kind'] == 'Assign' and parent['children']['value'] == [node['id']])
-                check(indexed or viewed, 'ARRAY_USE', 'A local or shared array can only be indexed' +
+                # IR version 10: a local array is also the argument of an array parameter passed by reference
+                passed = is_array(declared) and parent is not None and parent['kind'] == 'Call' and \
+                    node['id'] in parent['children'].get('arguments', []) and self.array_reference(parent, node)
+                check(indexed or viewed or passed, 'ARRAY_USE', 'A local or shared array can only be indexed' +
                       (' or viewed (shared<T>)' if is_shared(declared) else ''))
             return declared
         if k == 'Literal':
@@ -701,7 +711,7 @@ class TypeChecker:
                     bindings.add(binding)
                 else:
                     self.require(param, not a.get('isBuffer', False), 'HELPER_BINDING', 'Helper parameter cannot have kernel binding')
-                self.require(param, not a.get('reference') or not kernel and (t in SCALAR_TERMS or is_vector(t)), 'REFERENCE',
+                self.require(param, not a.get('reference') or not kernel and (t in SCALAR_TERMS or is_vector(t) or is_array(t)), 'REFERENCE',
                              'Only helper parameters of scalar or vector type can be references')
                 env.add(param['id'])
             def descendants(n):
