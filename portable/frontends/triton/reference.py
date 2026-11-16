@@ -18,6 +18,7 @@ from pathlib import Path
 assert os.environ.get('TRITON_INTERPRET') == '1', 'run with TRITON_INTERPRET=1'
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
+import triton  # noqa: E402
 
 import triton.language as tl  # noqa: E402
 from triton.language.extra import libdevice  # noqa: E402
@@ -60,11 +61,22 @@ else:
     loader.loader.exec_module(module)
 
 
+def constexprs(spec):
+    """kernels.json's constexprs; a string "tl.float32" is that Triton dtype (Liger's X_dtype)."""
+    import triton.language as tl
+    return {k: getattr(tl, v[3:]) if isinstance(v, str) and v.startswith('tl.') else v
+            for k, v in spec.get('constexprs', {}).items()}
+
+
 def kernel(name, spec):
     if module is not None:
         return getattr(module, name)
     path, function = spec['function'].split(':')
-    return getattr(importlib.import_module(path), function)
+    fn = getattr(importlib.import_module(path), function)
+    from triton.runtime.autotuner import Autotuner, Heuristics
+    while isinstance(fn, (Autotuner, Heuristics)):
+        fn = fn.fn  # an @triton.autotune (or heuristics) wrapper: kernels.json gives the config's constexprs
+    return fn
 
 
 for folder in sorted(p for p in cases.iterdir() if p.is_dir()):
@@ -80,7 +92,7 @@ for folder in sorted(p for p in cases.iterdir() if p.is_dir()):
             # a float scalar as a float32 scalar of the interpreter (as compiled code has it: Liger calls
             # gate_multiplier.to(tl.float32), which a Python float has not)
             args.append(scalar(np.float32(arg['value'])) if kind.startswith('fp') else int(arg['value']))
-    kernel(case['kernel'], spec)[tuple(case['grid'])](*args, **spec.get('constexprs', {}),
+    kernel(case['kernel'], spec)[tuple(case['grid'])](*args, **constexprs(spec),
                                                          num_warps=spec.get('num_warps', 4))
     for name, tensor in buffers.items():
         np.save(folder/('out_' + name), tensor.numpy())

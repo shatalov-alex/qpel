@@ -29,21 +29,38 @@ else:
     loader.loader.exec_module(module)
 
 
+def constexprs(spec):
+    """kernels.json's constexprs; a string "tl.float32" is that Triton dtype (Liger's X_dtype)."""
+    import triton.language as tl
+    return {k: getattr(tl, v[3:]) if isinstance(v, str) and v.startswith('tl.') else v
+            for k, v in spec.get('constexprs', {}).items()}
+
+
 def kernel(name, spec):
     if module is not None:
         return getattr(module, name)
     path, function = spec['function'].split(':')
-    return getattr(importlib.import_module(path), function)
+    fn = getattr(importlib.import_module(path), function)
+    from triton.runtime.autotuner import Autotuner, Heuristics
+    while isinstance(fn, (Autotuner, Heuristics)):
+        fn = fn.fn  # an @triton.autotune (or heuristics) wrapper: kernels.json gives the config's constexprs
+    return fn
 
 
+failed = []
 for name, spec in specs.items():
     if len(sys.argv) > 4 and name not in sys.argv[4:]:
         continue
     fn = kernel(name, spec)
     signature = dict(spec['signature'], **{k: 'constexpr' for k in spec.get('constexprs', {})})
     options = {'num_warps': spec.get('num_warps', 4), 'enable_fp_fusion': False}
-    compiled = triton.compile(ASTSource(fn, signature=signature, constexprs=spec.get('constexprs', {})),
-                              target=GPUTarget('cuda', 75, 32), options=options)
+    try:
+        compiled = triton.compile(ASTSource(fn, signature=signature, constexprs=constexprs(spec)),
+                                  target=GPUTarget('cuda', 75, 32), options=options)
+    except Exception as error:  # noqa: BLE001 - reported; the other kernels still compile
+        failed.append(name)
+        print('FAILED', name, str(error).strip().splitlines()[-1][:300])
+        continue
     for key in ('ttir', 'ttgir', 'ptx'):
         (out/f'{name}.{key}').write_text(compiled.asm[key])
     meta = compiled.metadata
@@ -52,3 +69,5 @@ for name, spec in specs.items():
                                                 'signature': spec['signature'], 'constexprs': spec.get('constexprs', {}),
                                                 'options': options, 'target': 'cuda sm_75'}, indent=1) + '\n')
     print('compiled', name, 'warps', meta.num_warps, 'shared', meta.shared)
+if failed:
+    sys.exit(f'{len(failed)} kernels did not compile: ' + ', '.join(failed))
