@@ -69,6 +69,17 @@ EXACT_OPS = {
 }
 
 
+# libdevice (triton.language.extra.libdevice), as tt.extern_elementwise: CUDA's functions qpel has
+LIBDEVICE = {f'__nv_{name}f': f'math.{qpel}' for name, qpel in (
+    ('erf', 'erf'), ('tanh', 'tanh'), ('exp', 'exp'), ('exp2', 'exp2'), ('log', 'log'), ('log2', 'log2'),
+    ('log1p', 'log1p'), ('expm1', 'expm1'), ('sin', 'sin'), ('cos', 'cos'), ('sqrt', 'sqrt'), ('fabs', 'fabs'),
+    ('floor', 'floor'), ('ceil', 'ceil'), ('trunc', 'trunc'), ('round', 'round'), ('fmax', 'fmax'), ('fmin', 'fmin'),
+    ('copysign', 'copysign'))}
+LIBDEVICE['__nv_fmaf'] = 'qpel.fma'
+LIBDEVICE_BOUNDED = {'__nv_erff', '__nv_tanhf', '__nv_expf', '__nv_exp2f', '__nv_logf', '__nv_log2f', '__nv_log1pf',
+                     '__nv_expm1f', '__nv_sinf', '__nv_cosf'}
+
+
 MATH_BOUNDED = {'math.exp', 'math.exp2', 'math.log', 'math.log2', 'math.sin', 'math.cos', 'math.tanh',
                 'math.erf', 'math.expm1', 'math.log1p'}
 
@@ -339,6 +350,13 @@ class Lowering:
             return self.transpose(op)
         if name == 'tt.atomic_rmw':
             return self.atomic(op)
+        if name == 'tt.extern_elementwise':
+            symbol = op.attribute('symbol', '').strip().strip('"')
+            if symbol not in LIBDEVICE:
+                raise Unsupported(op, f'libdevice {symbol or "function"} has no qpel equivalent')
+            self.bounded |= symbol in LIBDEVICE_BOUNDED
+            self.fused |= symbol == '__nv_fmaf'
+            return self.elementwise(op, combine=lambda *a, f=LIBDEVICE[symbol]: f'{f}({", ".join(a)})')
         if name in INT_BINARY or name in FLOAT_BINARY or name in CALLS or name in CASTS or name in EXACT_OPS or \
                 name in ('arith.cmpi', 'arith.cmpf', 'arith.select', 'arith.negf'):
             if name in MATH_BOUNDED:

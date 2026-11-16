@@ -6,6 +6,7 @@ row, masked loads and stores, reductions over a block, loops over a row in block
 """
 import triton
 import triton.language as tl
+from triton.language.extra import libdevice
 
 
 @triton.jit
@@ -265,3 +266,17 @@ def precise_ops_kernel(x_ptr, y_ptr, out_ptr, fma_ptr, bits_ptr, n, BLOCK: tl.co
     u = x.to(tl.uint32, bitcast=True)
     v = y.to(tl.uint32, bitcast=True)
     tl.store(bits_ptr + offs, tl.umulhi(u, v), mask=mask)
+
+
+@triton.jit
+def gelu_libdevice_kernel(x_ptr, erf_ptr, tanh_ptr, n, BLOCK: tl.constexpr):
+    """GELU both ways, through libdevice (as Liger-Kernel and others write them): 0.5 x (1 + erf(x / sqrt 2))
+    and the tanh approximation 0.5 x (1 + tanh(sqrt(2 / pi) (x + 0.044715 x^3)))."""
+    offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < n
+    x = tl.load(x_ptr + offs, mask=mask, other=0.0)
+    exact = 0.5 * x * (1.0 + libdevice.erf(x * 0.7071067811865476))
+    inner = 0.7978845608028654 * (x + 0.044715 * x * x * x)
+    approx = 0.5 * x * (1.0 + libdevice.tanh(inner))
+    tl.store(erf_ptr + offs, exact, mask=mask)
+    tl.store(tanh_ptr + offs, approx, mask=mask)

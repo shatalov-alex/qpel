@@ -272,7 +272,33 @@ def precise_ops_cases(rng):
     return out
 
 
-CASES = {'precise_ops_kernel': precise_ops_cases, 'block_ptr_matmul_kernel': block_ptr_matmul_cases, 'transpose_kernel': transpose_cases,
+def gelu_cases(rng):
+    out = []
+    for n in (1, 128, 1000):
+        x = (rng.standard_normal(n) * 3).astype(np.float32)
+        out.append(Case({'programs': (-(-n // 128), 1, 1), 'x_ptr_size': (n, 1, 1), 'erf_ptr_size': (n, 1, 1),
+                         'tanh_ptr_size': (n, 1, 1)},
+                        {'x_ptr': x, 'erf_ptr': np.zeros(n, np.float32), 'tanh_ptr': np.zeros(n, np.float32)},
+                        {'n': n}, f'n={n}'))
+    return out
+
+
+def gelu_oracle(case):
+    """The GELU kernel's two outputs in float64, rounded to float32: Triton's interpreter has no
+    libdevice (libdevice.erf gives None there), so this is the reference for this kernel."""
+    import math
+    x = case.inputs['x_ptr'].astype(np.float64)
+    erf = np.array([math.erf(v * 0.7071067811865476) for v in x])
+    inner = 0.7978845608028654 * (x + 0.044715 * x ** 3)
+    return {'x_ptr': case.inputs['x_ptr'], 'erf_ptr': (0.5 * x * (1 + erf)).astype(np.float32),
+            'tanh_ptr': (0.5 * x * (1 + np.tanh(inner))).astype(np.float32)}
+
+
+# Kernels Triton's interpreter cannot run: an oracle gives their reference outputs instead.
+ORACLES = {'gelu_libdevice_kernel': gelu_oracle}
+
+
+CASES = {'gelu_libdevice_kernel': gelu_cases, 'precise_ops_kernel': precise_ops_cases, 'block_ptr_matmul_kernel': block_ptr_matmul_cases, 'transpose_kernel': transpose_cases,
          'collatz_kernel': collatz_cases, 'attention_fwd_kernel': attention_cases, 'argmax_kernel': argmax_cases, 'cumsum_kernel': cumsum_cases, 'clip_rows_kernel': clip_rows_cases,
          'histogram_kernel': histogram_cases, 'matmul_kernel': matmul_cases, 'row_stats_kernel': row_stats_cases, 'add_kernel': add_cases, 'scale_shift_kernel': scale_shift_cases, 'softmax_kernel': softmax_cases,
          'copy2d_kernel': copy2d_cases, 'layer_norm_kernel': layer_norm_cases}
@@ -296,6 +322,9 @@ def references(jobs):
     with tempfile.TemporaryDirectory(prefix='qpel-triton-') as work:
         work = Path(work)
         folders = {}
+        oracle = {(name, i): ORACLES[name](case) for name, _, kernel_cases in jobs if name in ORACLES
+                  for i, case in enumerate(kernel_cases)}
+        jobs = [job for job in jobs if job[0] not in ORACLES]
         for name, params, kernel_cases in jobs:
             for i, case in enumerate(kernel_cases):
                 folder = work/f'{name}__{i:03d}'
@@ -310,6 +339,8 @@ def references(jobs):
                 (folder/'case.json').write_text(json.dumps({'kernel': name, 'grid': list(case.shapes['programs']),
                                                             'args': args}))
                 folders[(name, i)] = (folder, [p for p, t in params if t.is_pointer])
+        if not jobs:
+            return oracle
         result = subprocess.run(['docker', 'run', '--rm', '--label', 'qpel=1', '--memory', '4g', '--cpus', '2',
                                  '-e', 'TRITON_INTERPRET=1', '-v', f'{HERE/"frontends/triton"}:/tool:ro',
                                  '-v', f'{CORPUS}:/corpus:ro', '-v', f'{work}:/cases', IMAGE,
@@ -317,7 +348,7 @@ def references(jobs):
                                 capture_output=True, text=True, timeout=1800)
         if result.returncode:
             raise RuntimeError(f'Triton interpreter failed:\n{result.stderr[-3000:]}')
-        return {key: {b: np.load(folder/f'out_{b}.npy') for b in buffers} for key, (folder, buffers) in folders.items()}
+        return {key: {b: np.load(folder/f'out_{b}.npy') for b in buffers} for key, (folder, buffers) in folders.items()} | oracle
 
 
 # -- rows --
