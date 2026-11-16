@@ -41,8 +41,10 @@ pipeline helper_launch {
 '''
 
 
-def geometry(threads):
-    return {'groups': [f'(W + {threads - 1}) / {threads}', '1', '1'], 'block': [threads, 1, 1]}
+def geometry(threads, items=1):
+    """One group per tile of threads * items elements."""
+    tile = threads * items
+    return {'groups': [f'(W + {tile - 1}) / {tile}', '1', '1'], 'block': [threads, 1, 1]}
 
 
 class Rules(unittest.TestCase):
@@ -101,6 +103,9 @@ class Import(unittest.TestCase):
 @unittest.skipUnless(shutil.which('clang++'), 'clang++ required')
 class Rows(unittest.TestCase):
     """Each kernel imported on its own (its block size), compiled, and run."""
+    SOURCE = SOURCE
+    KERNELS = {kernel: (threads, 1) for kernel, threads in KERNELS.items()}  # kernel: (threads, items per thread)
+    REIMPORTED = ('blocks_f32_160_1', 'blocks_f32_128_2', 'blocks_u32_32_0')
 
     @classmethod
     def setUpClass(cls):
@@ -108,10 +113,11 @@ class Rows(unittest.TestCase):
         from qpel import compile_program
         cls.work = Path(tempfile.mkdtemp(prefix='qpel-cub-'))
         cls.kernels = {}
-        for kernel, threads in KERNELS.items():
+        for kernel, (threads, items) in cls.KERNELS.items():
             folder = cls.work/kernel
             folder.mkdir()
-            program, report = import_source(SOURCE, kernels=[kernel], module=kernel, geometry=geometry(threads))
+            program, report = import_source(cls.SOURCE, kernels=[kernel], module=kernel,
+                                            geometry=geometry(threads, items))
             (folder/'program.qpel.json').write_text(json.dumps(program))
             compile_program(folder/'program.qpel.json', folder/'build')
             generated = folder/'build/package/generated'
@@ -145,12 +151,12 @@ class Rows(unittest.TestCase):
         program, report, generated, plan = self.kernels[kernel]
         folder = self.work/kernel/'original'
         folder.mkdir(exist_ok=True)
-        original = Program(SOURCE, plan, folder, original=report)
+        original = Program(self.SOURCE, plan, folder, original=report)
         return [(case, original.run(case)) for case in self.cases(plan)]
 
     def test_cpu_simulator(self):
         from differential.simulate import Program
-        for kernel in KERNELS:
+        for kernel in self.KERNELS:
             with self.subTest(kernel):
                 program, report, generated, plan = self.kernels[kernel]
                 folder = self.work/kernel/'qpel'
@@ -167,7 +173,7 @@ class Rows(unittest.TestCase):
         except ImportError:
             unavailable(self, 'gpu', 'PyTorch required for the Apple GPU tests')
         from differential import matrix, metal
-        for kernel in KERNELS:
+        for kernel in self.KERNELS:
             with self.subTest(kernel):
                 program, report, generated, plan = self.kernels[kernel]
                 host = matrix.load_host(generated)
@@ -177,7 +183,7 @@ class Rows(unittest.TestCase):
     def test_both_importers_give_the_program_back(self):
         from frontends import clang_ast
         from frontends.roundtrip import reimport
-        for kernel in ('blocks_f32_160_1', 'blocks_f32_128_2', 'blocks_u32_32_0'):
+        for kernel in self.REIMPORTED:
             with self.subTest(kernel):
                 for dialect, difference in reimport(self.kernels[kernel][0]).items():
                     self.assertIsNone(difference, f'{kernel} from {dialect}')
@@ -193,9 +199,9 @@ class Rows(unittest.TestCase):
         root = Path(tempfile.mkdtemp(prefix='qpel-cub-nvidia-')).resolve()
         pending = []
         try:
-            for kernel in KERNELS:
+            for kernel in self.KERNELS:
                 program, report, generated, plan = self.kernels[kernel]
-                built = (GpuProgram(SOURCE, plan, root/kernel/'original', fmad=False, original=report),
+                built = (GpuProgram(self.SOURCE, plan, root/kernel/'original', fmad=False, original=report),
                          GpuProgram(generated/(kernel + '.cu'), plan, root/kernel/'qpel'))
                 for number, (case, expected) in enumerate(self.references(kernel)):
                     for side in built:
@@ -211,6 +217,16 @@ class Rows(unittest.TestCase):
                     self.same(expected, actual, f'{kernel} {side.work.name} {case.label}')
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+
+class ItemRows(Rows):
+    """Several items per thread (tests/cub_items.cu): BlockLoad and BlockStore in every algorithm qpel
+    has, and the BlockScan and BlockReduce methods on item arrays, against the original with qpel's
+    header (CPU simulator), qpel's Metal on the Apple GPU and, with QPEL_NVIDIA=1, NVIDIA's CUB."""
+    SOURCE = HERE/'tests/cub_items.cu'
+    KERNELS = {'items_f32_128_4_4_4_2': (128, 4), 'items_f32_32_8_0_0_0': (32, 8), 'items_f32_64_3_3_3_1': (64, 3),
+               'items_f32_96_2_1_1_2': (96, 2), 'items_i32_64_2_1_0_0': (64, 2), 'items_u32_32_4_4_4_0': (32, 4)}
+    REIMPORTED = ('items_f32_128_4_4_4_2', 'items_i32_64_2_1_0_0')
 
 
 if __name__ == '__main__':

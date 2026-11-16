@@ -15,17 +15,22 @@ own CUB, which the tests compare against.
 |---|---|
 | `cub::BlockScan<T, N, ALGORITHM>`, `BLOCK_SCAN_RAKING` (the default), `BLOCK_SCAN_RAKING_MEMOIZE`, `BLOCK_SCAN_WARP_SCANS` | `InclusiveSum(x, y)`, `InclusiveSum(x, y, total)`, `ExclusiveSum(x, y)`, `ExclusiveSum(x, y, total)`, `InclusiveScan(x, y, op)`, `InclusiveScan(x, y, op, total)`, `ExclusiveScan(x, y, initial, op)`, `ExclusiveScan(x, y, initial, op, total)` |
 | `cub::BlockReduce<T, N>`, `BLOCK_REDUCE_WARP_REDUCTIONS` (the default) | `Sum(x)`, `Sum(x, valid)`, `Reduce(x, op)`, `Reduce(x, op, valid)`; the result is the block's in thread 0 only, as in CUB |
+| `BlockScan` and `BlockReduce` on several items per thread (`T (&items)[ITEMS]`, IR version 10) | the same methods with item arrays (`InclusiveSum(items, out)`, `ExclusiveScan(items, out, initial, op, total)`, `Sum(items)`, `Reduce(items, op)`, ...): the thread's items reduced in order, a block scan of those partials, the items scanned from the thread's prefix, in CUB 2.5's order (`ThreadReduce`, `ThreadScanInclusive`/`Exclusive`) |
+| `cub::BlockLoad<T, N, ITEMS, ALGORITHM>`, `cub::BlockStore<...>`: `DIRECT`, `STRIPED`, `VECTORIZE`, `TRANSPOSE`, `WARP_TRANSPOSE` | `Load(ptr, items)`, `Load(ptr, items, valid)`, `Load(ptr, items, valid, default)`, `Store(ptr, items)`, `Store(ptr, items, valid)`: the blocked arrangement (thread t's items are elements t * ITEMS + k), or the striped one (t + k * N) for `STRIPED`, read and written directly; their TempStorage is not used |
 | `cub::Sum`, `cub::Max`, `cub::Min` | `a + b`, `CUB_MAX` (`b > a ? b : a`) and `CUB_MIN`, NaNs included |
 | `__shared__ typename BlockScanT::TempStorage s;` | `shared<T, L>` of the length the algorithm needs (raking: 32 segments with CUB's padding and the total) |
 | `BlockScanT(s).InclusiveSum(...)`, or a named `BlockScanT scan(s);` | a call of the library function |
 
-T is `int`, `unsigned int` or `float`, one item per thread; N is a multiple of 32 up to 256
+T is `int`, `unsigned int` or `float`, one item per thread or several; N is a multiple of 32 up to 256
 (qpel's block limit), in a 1D block. Signed sums wrap, as CUB's `add.s32` does. `cub::DeviceScan`
 and `cub::DeviceReduce` are declared, so host code that uses them parses, but they are host calls
 (temporary storage, several launches) and not translated.
 
-Not yet: several items per thread (`T (&items)[N]`, which needs arrays as helper parameters),
-`BlockLoad`/`BlockStore`, block prefix callbacks, other operators and value types (mamba's
+A load with `valid` and no default leaves the items from `valid` on as they were, as CUB's direct
+and striped loads do; CUB's transposing loads put other threads' unset values there instead, so a
+program must not read them (with a default, every algorithm gives the default).
+
+Not yet: block prefix callbacks, the timesliced load and store, loads through iterators, other operators and value types (mamba's
 `float2` scan pairs), the raking `BlockReduce` algorithms, `WarpScan`/`WarpReduce` on their own,
 and TempStorage in unions or reinterpreted dynamic shared memory. A source using one of these does
 not compile against qpel's header (a `static_assert` or a missing declaration names it), and
@@ -68,6 +73,11 @@ Barriers inside these functions are why IR version 7 allows `qpel.barrier()` in 
   CPU simulator, as qpel's CUDA there and as qpel's Metal on the Apple GPU, bit for bit. With
   `QPEL_NVIDIA=1` the original compiled by nvcc with NVIDIA's CUB 2.5 and qpel's CUDA run on
   GPGPU-Sim: all 56 runs agree bit for bit.
+- `tests/cub_items.cu` does the same for several items per thread: `BlockLoad` and `BlockStore` in
+  the direct, striped, transposed and warp-transposed algorithms (full and partial tiles), and
+  every scan and reduction method on item arrays (blocks of 32 to 128 threads, 2 to 8 items, int,
+  unsigned int and float), bit for bit on the CPU simulator, the Apple GPU and, against NVIDIA's
+  CUB 2.5, on GPGPU-Sim (`test_cub.ItemRows`).
 - llama.cpp's `cumsum_cub_kernel` (an unmodified corpus source, `GGML_CUDA_USE_CUB`) passes the
   behaviour rows on the CPU simulator, the Apple GPU and GPGPU-Sim (fixture `llama_cumsum_cub_f32`).
 - On the way, GPGPU-Sim turned out to invert the in-range predicate of `shfl.sync` (our own shuffle

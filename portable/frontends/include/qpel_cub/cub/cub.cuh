@@ -6,7 +6,8 @@
 // simulator runs originals with it; nvcc and GPGPU-Sim use the real CUB (LIBRARIES.md).
 //
 // Supported: 1D blocks whose size is a multiple of 32 (1 to 32 warps), T = int, unsigned int or
-// float, the operators cub::Sum, cub::Max and cub::Min. Every method ends with the barriers CUB
+// float, the operators cub::Sum, cub::Max and cub::Min, one item per thread or several
+// (`T (&items)[ITEMS]`), and BlockLoad and BlockStore from and to pointers. Every method ends with the barriers CUB
 // has; as with CUB, a second use of the same TempStorage needs a __syncthreads() first.
 #pragma once
 
@@ -271,6 +272,120 @@ __device__ __forceinline__ T block_reduce(qpel_shared_view<T> storage, T input, 
   return result;
 }
 
+// Several items per thread (CUB 2.5, BlockScan and BlockReduce on `T (&items)[ITEMS]`): the thread's
+// items reduced in order (internal::ThreadReduce: op(op(item 0, item 1), item 2) ...), a scan of those
+// partials across the block, then the thread's items scanned in order from its prefix
+// (internal::ThreadScanInclusive / ThreadScanExclusive). An unseeded block scan gives thread 0 no
+// prefix, so thread 0 starts from its own first item (apply_prefix = linear_tid != 0).
+template <int OP, typename T, int ITEMS>
+__device__ __forceinline__ T thread_reduce(T (&input)[ITEMS]) {
+  T partial = input[0];
+  for (int k = 1; k < ITEMS; ++k) {
+    partial = combine<OP, T>(partial, input[k]);
+  }
+  return partial;
+}
+
+template <int OP, typename T, int ITEMS>
+__device__ __forceinline__ void thread_scan_inclusive(T (&input)[ITEMS], T (&output)[ITEMS], T prefix, bool apply) {
+  T inclusive = input[0];
+  if (apply) {
+    inclusive = combine<OP, T>(prefix, inclusive);
+  }
+  output[0] = inclusive;
+  for (int k = 1; k < ITEMS; ++k) {
+    inclusive = combine<OP, T>(inclusive, input[k]);
+    output[k] = inclusive;
+  }
+}
+
+template <int OP, typename T, int ITEMS>
+__device__ __forceinline__ void thread_scan_exclusive(T (&input)[ITEMS], T (&output)[ITEMS], T prefix) {
+  T inclusive = combine<OP, T>(prefix, input[0]);
+  output[0] = prefix;
+  T exclusive = inclusive;
+  for (int k = 1; k < ITEMS; ++k) {
+    inclusive = combine<OP, T>(exclusive, input[k]);
+    output[k] = exclusive;
+    exclusive = inclusive;
+  }
+}
+
+// InclusiveSum and InclusiveScan on items: the partials' block scan is exclusive, seeded with 0 for
+// a sum (ExclusiveSum) and unseeded for a scan; thread 0 does not apply its prefix in either.
+template <int OP, typename T, int THREADS, int ALGORITHM, int ITEMS, bool SEEDED>
+__device__ __forceinline__ void block_scan_items_inclusive(qpel_shared_view<T> storage, T (&input)[ITEMS],
+                                                           T (&output)[ITEMS], T& aggregate) {
+  if constexpr (ITEMS == 1) {  // (CUB: the one-item method)
+    output[0] = block_scan<OP, T, THREADS, ALGORITHM, false, false>(storage, input[0], T(0), aggregate);
+  } else {
+    T partial = thread_reduce<OP, T, ITEMS>(input);
+    T prefix = block_scan<OP, T, THREADS, ALGORITHM, true, SEEDED>(storage, partial, T(0), aggregate);
+    thread_scan_inclusive<OP, T, ITEMS>(input, output, prefix, threadIdx.x != 0u);
+  }
+}
+
+// ExclusiveSum and ExclusiveScan with an initial value on items: a seeded block scan of the
+// partials, every thread's items scanned from its prefix (thread 0's is the initial value).
+template <int OP, typename T, int THREADS, int ALGORITHM, int ITEMS>
+__device__ __forceinline__ void block_scan_items_exclusive(qpel_shared_view<T> storage, T (&input)[ITEMS],
+                                                           T (&output)[ITEMS], T initial, T& aggregate) {
+  T partial = thread_reduce<OP, T, ITEMS>(input);
+  T prefix = block_scan<OP, T, THREADS, ALGORITHM, true, true>(storage, partial, initial, aggregate);
+  thread_scan_exclusive<OP, T, ITEMS>(input, output, prefix);
+}
+
+// BlockLoad and BlockStore: every algorithm but the striped ones gives (takes) the blocked
+// arrangement, thread t's items being elements t * ITEMS to t * ITEMS + ITEMS - 1 of the tile; the
+// striped ones element t + k * THREADS as item k. The transposing algorithms reach the same
+// arrangement through shared memory; qpel reads and writes it directly (their TempStorage is
+// unused). Elements from `valid` on are not read (left as they were, or set to the default when
+// one is given) and not written. (Without a default, CUB's transposing loads leave other threads'
+// unset values there: a program must not read them.)
+template <typename T, int THREADS, int ITEMS, bool STRIPED, bool FILL, typename Input>
+__device__ __forceinline__ void block_load(Input input, T (&items)[ITEMS], int valid, T fill) {
+  const int tid = (int)threadIdx.x;
+  for (int k = 0; k < ITEMS; ++k) {
+    const int index = STRIPED ? tid + k * THREADS : tid * ITEMS + k;
+    if (index < valid) {
+      items[k] = input[index];
+    } else if (FILL) {
+      items[k] = fill;
+    }
+  }
+}
+
+template <typename T, int THREADS, int ITEMS, bool STRIPED, typename Output>
+__device__ __forceinline__ void block_store(Output output, T (&items)[ITEMS], int valid) {
+  const int tid = (int)threadIdx.x;
+  for (int k = 0; k < ITEMS; ++k) {
+    const int index = STRIPED ? tid + k * THREADS : tid * ITEMS + k;
+    if (index < valid) {
+      output[index] = items[k];
+    }
+  }
+}
+
+template <int OP, typename T, int THREADS, int ALGORITHM, int ITEMS, bool SEEDED>
+__device__ __forceinline__ void block_scan_items_inclusive_value(qpel_shared_view<T> storage, T (&input)[ITEMS],
+                                                                 T (&output)[ITEMS]) {
+  T aggregate = input[0];
+  block_scan_items_inclusive<OP, T, THREADS, ALGORITHM, ITEMS, SEEDED>(storage, input, output, aggregate);
+}
+
+template <int OP, typename T, int THREADS, int ALGORITHM, int ITEMS>
+__device__ __forceinline__ void block_scan_items_exclusive_value(qpel_shared_view<T> storage, T (&input)[ITEMS],
+                                                                 T (&output)[ITEMS], T initial) {
+  T aggregate = input[0];
+  block_scan_items_exclusive<OP, T, THREADS, ALGORITHM, ITEMS>(storage, input, output, initial, aggregate);
+}
+
+// BlockReduce on items: the thread's items reduced in order, then the block's reduction.
+template <int OP, typename T, int THREADS, int ITEMS>
+__device__ __forceinline__ T block_reduce_items(qpel_shared_view<T> storage, T (&input)[ITEMS]) {
+  return block_reduce<OP, T, THREADS>(storage, thread_reduce<OP, T, ITEMS>(input), THREADS);
+}
+
 }  // namespace qpel_detail
 
 template <typename T, int BLOCK_DIM_X, BlockScanAlgorithm ALGORITHM = BLOCK_SCAN_RAKING, int BLOCK_DIM_Y = 1,
@@ -315,10 +430,50 @@ class BlockScan {
                                                                                          block_aggregate);
   }
 
-  // Declared only (not in the subset yet): several items per thread, and block prefix callbacks.
-  template <int ITEMS> __device__ void InclusiveSum(T (&input)[ITEMS], T (&output)[ITEMS]);
-  template <int ITEMS> __device__ void ExclusiveSum(T (&input)[ITEMS], T (&output)[ITEMS]);
-  template <int ITEMS, typename Op> __device__ void InclusiveScan(T (&input)[ITEMS], T (&output)[ITEMS], Op op);
+  // Several items per thread (CUB 2.5's order: qpel_detail::block_scan_items_*).
+  template <int ITEMS>
+  __device__ __forceinline__ void InclusiveSum(T (&input)[ITEMS], T (&output)[ITEMS]) {
+    qpel_detail::block_scan_items_inclusive_value<0, T, BLOCK_DIM_X, ALGORITHM, ITEMS, true>(storage, input, output);
+  }
+  template <int ITEMS>
+  __device__ __forceinline__ void InclusiveSum(T (&input)[ITEMS], T (&output)[ITEMS], T& block_aggregate) {
+    qpel_detail::block_scan_items_inclusive<0, T, BLOCK_DIM_X, ALGORITHM, ITEMS, true>(storage, input, output,
+                                                                                      block_aggregate);
+  }
+  template <int ITEMS>
+  __device__ __forceinline__ void ExclusiveSum(T (&input)[ITEMS], T (&output)[ITEMS]) {
+    qpel_detail::block_scan_items_exclusive_value<0, T, BLOCK_DIM_X, ALGORITHM, ITEMS>(storage, input, output, T(0));
+  }
+  template <int ITEMS>
+  __device__ __forceinline__ void ExclusiveSum(T (&input)[ITEMS], T (&output)[ITEMS], T& block_aggregate) {
+    qpel_detail::block_scan_items_exclusive<0, T, BLOCK_DIM_X, ALGORITHM, ITEMS>(storage, input, output, T(0),
+                                                                                block_aggregate);
+  }
+  template <int ITEMS, typename Op, qpel_detail::if_known<Op> = 0>
+  __device__ __forceinline__ void InclusiveScan(T (&input)[ITEMS], T (&output)[ITEMS], Op) {
+    qpel_detail::block_scan_items_inclusive_value<Op::qpel_op, T, BLOCK_DIM_X, ALGORITHM, ITEMS, false>(storage, input,
+                                                                                                       output);
+  }
+  template <int ITEMS, typename Op, qpel_detail::if_known<Op> = 0>
+  __device__ __forceinline__ void InclusiveScan(T (&input)[ITEMS], T (&output)[ITEMS], Op, T& block_aggregate) {
+    qpel_detail::block_scan_items_inclusive<Op::qpel_op, T, BLOCK_DIM_X, ALGORITHM, ITEMS, false>(storage, input, output,
+                                                                                                 block_aggregate);
+  }
+  template <int ITEMS, typename Op, qpel_detail::if_known<Op> = 0>
+  __device__ __forceinline__ void ExclusiveScan(T (&input)[ITEMS], T (&output)[ITEMS], T initial_value, Op) {
+    qpel_detail::block_scan_items_exclusive_value<Op::qpel_op, T, BLOCK_DIM_X, ALGORITHM, ITEMS>(storage, input, output,
+                                                                                                initial_value);
+  }
+  template <int ITEMS, typename Op, qpel_detail::if_known<Op> = 0>
+  __device__ __forceinline__ void ExclusiveScan(T (&input)[ITEMS], T (&output)[ITEMS], T initial_value, Op,
+                                                T& block_aggregate) {
+    qpel_detail::block_scan_items_exclusive<Op::qpel_op, T, BLOCK_DIM_X, ALGORITHM, ITEMS>(storage, input, output,
+                                                                                          initial_value, block_aggregate);
+  }
+
+  // Declared only (not in the subset yet): block prefix callbacks, and other operators on items.
+  template <int ITEMS, typename Op, qpel_detail::if_unknown<Op> = 0>
+  __device__ void InclusiveScan(T (&input)[ITEMS], T (&output)[ITEMS], Op op) { qpel_detail::qpel_unsupported(); }
   template <int ITEMS, typename Op, typename Callback>
   __device__ void InclusiveScan(T (&input)[ITEMS], T (&output)[ITEMS], Op op, Callback& prefix);
   template <int ITEMS, typename Op, typename Callback>
@@ -361,9 +516,18 @@ class BlockReduce {
     return qpel_detail::block_reduce<Op::qpel_op, T, BLOCK_DIM_X>(storage, input, num_valid);
   }
 
-  // Declared only (not in the subset yet): several items per thread, and other operators.
-  template <int ITEMS> __device__ T Sum(T (&inputs)[ITEMS]);
-  template <int ITEMS, typename Op> __device__ T Reduce(T (&inputs)[ITEMS], Op op);
+  template <int ITEMS>
+  __device__ __forceinline__ T Sum(T (&inputs)[ITEMS]) {
+    return qpel_detail::block_reduce_items<0, T, BLOCK_DIM_X, ITEMS>(storage, inputs);
+  }
+  template <int ITEMS, typename Op, qpel_detail::if_known<Op> = 0>
+  __device__ __forceinline__ T Reduce(T (&inputs)[ITEMS], Op) {
+    return qpel_detail::block_reduce_items<Op::qpel_op, T, BLOCK_DIM_X, ITEMS>(storage, inputs);
+  }
+
+  // Declared only (not in the subset yet): other operators.
+  template <int ITEMS, typename Op, qpel_detail::if_unknown<Op> = 0> __device__ T Reduce(T (&inputs)[ITEMS], Op op) {
+    qpel_detail::qpel_unsupported(); return inputs[0]; }
   template <typename Op, qpel_detail::if_unknown<Op> = 0> __device__ T Reduce(T input, Op op) {
     qpel_detail::qpel_unsupported(); return input; }
   template <typename Op, qpel_detail::if_unknown<Op> = 0> __device__ T Reduce(T input, Op op, int num_valid) {
@@ -373,30 +537,66 @@ class BlockReduce {
   T* storage;
 };
 
-// Declared only, so that sources using them parse; the importer reports their calls (LIBRARIES.md).
 enum BlockLoadAlgorithm { BLOCK_LOAD_DIRECT, BLOCK_LOAD_STRIPED, BLOCK_LOAD_VECTORIZE, BLOCK_LOAD_TRANSPOSE,
                           BLOCK_LOAD_WARP_TRANSPOSE, BLOCK_LOAD_WARP_TRANSPOSE_TIMESLICED };
 enum BlockStoreAlgorithm { BLOCK_STORE_DIRECT, BLOCK_STORE_STRIPED, BLOCK_STORE_VECTORIZE, BLOCK_STORE_TRANSPOSE,
                            BLOCK_STORE_WARP_TRANSPOSE, BLOCK_STORE_WARP_TRANSPOSE_TIMESLICED };
+
+// BlockLoad and BlockStore from and to pointers (qpel_detail::block_load and block_store: the blocked
+// arrangement, or the striped one for the STRIPED algorithms). Their TempStorage is not used.
 template <typename T, int BLOCK_DIM_X, int ITEMS_PER_THREAD, BlockLoadAlgorithm ALGORITHM = BLOCK_LOAD_DIRECT,
           int BLOCK_DIM_Y = 1, int BLOCK_DIM_Z = 1, int LEGACY_PTX_ARCH = 0>
 class BlockLoad {
+  static_assert(BLOCK_DIM_Y == 1 && BLOCK_DIM_Z == 1, "qpel's CUB subset: 1D blocks");
+  static_assert(ALGORITHM != BLOCK_LOAD_WARP_TRANSPOSE_TIMESLICED, "qpel's CUB subset: not the timesliced load");
+  static constexpr bool STRIPED = ALGORITHM == BLOCK_LOAD_STRIPED;
+
  public:
-  struct TempStorage { T qpel_unsupported[BLOCK_DIM_X * ITEMS_PER_THREAD]; };
-  __device__ BlockLoad(TempStorage& storage);
-  template <typename Input> __device__ void Load(Input input, T (&items)[ITEMS_PER_THREAD]);
-  template <typename Input> __device__ void Load(Input input, T (&items)[ITEMS_PER_THREAD], int valid);
+  typedef T TempStorage[1];
+
+  __device__ __forceinline__ BlockLoad(TempStorage& storage) : storage(storage) {}
+
+  template <typename Input>
+  __device__ __forceinline__ void Load(Input input, T (&items)[ITEMS_PER_THREAD]) {
+    qpel_detail::block_load<T, BLOCK_DIM_X, ITEMS_PER_THREAD, STRIPED, false>(input, items, BLOCK_DIM_X * ITEMS_PER_THREAD,
+                                                                             T());
+  }
+  template <typename Input>
+  __device__ __forceinline__ void Load(Input input, T (&items)[ITEMS_PER_THREAD], int valid) {
+    qpel_detail::block_load<T, BLOCK_DIM_X, ITEMS_PER_THREAD, STRIPED, false>(input, items, valid, T());
+  }
   template <typename Input, typename Default>
-  __device__ void Load(Input input, T (&items)[ITEMS_PER_THREAD], int valid, Default fill);
+  __device__ __forceinline__ void Load(Input input, T (&items)[ITEMS_PER_THREAD], int valid, Default fill) {
+    qpel_detail::block_load<T, BLOCK_DIM_X, ITEMS_PER_THREAD, STRIPED, true>(input, items, valid, (T)fill);
+  }
+
+ private:
+  T* storage;
 };
+
 template <typename T, int BLOCK_DIM_X, int ITEMS_PER_THREAD, BlockStoreAlgorithm ALGORITHM = BLOCK_STORE_DIRECT,
           int BLOCK_DIM_Y = 1, int BLOCK_DIM_Z = 1, int LEGACY_PTX_ARCH = 0>
 class BlockStore {
+  static_assert(BLOCK_DIM_Y == 1 && BLOCK_DIM_Z == 1, "qpel's CUB subset: 1D blocks");
+  static_assert(ALGORITHM != BLOCK_STORE_WARP_TRANSPOSE_TIMESLICED, "qpel's CUB subset: not the timesliced store");
+  static constexpr bool STRIPED = ALGORITHM == BLOCK_STORE_STRIPED;
+
  public:
-  struct TempStorage { T qpel_unsupported[BLOCK_DIM_X * ITEMS_PER_THREAD]; };
-  __device__ BlockStore(TempStorage& storage);
-  template <typename Output> __device__ void Store(Output output, T (&items)[ITEMS_PER_THREAD]);
-  template <typename Output> __device__ void Store(Output output, T (&items)[ITEMS_PER_THREAD], int valid);
+  typedef T TempStorage[1];
+
+  __device__ __forceinline__ BlockStore(TempStorage& storage) : storage(storage) {}
+
+  template <typename Output>
+  __device__ __forceinline__ void Store(Output output, T (&items)[ITEMS_PER_THREAD]) {
+    qpel_detail::block_store<T, BLOCK_DIM_X, ITEMS_PER_THREAD, STRIPED>(output, items, BLOCK_DIM_X * ITEMS_PER_THREAD);
+  }
+  template <typename Output>
+  __device__ __forceinline__ void Store(Output output, T (&items)[ITEMS_PER_THREAD], int valid) {
+    qpel_detail::block_store<T, BLOCK_DIM_X, ITEMS_PER_THREAD, STRIPED>(output, items, valid);
+  }
+
+ private:
+  T* storage;
 };
 
 template <typename Key> struct DoubleBuffer {
