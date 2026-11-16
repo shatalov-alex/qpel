@@ -20,7 +20,7 @@ TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType','StructType','ArrayType','Vect
 KINDS=TYPE_KINDS|set('ArrayValue VectorValue Barrier BarrierCount View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange AtomicMax AtomicAnd AtomicOr AtomicXor AtomicExchange Bitcast SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce BufferPresent Pipeline Resource Dispatch Binding'.split())
 COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage','groups','math_exact','math_bounded','subgroups','atomics_f32','atomics_u64'}
 PROFILES={'metal':COMMON_FEATURES,'cuda':COMMON_FEATURES}
-SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3',4:'qpel-portable-core-v4',5:'qpel-portable-core-v5',6:'qpel-portable-core-v6',7:'qpel-portable-core-v7',8:'qpel-portable-core-v8',9:'qpel-portable-core-v9'}
+SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3',4:'qpel-portable-core-v4',5:'qpel-portable-core-v5',6:'qpel-portable-core-v6',7:'qpel-portable-core-v7',8:'qpel-portable-core-v8',9:'qpel-portable-core-v9',10:'qpel-portable-core-v10'}
 # Version 2 adds else, for/do/break/continue, signed 32-bit integers and their atomics,
 # shifts, ~, conversion to u8, scalar arguments and 2D/3D kernels.
 V2_KINDS={'Grid3D','ThreadIndex','For','DoWhile','Break','Continue','I32Type','ReadOnlyI32BufferType','I32BufferType','AtomicI32BufferType','I32Literal','I32Cast','U32Cast','U8Cast'}
@@ -132,9 +132,16 @@ def version_9_features(nodes):
     return used
 
 
+def version_10_features(nodes):
+    """Version 10: helper parameters that are arrays passed by reference (T (&a)[N])."""
+    by_id={n['id']:n for n in nodes}
+    return {'array reference parameter' for n in nodes if n['kind']=='Parameter' and n['attributes'].get('reference')
+            and by_id.get((n['children'].get('type') or [None])[0],{}).get('kind')=='ArrayType'}
+
+
 def minimum_version(program):
     nodes=program['nodes']
-    return 9 if version_9_features(nodes) else 8 if version_8_features(nodes) else 7 if version_7_features(nodes) else 6 if version_6_features(nodes) else 5 if version_5_features(nodes) else 4 if version_4_features(nodes) else 3 if version_3_features(nodes) else 2 if version_2_features(nodes) else 1
+    return 10 if version_10_features(nodes) else 9 if version_9_features(nodes) else 8 if version_8_features(nodes) else 7 if version_7_features(nodes) else 6 if version_6_features(nodes) else 5 if version_5_features(nodes) else 4 if version_4_features(nodes) else 3 if version_3_features(nodes) else 2 if version_2_features(nodes) else 1
 
 
 def validate(program, backend=None):
@@ -155,6 +162,8 @@ def validate(program, backend=None):
         raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_7_features(program['nodes'])))+'; declare version 7')
     if program['version']<8 and version_8_features(program['nodes']):
         raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_8_features(program['nodes'])))+'; declare version 8')
+    if program['version']<10 and version_10_features(program['nodes']):
+        raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_10_features(program['nodes'])))+'; declare version 10')
     if program['version']<9 and version_9_features(program['nodes']):
         raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_9_features(program['nodes'])))+'; declare version 9')
     nodes={n['id']:n for n in program['nodes']}
@@ -259,6 +268,9 @@ class Lowering:
                 return 'QPEL_KERNEL '+e('resultType')+' '+a['name']+'('+args+' QPEL_GROUPS_PARAM) {\n'+top+e('body')+'\n}\n'
             return ('QPEL_KERNEL ' if kernel else 'QPEL_DEVICE ')+e('resultType')+' '+a['name']+'('+args+(' QPEL_GRID_PARAM(qpel_index)' if kernel else '')+') {\n'+('QPEL_GRID_LOCAL(qpel_index)\n' if kernel else '')+e('body')+'\n}\n'
         if k=='Parameter':
+            if a.get('reference') and is_array(term(self.child(n,'type'))):  # T (&a)[N] (IR version 10)
+                t=term(self.child(n,'type'))
+                return 'QPEL_REF_ARRAY('+type_macro(array_element(t))+', '+a['name']+', '+str(array_length(t))+')'
             if a.get('reference'):return 'QPEL_REF('+e('type')+') '+a['name']  # T& (CUDA), thread T& (Metal)
             if not a.get('isBuffer',False):return e('type')+' '+a['name']
             declared=term(self.child(n,'type'))

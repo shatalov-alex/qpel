@@ -1,0 +1,26 @@
+// Arrays passed to helpers by reference (IR version 10), as CUDA kernels pass several items per
+// thread (`float (&items)[4]`): load fills the caller's array, total reads it.
+module array_refs {
+  fn load(x: buffer<f32, read>, base: u32, ref items: array<f32, 4>) -> void {
+    for (let k: u32 = 0u; k < 4u; k = k + 1u) {
+      items[k] = x[base + k] * 2.0f;
+    }
+  }
+  fn total(ref items: array<f32, 4>) -> f32 {
+    return ((items[0u] + items[1u]) + items[2u]) + items[3u];
+  }
+  kernel array_refs(x: buffer<f32, read> @0, y: buffer<f32, write> @1, n: shape3 @2) grid1d {
+    if (qpel.index >= ((n.x * n.y) * n.z)) {
+      return;
+    }
+    let items: array<f32, 4> = [0.0f, 0.0f, 0.0f, 0.0f];
+    load(x, qpel.index * 4u, items);
+    y[qpel.index] = total(items);
+  }
+}
+pipeline array_refs_launch {
+  input x: buffer<f32, read> in n * 4;
+  output y: buffer<f32, write> in n;
+  shape n;
+  dispatch array_refs over n block (64) (x = x, y = y, n = n);
+}

@@ -89,11 +89,22 @@ def view_spelling(decl):
     return t.get('desugaredQualType', t['qualType']) if 'qpel_shared_view<' in t['qualType'] else t['qualType']
 
 
+ARRAY_REFERENCE = None  # set below: re.compile of `[const] [thread] T (&)[N]`
+
+
+def array_reference(qual_type):
+    """(element spelling, length) of a parameter that is an array by reference, `float (&)[16]`,
+    `const float (&)[16]` or Metal `thread float (&)[16]`; else None (IR version 10)."""
+    found = ARRAY_REFERENCE.fullmatch(qual_type.strip())
+    return (found.group(1).strip(), int(found.group(2))) if found else None
+
+
 def is_reference(qual_type):
     """A non-const reference (`uint2& r`, Metal `thread float3 &r`): the callee writes the caller's variable."""
     if '&' not in qual_type:
         return False
     return 'const' not in qual_type.split('&')[0].split()
+ARRAY_REFERENCE = re.compile(r'(?:const\s+)?(?:thread\s+)?(.+?)\s*(?:const\s*)?\(&\)\[(\d+)\]')
 ATOMIC_SCALARS = {'atomic': 'u32', 'atomic_i32': 'i32', 'atomic_f32': 'f32', 'atomic_u64': 'u64'}  # Metal atomic element -> qpel element
 NEW_INTEGERS = {'i8', 'u16', 'i16', 'u64', 'i64'}  # spelled with Constant and Cast (IR version 3)
 
@@ -1011,6 +1022,11 @@ class Importer:
             return t[1]
         if t[0] == 'scalar' and t[1] in self.records:
             return self.struct_type(t[1], p)
+        array = array_reference(p['type'].get('desugaredQualType', p['type']['qualType'])) or array_reference(p['type']['qualType'])
+        if array and not self.dialect.is_kernel(decl):  # T (&items)[N]: the caller's array (IR version 10)
+            element = describe(array[0])
+            if element[0] == 'scalar' and element[1] in SCALAR_TERMS - {'bool'}:
+                return f'array<{element[1]}, {array[1]}>'
         raise Unsupported(p, 'parameter-type', f'parameter type {p["type"]["qualType"]} is not in qpel yet')
 
     # -- functions --
@@ -1206,7 +1222,9 @@ class Importer:
                 self.scope[p['id']] = ('untyped', p['name'])
                 continue
             attrs = {'name': self.safe_name(p['name'])}
-            if is_reference(p['type']['qualType']):
+            if is_array(kind):
+                attrs['reference'] = True  # an array by reference (IR version 10), const or not
+            elif is_reference(p['type']['qualType']):
                 if kernel:
                     self.attempt(lambda: self.reject(Unsupported(p, 'reference', 'kernel arguments cannot be references')))
                 attrs['reference'] = True  # the caller's variable, written in place (IR version 4)
@@ -2096,7 +2114,7 @@ class Importer:
             return None
         entry = self.scope.get(core['referencedDecl']['id'])
         group = entry and entry[0] in ('local', 'param') and (is_shared(entry[2]) or is_shared_view(entry[2]))
-        return entry[1] if entry and (entry[0] == 'local' and is_array(entry[2]) or group) else None
+        return entry[1] if entry and (entry[0] in ('local', 'param') and is_array(entry[2]) or group) else None
 
     def safe_name(self, name):
         """A C name that qpel or a backend reserves (min, max, kernel, half, ...) gets a trailing _."""
@@ -2819,7 +2837,9 @@ class Importer:
             decl, ident, kernel = self.functions[callee]
             if kernel:
                 raise Unsupported(n, 'call-kernel', 'kernels cannot be called from device code')
-            arguments = [self.expr(a, address=True) for a in args]
+            arguments = [self.name(self.local_array(a)) if self.local_array(a) is not None and
+                         is_array(self.scope.get(peel_decl(a), (None, None, ''))[2]) else self.expr(a, address=True)
+                         for a in args]
             for role, axis in self.builtin_reads(callee):  # the thread builtins the helper reads
                 arguments.append(add(GROUP_NODES[role], {'axis': axis}) if self.kernel
                                  else self.name(self.hidden_params[(role, axis)]))
@@ -3376,6 +3396,13 @@ def contains_any(node, ids):
         return True
     return any(contains_any(c, ids) for c in node.get('inner', ())
                if c.get('kind') in ('FunctionDecl', 'FunctionTemplateDecl', 'NamespaceDecl', 'LinkageSpecDecl'))
+
+
+def peel_decl(node):
+    """The clang id a node refers to, through implicit casts and parentheses, or None."""
+    while node.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and node.get('inner'):
+        node = node['inner'][0]
+    return node.get('referencedDecl', {}).get('id') if node.get('kind') == 'DeclRefExpr' else None
 
 
 def is_null_pointer(node):

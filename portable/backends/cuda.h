@@ -27,6 +27,7 @@ static_assert(sizeof(QpelShape) == 16, "qpel shape ABI must be 16 bytes");
 #define QPEL_F32 float
 // IR version 4 reference parameters: the caller's local, read and written in place.
 #define QPEL_REF(T) T&
+#define QPEL_REF_ARRAY(T, name, length) T (&name)[length]  // an array passed by reference (IR version 10)
 // A view into shared memory (IR version 5): T*, under a name that keeps it a view when the
 // importer reads qpel's own output back (CUDA pointers carry no address space).
 template <class T> using qpel_shared_view = T*;
