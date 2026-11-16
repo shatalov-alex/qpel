@@ -73,6 +73,10 @@ Shared views. `SharedViewType {element}` (term `shared<T>`, T a scalar or vector
 
 Barriers in helper functions, as library code has them (LIBRARIES.md, qpel's CUB subset). A `Barrier` may be in a helper that Groups kernels call; `BarrierCount` stays in kernels (its Metal scratch is the kernel's). qpel_uniform.py checks a helper with barriers as it checks a kernel, with the helper's parameters taken as varying: each barrier under control flow that is the same for the whole group, and no return only some threads take before one. A call of such a helper counts as a barrier in its caller, so it too must be reached by every thread, and a kernel that calls one, directly or not, is a Groups kernel. Both backends emit the same `__syncthreads()` / `threadgroup_barrier` in the helper. A program with a barrier in a helper is version 7.
 
+## IR version 8
+
+Three more bounded math functions, which Metal does not have: `erf`, `expm1` and `log1p` (`Math {function}`, text `math.erf(x)` and so on). qpel's Metal defines them itself; NUMERICS.md (Math functions) gives how and how accurately. A program that uses one is version 8.
+
 ## Numeric revision
 
 New exports use `qpel-portable-core-v1` and the `u32-modulo-v1` numeric emitter. See NUMERICS.md for exact rules, migration limitations and CPU UBSan evidence. Earlier sections describing exact native source parity and incomplete numeric lowering refer to the preceding revision; only the compatibility rendering now has native token parity. Dynamic division-by-zero, pointer validity and GPU execution remain unchecked.

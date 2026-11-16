@@ -510,9 +510,10 @@ TO_F16 = {'__float2half_rn', '__float2half'}
 TO_BF16 = {'__float2bfloat16_rn', '__float2bfloat16'}
 # C, CUDA and Metal spellings of qpel's math functions (on float arguments).
 MATH_CALLS = {name: f for f in ('fabs', 'fmin', 'fmax', 'floor', 'ceil', 'trunc', 'round', 'copysign', 'sqrt',
-                                'exp', 'exp2', 'log', 'log2', 'sin', 'cos', 'tanh')
+                                'exp', 'exp2', 'log', 'log2', 'sin', 'cos', 'tanh', 'erf', 'expm1', 'log1p')
               for name in (f, f + 'f')}
 MATH_CALLS.update({'abs': 'fabs', '__fsqrt_rn': 'sqrt'})
+MATH_CALLS.update({'qpel_' + f: f for f in ('erf', 'expm1', 'log1p')})  # qpel's own Metal versions (backends/metal.h)
 ROUNDED = {'__fadd_rn': '+', '__fsub_rn': '-', '__fmul_rn': '*', '__fdiv_rn': '/'}
 SATURATE = {f'qpel_f32_to_{t}': t for t in ('u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64')}
 TO_F32 = {'__half2float'}

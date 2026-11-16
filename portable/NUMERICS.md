@@ -66,7 +66,13 @@ Every float32 `+ - * /` rounds to nearest even on its own, as written; only `F32
 - **Exact**: `fabs fmin fmax floor ceil trunc round copysign sqrt`. They give the same bits on every backend: `round` rounds halves away from zero and keeps the sign of a zero result (Metal's `round` returns +0 for -0.3 and even for -0, so qpel's Metal writes `copysign(round(x), x)`; found by llama.cpp's round operation), `sqrt` is correctly rounded (CUDA `__fsqrt_rn` whatever `-prec-sqrt` says; Metal `precise::sqrt`, measured correctly rounded on 65536 inputs). `fmin`/`fmax` return the other operand when one is NaN; the sign of a zero result from `fmin(-0, +0)` is not pinned.
 - **Bounded**: `exp exp2 log log2 sin cos tanh` are within `MATH_ULPS` = 4 ulp of the exact result. CUDA documents at most 2 ulp for each (without `-use_fast_math`); Metal's `precise::` versions measured at most 1 (exp, exp2), 2 (log, log2, cos, tanh) and 3 (sin) ulp on 65536 random inputs against float64. qpel's Metal always calls `metal::precise::`, never `metal::fast::`. Behaviour rows compare outputs of programs that use a bounded function within twice the bound (original and translation each contribute) or, after cancellation, within that many epsilons of max(1, |value|); everything else bit for bit. Subnormal results compare as zeros of their sign.
 
-Metal has no `erf`, `expm1` or `log1p`; qpel will define them itself rather than take each platform's.
+IR version 8 adds three bounded functions Metal does not have: `erf`, `expm1` and `log1p`. CUDA calls `erff`, `expm1f` and `log1pf` (documented within 2, 1 and 1 ulp); qpel's Metal brings its own (`qpel_erf`, `qpel_expm1`, `qpel_log1p` in backends/metal.h). They are polynomials fitted in float64 and evaluated with `fma`, together with Metal's `precise::exp` and `precise::log` (backends/math_fit.py fits them and prints the Metal code, which a test keeps identical):
+
+- `erf`: below |x| = 1, x · (c0 + R(x²)), with c0 = 2/√π rounded to float32 and R carrying both the rest and c0's rounding error. From 1 to 3.92, 1 − exp(−x²) · Q(|x| − m), with Q fitted to exp(x²) · erfc(x) on [1, 2] and [2, 3.92]. Beyond that, ±1 (what erf rounds to in float32); NaN stays NaN.
+- `expm1`: below |x| = 1, x · P(x); otherwise exp(x) − 1, where the subtraction loses at most a factor e/(e − 1) of exp's accuracy.
+- `log1p`: below |x| = 0.5, x · P(x); otherwise log(1 + x).
+
+On 2^20 inputs on the Apple GPU (uniform on [−6, 6], magnitudes from 1e−8 to 1e3 of both signs, and the range edges), the largest errors against float64 are 1 ulp (erf), 3 ulp (expm1) and 3 ulp (log1p), all within `MATH_ULPS` (gpu_tests/run_gpu_tests.py `math_v8`; tests/test_math_v8.py runs the same check on the CPU simulator and the Metal-on-CPU runner). The CUDA importer reads `erff`, `expm1f` and `log1pf` (and `erf`, `expm1`, `log1p` on floats), and the Metal importer reads qpel's own functions back.
 
 ## Small additions
 

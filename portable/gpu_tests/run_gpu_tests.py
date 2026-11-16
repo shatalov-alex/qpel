@@ -479,6 +479,52 @@ def run_math_ops(name, host, plan):
     return cases
 
 
+def math_v8_inputs(size=1 << 20, seed=20261116):
+    """Inputs for erf, expm1 and log1p: uniform on [-6, 6], magnitudes from 1e-8 to 1e3 of both signs,
+    and the edges of qpel's Metal implementations (backends/metal.h) and of float32."""
+    rng = np.random.default_rng(seed)
+    half = size // 2
+    v = np.concatenate([rng.uniform(-6, 6, half),
+                        np.exp(rng.uniform(np.log(1e-8), np.log(1e3), size - half)) * rng.choice([-1, 1], size - half)])
+    edges = [0.0, -0.0, 0.5, -0.5, 1.0, -1.0, 2.0, 3.92, -3.92, 4.0, -0.999999, 1e-30, -1e-30, 88.0, -88.0, 100.0,
+             -100.0, np.inf, -np.inf, np.nan, np.nextafter(np.float32(1), np.float32(0)), np.nextafter(np.float32(0.5), np.float32(1))]
+    v[:len(edges)] = edges
+    return v.astype(np.float32)
+
+
+def math_v8_reference(v):
+    """(erf, expm1, log1p) of float32 inputs, exact to float64."""
+    import math
+    x = v.astype(np.float64)
+    with np.errstate(all='ignore'):
+        erf = np.array([math.erf(t) if np.isfinite(t) else (np.sign(t) if not np.isnan(t) else np.nan) for t in x])
+        return erf, np.expm1(x), np.log1p(x)
+
+
+def math_v8_worst(got, want):
+    """The largest ulp distance (subnormals flushed, as on Apple GPUs; NaN = NaN), and where."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from differential.compare import flushed, ulp_distance
+    a, b = flushed(np.asarray(got, np.float32)), flushed(np.asarray(want).astype(np.float32))
+    distance = ulp_distance(a, b).astype(np.float64)
+    distance[np.isnan(a) & np.isnan(b)] = 0
+    distance[(a == b)] = 0
+    i = int(np.argmax(distance))
+    return float(distance[i]), i
+
+
+def run_math_v8(name, host, plan):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from qpel_types import MATH_ULPS
+    v = math_v8_inputs()
+    out = host.run({'x': torch.from_numpy(v).to(DEVICE)}, {'n': (v.size, 1, 1)})
+    for key, want in zip(('e', 'm', 'l'), math_v8_reference(v)):
+        worst, i = math_v8_worst(out[key].cpu().numpy(), want)
+        print(f'  {key}: worst {worst:.0f} ulp (at x = {v[i]!r})')
+        assert worst <= MATH_ULPS, f'{key}: {worst} ulp at x = {v[i]!r}'
+    return 1
+
+
 # --- corpus kernels (llama.cpp operations): the oracle is the original source itself ---
 
 def corpus_fixtures():
@@ -634,7 +680,7 @@ def run_bitcast(name, host, plan):
 TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fma32': run_fma32,
          'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components,
          'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset, 'box_sum': run_box_sum,
-         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride, 'math_ops': run_math_ops, 'sort_bytes': run_sort_bytes, 'atomics': run_atomics, 'bitcast': run_bitcast}
+         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride, 'math_ops': run_math_ops, 'math_v8': run_math_v8, 'sort_bytes': run_sort_bytes, 'atomics': run_atomics, 'bitcast': run_bitcast}
 
 
 def main(argv=None):

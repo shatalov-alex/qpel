@@ -1,0 +1,21 @@
+// erf, expm1 and log1p (IR version 8): CUDA's erff, expm1f and log1pf; Metal has none, so qpel's
+// Metal brings its own (backends/metal.h, backends/math_fit.py). Both within MATH_ULPS of exact.
+module math_v8 {
+  kernel math_v8(x: buffer<f32, read> @0, e: buffer<f32, write> @1, m: buffer<f32, write> @2, l: buffer<f32, write> @3, n: shape3 @4) grid1d {
+    if (qpel.index >= ((n.x * n.y) * n.z)) {
+      return;
+    }
+    let v: f32 = x[qpel.index];
+    e[qpel.index] = math.erf(v);
+    m[qpel.index] = math.expm1(v);
+    l[qpel.index] = math.log1p(v);
+  }
+}
+pipeline math_v8_launch {
+  input x: buffer<f32, read> in n;
+  output e: buffer<f32, write> in n;
+  output m: buffer<f32, write> in n;
+  output l: buffer<f32, write> in n;
+  shape n;
+  dispatch math_v8 over n block (64) (x = x, e = e, m = m, l = l, n = n);
+}

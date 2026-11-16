@@ -40,12 +40,14 @@ FLOAT_BINARY = {'arith.addf': '+', 'arith.subf': '-', 'arith.mulf': '*', 'arith.
 CALLS = {'arith.maxnumf': 'math.fmax', 'arith.minnumf': 'math.fmin', 'arith.maxsi': 'max', 'arith.minsi': 'min',
          'math.exp': 'math.exp', 'math.exp2': 'math.exp2', 'math.log': 'math.log', 'math.log2': 'math.log2',
          'math.sqrt': 'math.sqrt', 'math.absf': 'math.fabs', 'math.sin': 'math.sin', 'math.cos': 'math.cos',
-         'math.floor': 'math.floor', 'math.ceil': 'math.ceil', 'math.tanh': 'math.tanh'}
+         'math.floor': 'math.floor', 'math.ceil': 'math.ceil', 'math.tanh': 'math.tanh',
+         'math.erf': 'math.erf', 'math.expm1': 'math.expm1', 'math.log1p': 'math.log1p'}
 CMPI = {'slt': '<', 'sle': '<=', 'sgt': '>', 'sge': '>=', 'eq': '==', 'ne': '!='}
 CMPI_UNSIGNED = {'ult': '<', 'ule': '<=', 'ugt': '>', 'uge': '>='}
 CMPF = {'olt': '<', 'ole': '<=', 'ogt': '>', 'oge': '>=', 'oeq': '==', 'une': '!='}
 CASTS = {'arith.sitofp', 'arith.fptosi', 'arith.extf', 'arith.truncf', 'arith.extsi', 'arith.trunci', 'arith.bitcast'}
-MATH_BOUNDED = {'math.exp', 'math.exp2', 'math.log', 'math.log2', 'math.sin', 'math.cos', 'math.tanh'}
+MATH_BOUNDED = {'math.exp', 'math.exp2', 'math.log', 'math.log2', 'math.sin', 'math.cos', 'math.tanh',
+                'math.erf', 'math.expm1', 'math.log1p'}
 
 
 class Unsupported(Exception):

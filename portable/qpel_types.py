@@ -59,7 +59,9 @@ COMPARISONS = {'==', '!=', '<', '>', '<=', '>='}
 # Math functions on float32: name -> arity. EXACT ones give the same bits on every backend;
 # the others are within MATH_ULPS of the exact result (NUMERICS.md, math functions).
 MATH = {'fabs': 1, 'fmin': 2, 'fmax': 2, 'floor': 1, 'ceil': 1, 'trunc': 1, 'round': 1, 'copysign': 2, 'sqrt': 1,
-        'exp': 1, 'exp2': 1, 'log': 1, 'log2': 1, 'sin': 1, 'cos': 1, 'tanh': 1}
+        'exp': 1, 'exp2': 1, 'log': 1, 'log2': 1, 'sin': 1, 'cos': 1, 'tanh': 1,
+        'erf': 1, 'expm1': 1, 'log1p': 1}  # (erf, expm1, log1p: IR version 8)
+V8_MATH = {'erf', 'expm1', 'log1p'}
 EXACT_MATH = {'fabs', 'fmin', 'fmax', 'floor', 'ceil', 'trunc', 'round', 'copysign', 'sqrt'}
 MATH_ULPS = 4
 LEGACY_CASTS = {'I32Cast': 'i32', 'U32Cast': 'u32', 'U8Cast': 'u8', 'F32Cast': 'f32', 'F16Cast': 'f16'}

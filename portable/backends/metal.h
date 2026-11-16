@@ -208,6 +208,35 @@ inline int qpel_barrier_count(bool p, threadgroup atomic_int* counter, uint rank
 #define QPEL_MATH_SIN(x) metal::precise::sin((x))
 #define QPEL_MATH_COS(x) metal::precise::cos((x))
 #define QPEL_MATH_TANH(x) metal::precise::tanh((x))
+// erf, expm1 and log1p, which Metal does not have (IR version 8; NUMERICS.md, Math functions):
+// polynomials fitted for these ranges (backends/math_fit.py prints this code), evaluated with fma,
+// and Metal's precise exp and log. Apple GPU, 2^20 inputs: erf 1, expm1 3, log1p 3 ulp at most.
+inline float qpel_erf(float x) {
+    float a = metal::fabs(x);
+    if (a < 1.0f) {
+        float t = a * a;
+        float r = x * metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(-1.0521326032630895e-07f, t, 1.5330498399634962e-06f), t, -1.479969887441257e-05f), t, 0.00012046751362504438f), t, -0.0008547963807359338f), t, 0.005223968531936407f), t, -0.026866169646382332f), t, 0.11283791810274124f), t, -0.37612637877464294f), t, -5.8635389876826594e-08f);
+        return metal::fma(x, 1.128379225730896f, r);  // 2/sqrt(pi) split off: x * (c0 + R(x^2))
+    }
+    if (a < 3.92f) {  // erf = 1 - exp(-x^2) * erfcx(x), erfcx fitted on [1, 2] and [2, 3.92]
+        float q = a < 2.0f ? metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(2.3998281903914176e-05f, (a - 1.5f), -7.76194574427791e-05f), (a - 1.5f), 0.00022314851230476052f), (a - 1.5f), -0.0006606808747164905f), (a - 1.5f), 0.0018861298449337482f), (a - 1.5f), -0.005146094132214785f), (a - 1.5f), 0.01337734330445528f), (a - 1.5f), -0.032930899411439896f), (a - 1.5f), 0.076151043176651f), (a - 1.5f), -0.1636229157447815f), (a - 1.5f), 0.32158541679382324f)
+                           : metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(3.585280126117141e-07f, (a - 2.9600000381469727f), -1.5581474599457579e-06f), (a - 2.9600000381469727f), 5.586210136243608e-06f), (a - 2.9600000381469727f), -2.2518788682646118e-05f), (a - 2.9600000381469727f), 8.96720594028011e-05f), (a - 2.9600000381469727f), -0.00034497989690862596f), (a - 2.9600000381469727f), 0.0012899191351607442f), (a - 2.9600000381469727f), -0.004680399317294359f), (a - 2.9600000381469727f), 0.016433853656053543f), (a - 2.9600000381469727f), -0.05566482990980148f), (a - 2.9600000381469727f), 0.1812017410993576f);
+        float r = 1.0f - metal::precise::exp(-(a * a)) * q;
+        return metal::copysign(r, x);
+    }
+    return metal::isnan(x) ? x : metal::copysign(1.0f, x);  // erf rounds to 1 in float32 from 3.92 on
+}
+inline float qpel_expm1(float x) {
+    if (metal::fabs(x) < 1.0f) return x * metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(2.0849264537048384e-09f, x, 2.5532418845841676e-08f), x, 2.756363812750351e-07f), x, 2.755197783699259e-06f), x, 2.4801505787763745e-05f), x, 0.00019841297762468457f), x, 0.0013888889225199819f), x, 0.00833333283662796f), x, 0.0416666679084301f), x, 0.1666666716337204f), x, 0.5f), x, 1.0f);
+    return metal::precise::exp(x) - 1.0f;  // (NaN, infinities and |x| >= 1: little cancellation)
+}
+inline float qpel_log1p(float x) {
+    if (metal::fabs(x) < 0.5f) return x * metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(-0.1658092886209488f, x, 0.17766889929771423f), x, -0.045648183673620224f), x, 0.05051194131374359f), x, -0.10686452686786652f), x, 0.11852062493562698f), x, -0.12438149005174637f), x, 0.14218182861804962f), x, -0.16669248044490814f), x, 0.20002880692481995f), x, -0.24999961256980896f), x, 0.3333328664302826f), x, -0.5f), x, 1.0f);
+    return metal::precise::log(1.0f + x);
+}
+#define QPEL_MATH_ERF(x) qpel_erf((x))
+#define QPEL_MATH_EXPM1(x) qpel_expm1((x))
+#define QPEL_MATH_LOG1P(x) qpel_log1p((x))
 #endif
 
 #ifdef QPEL_CAS_ENABLED
