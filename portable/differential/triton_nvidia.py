@@ -191,6 +191,12 @@ def run(jobs):
         return out
 
 
+# Kernels whose PTX GPGPU-Sim cannot run (their CPU-simulator and Apple GPU rows still run).
+UNSUPPORTED = {
+    'liger_block_rms_norm_forward': 'Triton converts its 2D layout with ldmatrix (sm_75), which GPGPU-Sim does not parse',
+}
+
+
 def rows(names=None):
     """Yield (row, case label, error or None)."""
     from qpel_ir import Lowering
@@ -200,6 +206,9 @@ def rows(names=None):
         yield 'nvidia: triton ptx', 'GPGPU-Sim', 'skipped: no Docker, GPGPU-Sim or qpel/triton image'
         return
     names = names or triton.kernels()
+    for name in [n for n in names if n in UNSUPPORTED]:
+        yield 'nvidia: triton ptx', name, f'skipped: {UNSUPPORTED[name]}'
+    names = [n for n in names if n not in UNSUPPORTED]
     jobs, built = [], {}
     with tempfile.TemporaryDirectory(prefix='qpel-triton-qpel-') as work:
         work = Path(work)

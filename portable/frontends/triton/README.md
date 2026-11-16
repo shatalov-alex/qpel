@@ -61,7 +61,7 @@ and any number of operands (argmax carries values and indices), `tt.dot`, `tt.at
 add, min, max, and, or, xor, exchange on 32-bit integers; add and exchange on float32), `scf.for`
 (with scalars, tensors and tensors of pointers carried), `scf.if` on a scalar (results yielded by
 both branches), `scf.while` carrying scalars (`while (true)` with the condition's `break`),
-`tt.trans`, libdevice calls (`triton.language.extra.libdevice`, `tt.extern_elementwise`) with a
+`tt.trans`, an early `return` under an `if` on a scalar (Triton's `cf.cond_br` to a block ending in `tt.return`: `if (c) { ...; return; }`), `tl.debug_barrier()`, libdevice calls (`triton.language.extra.libdevice`, `tt.extern_elementwise`) with a
 qpel equivalent (erf, tanh, exp, log, log1p, expm1, sin, cos, sqrt, floor, ceil, fma and others),
 exact operations (`tl.maximum`/`tl.minimum` with `propagate_nan`, `tl.clamp`,
 `tl.math.div_rn`, `tl.math.sqrt_rn`, `tl.math.fma`, `tl.umulhi`, bitcasts), block pointers (`tl.make_block_ptr`, `tl.advance`: Triton's own TTIR passes

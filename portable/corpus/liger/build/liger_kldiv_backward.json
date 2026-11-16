@@ -1,0 +1,24 @@
+{
+ "kernel": "liger_kldiv_backward",
+ "function": "liger_kernel.ops.kl_div:_kldiv_kernel_backward",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 0,
+ "ptx_name": "_kldiv_kernel_backward",
+ "signature": {
+  "target_ptr": "*fp32",
+  "target_stride": "i32",
+  "new_grads_ptr": "*fp32",
+  "new_grads_stride": "i32",
+  "n_cols": "i32"
+ },
+ "constexprs": {
+  "BLOCK_SIZE": 256,
+  "log_target": false
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}

@@ -94,6 +94,17 @@ class Lowering(unittest.TestCase):
         self.assertEqual(lowering.float_sums, [])  # a max: exact
         self.assertIn('shared<f32, 32>', text)
 
+    def test_an_early_return(self):
+        """Liger's TVD returns early for an ignored label: Triton's cf.cond_br to a block ending in
+        tt.return becomes `if (c) { ...; return; }` before the rest."""
+        from frontends.triton import corpora
+        function = ttir.parse(corpora.ttir('liger_tvd'))
+        self.assertIn('qpel.return_if', [o.name for o in function.body.ops])
+        self.assertNotIn('cf.cond_br', [o.name for o in function.body.ops])
+        text, _ = lower(corpora.ttir('liger_tvd'), 4)
+        self.assertIn('return;', text)
+        validate(parse_program(text))
+
     def test_an_unknown_operation_is_reported(self):
         with self.assertRaises(Unsupported) as caught:
             lower(REDUCE_ROWS.replace('arith.maxnumf', 'arith.maximumf'), 1)
@@ -121,9 +132,9 @@ class Nvidia(unittest.TestCase):
         """Triton's own PTX on GPGPU-Sim against Triton's interpreter and qpel's CUDA."""
         from differential import triton_nvidia
         results = list(triton_nvidia.rows())
-        if results and results[0][2] and results[0][2].startswith('skipped'):
+        if results and all(r[2] and r[2].startswith('skipped') for r in results):
             self.skipTest(results[0][2])
-        self.assertEqual([r for r in results if r[2]], [])
+        self.assertEqual([r for r in results if r[2] and not r[2].startswith('skipped')], [])
 
 
 if __name__ == '__main__':

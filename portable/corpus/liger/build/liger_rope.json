@@ -1,0 +1,38 @@
+{
+ "kernel": "liger_rope",
+ "function": "liger_kernel.ops.rope:_triton_rope",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 0,
+ "ptx_name": "_triton_rope",
+ "signature": {
+  "q_ptr": "*fp32",
+  "q_row_stride": "i32",
+  "k_ptr": "*fp32",
+  "k_row_stride": "i32",
+  "cos": "*fp32",
+  "cos_row_stride": "i32",
+  "sin": "*fp32",
+  "sin_row_stride": "i32",
+  "sl": "i32"
+ },
+ "constexprs": {
+  "bs": 2,
+  "cos_bs": 1,
+  "n_qh": 4,
+  "n_kh": 2,
+  "hd": 16,
+  "pad_n_qh": 4,
+  "pad_n_kh": 2,
+  "pad_hd": 16,
+  "pad_rd": 16,
+  "rd": 16,
+  "BLOCK_SIZE": 16,
+  "BACKWARD_PASS": false
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}

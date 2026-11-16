@@ -1,0 +1,45 @@
+{
+ "kernel": "liger_cross_entropy",
+ "function": "liger_kernel.ops.cross_entropy:liger_cross_entropy_kernel",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 16,
+ "ptx_name": "liger_cross_entropy_kernel",
+ "signature": {
+  "X_ptr": "*fp32",
+  "X_stride": "i32",
+  "Y_ptr": "*i64",
+  "Y_stride": "i32",
+  "weight_ptr": "*fp32",
+  "loss_ptr": "*fp32",
+  "z_loss_ptr": "*fp32",
+  "loss_stride": "i32",
+  "token_accuracy_ptr": "*fp32",
+  "token_accuracy_stride": "i32",
+  "predicted_tokens_ptr": "*i64",
+  "predicted_tokens_stride": "i32",
+  "n_cols": "i32",
+  "n_non_ignore": "fp32",
+  "sum_non_ignore_weight": "fp32",
+  "weight_sum": "fp32",
+  "ignore_index": "i32",
+  "softcap": "fp32"
+ },
+ "constexprs": {
+  "lse_square_scale": 0.0,
+  "label_smoothing": 0.0,
+  "reduction": "mean",
+  "RETURN_Z_LOSS": false,
+  "RETURN_TOKEN_ACCURACY": false,
+  "RETURN_PREDICTED_TOKENS": false,
+  "BLOCK_SIZE": 256,
+  "HAS_WEIGHT": false,
+  "HAS_SOFTCAPPING": false,
+  "HAS_GRADIENTS": true
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}

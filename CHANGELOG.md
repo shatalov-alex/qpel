@@ -8,8 +8,10 @@ older programs keep building.
 
 ### Added
 - **Liger-Kernel as a Triton corpus** (`portable/corpus/liger`, BSD-2, vendored unmodified):
-  fifteen kernels pass Triton's interpreter against qpel's CUDA (CPU simulator) and Metal (Apple
-  GPU), and Liger's own PTX on GPGPU-Sim. The Triton frontend reads libdevice `rsqrt`, int64
+  twenty-seven kernels (norms, gated activations, softmax, RoPE, DyT, KL divergence, TVD, fused cross
+  entropy; forward and backward) pass Triton's interpreter against qpel's CUDA (CPU simulator) and
+  Metal (Apple GPU), and Liger's own PTX on GPGPU-Sim (all but one, which uses `ldmatrix`). Early
+  returns and `tl.debug_barrier()` are read. The Triton frontend reads libdevice `rsqrt`, int64
   program ids, offsets and loop indices; Triton corpora are listed in `frontends/triton/corpora.py`.
 - **Subgroup operations (IR version 5):** `qpel.subgroup_lane|index|size`; `qpel.shuffle`,
   `shuffle_xor`, `shuffle_down` and `shuffle_up`; and `qpel.subgroup_add|min|max|and|or|xor`.

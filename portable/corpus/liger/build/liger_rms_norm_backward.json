@@ -1,0 +1,38 @@
+{
+ "kernel": "liger_rms_norm_backward",
+ "function": "liger_kernel.ops.rms_norm:_rms_norm_backward_kernel",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 16,
+ "ptx_name": "_rms_norm_backward_kernel",
+ "signature": {
+  "dY_ptr": "*fp32",
+  "dY_row_stride": "i32",
+  "dX_ptr": "*fp32",
+  "dX_row_stride": "i32",
+  "X_ptr": "*fp32",
+  "X_row_stride": "i32",
+  "W_ptr": "*fp32",
+  "W_row_stride": "i32",
+  "RSTD_ptr": "*fp32",
+  "RSTD_row_stride": "i32",
+  "dW_ptr": "*fp32",
+  "dW_row_stride": "i32",
+  "n_rows": "i32",
+  "n_cols": "i32",
+  "offset": "fp32",
+  "rows_per_program": "i32"
+ },
+ "constexprs": {
+  "X_dtype": "tl.float32",
+  "casting_mode": 0,
+  "elementwise_affine": true,
+  "BLOCK_SIZE": 256,
+  "COMPUTE_DW": true
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}

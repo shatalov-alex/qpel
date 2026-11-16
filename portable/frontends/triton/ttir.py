@@ -281,5 +281,49 @@ class Reader:
         return Block(arguments, self.ops(end=('})',)))
 
 
+LABEL = re.compile(r'\^(bb[0-9]+):')
+
+
+def structure_returns(ops):
+    """A function body whose entry block ends in `cf.cond_br %c, ^bbA, ^bbB` (Triton's early `return`
+    under an `if`, Liger's cross entropy for an ignored label) as structured operations: the ops
+    before the branch, a `qpel.return_if` (operand %c, or `qpel.return_unless` when it is the false
+    target that returns) whose region is the returning block without its `tt.return`, then the other
+    block's ops, structured the same way. Only blocks without arguments, each entered from this one
+    branch, are read; anything else stays and is reported by the lowering."""
+    at = next((i for i, o in enumerate(ops) if o.name == 'cf.cond_br'), None)
+    if at is None:
+        return ops
+    branch = ops[at]
+    m = re.match(r'\s*(%[\w$.#-]+)\s*,\s*\^(bb[0-9]+)\s*,\s*\^(bb[0-9]+)\s*$', branch.text)
+    if not m:
+        return ops  # (block arguments: reported as cf.cond_br)
+    condition, true_label, false_label = m.groups()
+    blocks, current = {}, None
+    for op in ops[at + 1:]:
+        label = LABEL.match(op.name)
+        if label:
+            current = label.group(1)
+            blocks[current] = []
+        elif current is None:
+            return ops
+        else:
+            blocks[current].append(op)
+    if set(blocks) != {true_label, false_label}:
+        return ops
+    returns = {name: body for name, body in blocks.items()
+               if body and body[-1].name == 'tt.return' and not any(o.name.startswith('cf.') for o in body)}
+    if true_label in returns:
+        kind, early, rest = 'qpel.return_if', blocks[true_label], blocks[false_label]
+    elif false_label in returns:
+        kind, early, rest = 'qpel.return_unless', blocks[false_label], blocks[true_label]
+    else:
+        return ops
+    guard = Op(kind, [], [condition], branch.text, [], [], [Block([], early[:-1])], branch.line)
+    return ops[:at] + [guard] + structure_returns(rest)
+
+
 def parse(text):
-    return Reader(text).function()
+    function = Reader(text).function()
+    function.body.ops = structure_returns(function.body.ops)
+    return function

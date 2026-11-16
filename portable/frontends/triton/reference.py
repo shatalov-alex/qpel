@@ -82,17 +82,17 @@ def kernel(name, spec):
 for folder in sorted(p for p in cases.iterdir() if p.is_dir()):
     case = json.loads((folder/'case.json').read_text())
     spec = specs[case['kernel']]
-    args, buffers = [], {}
+    args, buffers = {}, {}  # by name: a runtime argument may follow constexprs (Liger's softcap)
     for arg in case['args']:
         if 'buffer' in arg:
             buffers[arg['buffer']] = torch.from_numpy(np.load(folder/arg['buffer']))
-            args.append(buffers[arg['buffer']])
+            args[arg['name']] = buffers[arg['buffer']]
         else:
             kind = spec['signature'][arg['name']]
             # a float scalar as a float32 scalar of the interpreter (as compiled code has it: Liger calls
             # gate_multiplier.to(tl.float32), which a Python float has not)
-            args.append(scalar(np.float32(arg['value'])) if kind.startswith('fp') else int(arg['value']))
-    kernel(case['kernel'], spec)[tuple(case['grid'])](*args, **constexprs(spec),
+            args[arg['name']] = scalar(np.float32(arg['value'])) if kind.startswith('fp') else int(arg['value'])
+    kernel(case['kernel'], spec)[tuple(case['grid'])](**args, **constexprs(spec),
                                                          num_warps=spec.get('num_warps', 4))
     for name, tensor in buffers.items():
         np.save(folder/('out_' + name), tensor.numpy())

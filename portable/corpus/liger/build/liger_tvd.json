@@ -1,0 +1,32 @@
+{
+ "kernel": "liger_tvd",
+ "function": "liger_kernel.ops.tvd:_tv_distance_kernel",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 16,
+ "ptx_name": "_tv_distance_kernel",
+ "signature": {
+  "p_ptr": "*fp32",
+  "p_stride": "i32",
+  "q_ptr": "*fp32",
+  "q_stride": "i32",
+  "loss_ptr": "*fp32",
+  "loss_stride": "i32",
+  "grads_ptr": "*fp32",
+  "grads_stride": "i32",
+  "label_ptr": "*i64",
+  "n_cols": "i32",
+  "scale": "fp32"
+ },
+ "constexprs": {
+  "ignore_index": -100,
+  "BLOCK_SIZE": 256,
+  "HAS_LABEL": true,
+  "reduction": 1
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}

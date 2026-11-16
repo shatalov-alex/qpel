@@ -1,0 +1,35 @@
+{
+ "kernel": "liger_group_norm_forward",
+ "function": "liger_kernel.ops.group_norm:_group_norm_forward_kernel",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 16,
+ "ptx_name": "_group_norm_forward_kernel",
+ "signature": {
+  "Y_ptr": "*fp32",
+  "Y_row_stride": "i32",
+  "Y_col_stride": "i32",
+  "X_ptr": "*fp32",
+  "X_row_stride": "i32",
+  "X_col_stride": "i32",
+  "Mean_ptr": "*fp32",
+  "Mean_row_stride": "i32",
+  "Mean_col_stride": "i32",
+  "RSTD_ptr": "*fp32",
+  "RSTD_row_stride": "i32",
+  "RSTD_col_stride": "i32",
+  "W_ptr": "*fp32",
+  "B_ptr": "*fp32",
+  "hidden_size": "i32",
+  "channels_per_group": "i32",
+  "eps": "fp32"
+ },
+ "constexprs": {
+  "BLOCK_SIZE": 256
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}

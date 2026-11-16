@@ -156,9 +156,9 @@ class Lowering:
     def __init__(self, function, num_warps=4, module=None):
         self.function = function
         self.T = num_warps * 32
-        self.module = module or function.name
         # qpel reserves identifiers starting with _ (Liger's kernels are _rms_norm_forward_kernel and the like)
         self.kernel_name = function.name.lstrip('_') or 'kernel'
+        self.module = module or self.kernel_name
         self.values = {}
         self.taken = set()
         self.shared = []  # (name, type text) declared at the kernel's top
@@ -349,6 +349,11 @@ class Lowering:
             return self.scan(op)
         if name == 'scf.if':
             return self.branch(op)
+        if name in ('ttg.barrier', 'gpu.barrier'):  # tl.debug_barrier(): the program's threads wait
+            self.emit('qpel.barrier();')
+            return None
+        if name in ('qpel.return_if', 'qpel.return_unless'):  # (ttir.structure_returns: an early return)
+            return self.early_return(op)
         if name == 'scf.while':
             return self.while_loop(op)
         if name == 'tt.trans':
@@ -632,6 +637,15 @@ class Lowering:
         self.owned(t, body)
         for result, out, s in zip(op.results, outs, sources):
             self.values[result] = Data(Type(t.shape, s.type.element), out)
+
+    def early_return(self, op):
+        """`if (c) { ...; return; }` (Triton's early return, a cf.cond_br to a block ending in tt.return):
+        c is a scalar, the same for the whole program, so the return keeps barriers uniform."""
+        condition = self.value(op.operands[0]).text
+        self.open(f'if ({condition})' if op.name == 'qpel.return_if' else f'if (!({condition}))')
+        self.block(op.regions[0].ops)
+        self.emit('return;')
+        self.close()
 
     def branch(self, op):
         """scf.if on a scalar condition: both branches' yields assign the results (declared before)."""
