@@ -112,7 +112,7 @@ fixture passed; CUB's scans and reductions are inline PTX that do (`shfl.sync.up
 self-test now runs that PTX (an inclusive sum of ones over a warp). #156 has the fix as a third
 commit (2026-11-15).
 
-**Fixed (2026-11-16), `qpel-setp.patch`, image `qpel14` (local so far):** `setp` on `.b16` and
+**Fixed (2026-11-16), `qpel-setp.patch`, image `qpel14` (submitted upstream as accel-sim PR #157):** `setp` on `.b16` and
 `.b32` compared the wrong bits. `CmpOp` has no `break` after the `B16_TYPE` and `B32_TYPE` cases,
 so both fell through to the `B64_TYPE` comparison of the whole 64-bit register value, including
 bits above the register's width that earlier instructions left there. After `add.s32 r, 1, -1`
