@@ -1,0 +1,23 @@
+{
+ "kernel": "liger_rowwise_element_mul",
+ "function": "liger_kernel.ops.cross_entropy:rowwise_element_mul_kernel",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 0,
+ "ptx_name": "rowwise_element_mul_kernel",
+ "signature": {
+  "X_ptr": "*fp32",
+  "X_stride": "i32",
+  "grad_output_ptr": "*fp32",
+  "grad_output_stride": "i32",
+  "n_cols": "i32"
+ },
+ "constexprs": {
+  "BLOCK_SIZE": 64
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}

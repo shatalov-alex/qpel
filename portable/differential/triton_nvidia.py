@@ -1,6 +1,6 @@
 """Triton's own NVIDIA code on GPGPU-Sim, against Triton's interpreter and qpel's translation.
 
-Triton compiles each corpus kernel to PTX for sm_75 (corpus/triton/build/<kernel>.ptx,
+Triton compiles each corpus kernel to PTX for sm_75 (corpus/<triton|liger>/build/<kernel>.ptx,
 frontends/triton/compile.py). GPGPU-Sim runs PTX but implements none of the driver API Triton's
 launcher uses (cuModuleLoadData, cuLaunchKernel), and its PTX_SIM_USE_PTX_FILE override does not
 reach the path a runtime-API program takes. So a stub CUDA program declares a kernel of the same
@@ -89,7 +89,9 @@ def for_gpgpusim(ptx):
 
 
 def stub(name, meta):
-    """main.cu: the kernel's stub and a host program that reads, launches and writes one case."""
+    """main.cu: the kernel's stub and a host program that reads, launches and writes one case. The stub
+    has the PTX entry's name (Triton's: the function's, which for Liger is not the corpus name)."""
+    name = meta.get('ptx_name', name)
     params, args, setup, finish = [], [], [], []
     for i, (pname, kind) in enumerate(meta['signature'].items()):
         if kind.startswith('*'):
@@ -152,11 +154,11 @@ def run(jobs):
         work.mkdir(parents=True, exist_ok=True)
         layout = {}
         for name, cases in jobs:
-            meta = json.loads((triton.BUILD/f'{name}.json').read_text())
+            meta = triton.corpora.metadata(name)
             folder = work/name
             folder.mkdir()
             (folder/'main.cu').write_text(stub(name, meta))
-            ptx = for_gpgpusim((triton.BUILD/f'{name}.ptx').read_text())
+            ptx = for_gpgpusim((triton.corpora.build(name)/f'{name}.ptx').read_text())
             (folder/'kernel.ptx').write_text(ptx)
             for i, case in enumerate(cases):
                 cdir = folder/f'c{i:03d}'

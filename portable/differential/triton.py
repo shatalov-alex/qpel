@@ -1,6 +1,6 @@
 """Behaviour rows of qpel's Triton frontend: Triton kernels against what qpel makes of them.
 
-For every kernel of corpus/triton (kernels.py, compiled to TTIR in corpus/triton/build), the
+For every kernel of the Triton corpora (corpus/triton and corpus/liger: frontends/triton/corpora.py), the
 TTIR is lowered to qpel (frontends/triton/lower.py), qpel builds CUDA and Metal, and the same
 cases run through
 
@@ -35,6 +35,7 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
+from frontends.triton import corpora  # noqa: E402
 from frontends.triton.lower import lower  # noqa: E402
 from qpel_ir import Lowering  # noqa: E402
 from qpel_text import parse_program  # noqa: E402
@@ -42,24 +43,21 @@ from qpel_types import MATH_ULPS  # noqa: E402
 from .compare import compare  # noqa: E402
 from .simulate import Case, Program  # noqa: E402
 
-CORPUS = HERE/'corpus/triton'
 # Triton's interpreter computes tl.math.fma as x * y + z with two roundings (numpy has no fused
 # multiply-add); Triton's NVIDIA code (fma.rn.f32) and qpel's qpel.fma round once. Programs with an
 # fma compare with the interpreter within this many more ulp; against Triton's PTX they must agree
 # exactly (differential/triton_nvidia.py).
 FMA_ULPS = 1  # (in epsilons of the case's scale where it gives one: |x * y| + |z|)
-BUILD = CORPUS/'build'
 IMAGE = 'qpel/triton:3.8.0'
 
 
 def kernels():
-    return list(json.loads((CORPUS/'kernels.json').read_text()))
+    return corpora.kernels()
 
 
 def program(name):
     """(qpel IR, the Lowering) of one corpus kernel."""
-    meta = json.loads((BUILD/f'{name}.json').read_text())
-    text, lowering = lower((BUILD/f'{name}.ttir').read_text(), meta['num_warps'], 'triton_' + name)
+    text, lowering = lower(corpora.ttir(name), corpora.metadata(name)['num_warps'], 'triton_' + name)
     return parse_program(text), lowering
 
 
@@ -305,7 +303,8 @@ CASES = {'gelu_libdevice_kernel': gelu_cases, 'precise_ops_kernel': precise_ops_
 
 
 def cases(name, seed=20261115):
-    return CASES[name](np.random.default_rng(seed))
+    from .liger_cases import CASES as LIGER
+    return (CASES | LIGER)[name](np.random.default_rng(seed))
 
 
 # -- the reference --
@@ -339,15 +338,22 @@ def references(jobs):
                 (folder/'case.json').write_text(json.dumps({'kernel': name, 'grid': list(case.shapes['programs']),
                                                             'args': args}))
                 folders[(name, i)] = (folder, [p for p, t in params if t.is_pointer])
-        if not jobs:
-            return oracle
-        result = subprocess.run(['docker', 'run', '--rm', '--label', 'qpel=1', '--memory', '4g', '--cpus', '2',
-                                 '-e', 'TRITON_INTERPRET=1', '-v', f'{HERE/"frontends/triton"}:/tool:ro',
-                                 '-v', f'{CORPUS}:/corpus:ro', '-v', f'{work}:/cases', IMAGE,
-                                 'python', '/tool/reference.py', '/corpus/kernels.py', '/corpus/kernels.json', '/cases'],
-                                capture_output=True, text=True, timeout=1800)
-        if result.returncode:
-            raise RuntimeError(f'Triton interpreter failed:\n{result.stderr[-3000:]}')
+        for corpus in {corpora.corpus_of(name) for name, _, _ in jobs}:  # one container per corpus
+            root = corpora.CORPORA[corpus]
+            names = {name for name, _, _ in jobs if corpora.corpus_of(name) == corpus}
+            here = work/corpus
+            here.mkdir()
+            for (name, i), (folder, _) in folders.items():
+                if name in names:
+                    folder.rename(here/folder.name)
+                    folders[(name, i)] = (here/folder.name, folders[(name, i)][1])
+            result = subprocess.run(['docker', 'run', '--rm', '--network', 'none', '--label', 'qpel=1', '--memory', '4g',
+                                     '--cpus', '2', '-e', 'TRITON_INTERPRET=1', '-v', f'{HERE/"frontends/triton"}:/tool:ro',
+                                     '-v', f'{root}:/corpus:ro', '-v', f'{here}:/cases', IMAGE, 'python', '/tool/reference.py',
+                                     f'/corpus/{corpora.source(next(iter(names)))}', '/corpus/kernels.json', '/cases'],
+                                    capture_output=True, text=True, timeout=1800)
+            if result.returncode:
+                raise RuntimeError(f'Triton interpreter failed:\n{result.stderr[-3000:]}')
         return {key: {b: np.load(folder/f'out_{b}.npy') for b in buffers} for key, (folder, buffers) in folders.items()} | oracle
 
 
@@ -406,16 +412,16 @@ def rows(names=None, gpu=None):
         work = Path(work)
         jobs = []
         for name in names:
-            try:
-                prog, lowering = program(name)
-            except Exception as error:  # noqa: BLE001 - reported as the row's failure
-                yield 'triton -> qpel', name, f'{type(error).__name__}: {error}'
-                continue
             folder = work/name
             folder.mkdir()
             saved = folder/'program.qpel.json'
-            saved.write_text(json.dumps(prog))
-            compile_program(saved, folder/'package')
+            try:
+                prog, lowering = program(name)
+                saved.write_text(json.dumps(prog))
+                compile_program(saved, folder/'package')
+            except Exception as error:  # noqa: BLE001 - reported as the row's failure
+                yield 'triton -> qpel', name, f'{type(error).__name__}: {error}'
+                continue
             plan = Lowering(prog).plan()
             generated = folder/'package/package/generated'
             (folder/'sim').mkdir()
@@ -438,14 +444,16 @@ def rows(names=None, gpu=None):
                     apple = metal.run_generated(host, plan, case)
                     yield 'triton -> qpel -> metal', label, check(expected, apple, outputs, ulps, case, reduction, lowering.fused)
                     same = 2 * MATH_ULPS if lowering.bounded else 0
-                    yield 'qpel cuda = metal', label, compare(cuda, apple, outputs, None, same)
+                    # (the same order of operations; bounded functions may differ, scaled as the case says)
+                    yield 'qpel cuda = metal', label, (check(cuda, apple, outputs, same, case, False) if same
+                                                       else compare(cuda, apple, outputs, None, 0))
                 else:
                     yield 'triton -> qpel -> metal', label, 'skipped: no Apple GPU'
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    parser.add_argument('kernels', nargs='*', help='kernel names (default: all of corpus/triton/kernels.json)')
+    parser.add_argument('kernels', nargs='*', help='kernel names (default: every Triton corpus kernel)')
     parser.add_argument('--cpu', action='store_true', help='without the Apple GPU rows')
     args = parser.parse_args(argv)
     summary, failures, skipped = {}, 0, 0

@@ -1,7 +1,7 @@
 """qpel's Triton frontend from the command line (frontends/triton/README.md).
 
     python3 -m frontends.triton kernel.ttir [--num-warps 4] [--out kernel.qpel]   # TTIR -> qpel text
-    python3 -m frontends.triton --fixtures       # corpus/triton/build -> tests/fixtures/qpel_ir/triton_*
+    python3 -m frontends.triton --fixtures       # corpus/{triton,liger}/build -> tests/fixtures/qpel_ir/triton_*
 """
 import argparse
 import json
@@ -10,21 +10,21 @@ import sys
 
 HERE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(HERE))
+from frontends.triton import corpora  # noqa: E402
 from frontends.triton.lower import lower  # noqa: E402
 
-CORPUS = HERE/'corpus/triton'
 FIXTURES = HERE/'tests/fixtures/qpel_ir'
 
 
 def corpus_kernels():
-    return list(json.loads((CORPUS/'kernels.json').read_text()))
+    """The kernels of every Triton corpus (corpus/triton, corpus/liger: frontends/triton/corpora.py)."""
+    return corpora.kernels()
 
 
 def corpus_program(name):
     """The qpel IR of corpus kernel `name`, from its committed TTIR and launch metadata."""
     from qpel_text import parse_program
-    meta = json.loads((CORPUS/'build'/f'{name}.json').read_text())
-    text, _ = lower((CORPUS/'build'/f'{name}.ttir').read_text(), meta['num_warps'], 'triton_' + name)
+    text, _ = lower(corpora.ttir(name), corpora.metadata(name)['num_warps'], 'triton_' + name)
     return parse_program(text)
 
 
@@ -34,7 +34,7 @@ def main(argv=None):
     parser.add_argument('--num-warps', type=int, default=4, help='the num_warps it was compiled with (default 4)')
     parser.add_argument('--module', help='the qpel module name (default: the function name)')
     parser.add_argument('--out', help='write the qpel text here (default: print it)')
-    parser.add_argument('--fixtures', action='store_true', help='rewrite the fixtures of corpus/triton')
+    parser.add_argument('--fixtures', action='store_true', help='rewrite the fixtures of the Triton corpora')
     args = parser.parse_args(argv)
     if args.fixtures:
         for name in corpus_kernels():

@@ -1,0 +1,8743 @@
+{
+  "format": "qpel.ir",
+  "version": 4,
+  "semantics": "qpel-portable-core-v4",
+  "roots": {
+    "module": "n0",
+    "pipeline": "n671"
+  },
+  "nodes": [
+    {
+      "id": "n0",
+      "kind": "GpuModule",
+      "attributes": {
+        "name": "triton_liger_fused_add_rms_norm_forward"
+      },
+      "children": {
+        "functions": [
+          "n1"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n1",
+      "kind": "Function",
+      "attributes": {
+        "name": "fused_add_rms_norm_forward_kernel",
+        "isKernel": true
+      },
+      "children": {
+        "parameters": [
+          "n2",
+          "n4",
+          "n6",
+          "n8",
+          "n10",
+          "n12",
+          "n14",
+          "n16",
+          "n18",
+          "n20",
+          "n22",
+          "n24",
+          "n26",
+          "n28",
+          "n30"
+        ],
+        "domain": [
+          "n32"
+        ],
+        "resultType": [
+          "n33"
+        ],
+        "body": [
+          "n34"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n2",
+      "kind": "Parameter",
+      "attributes": {
+        "name": "Y_ptr",
+        "binding": 0,
+        "isBuffer": true
+      },
+      "children": {
+        "type": [
+          "n3"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n3",
+      "kind": "BufferType",
+      "attributes": {
+        "element": "f32",
+        "access": "write"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n4",
+      "kind": "Parameter",
+      "attributes": {
+        "name": "Y_row_stride",
+        "binding": 1,
+        "isBuffer": true
+      },
+      "children": {
+        "type": [
+          "n5"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n5",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n6",
+      "kind": "Parameter",
+      "attributes": {
+        "name": "S_ptr",
+        "binding": 2,
+        "isBuffer": true
+      },
+      "children": {
+        "type": [
+          "n7"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n7",
+      "kind": "BufferType",
+      "attributes": {
+        "element": "f32",
+        "access": "write"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n8",
+      "kind": "Parameter",
+      "attributes": {
+        "name": "S_row_stride",
+        "binding": 3,
+        "isBuffer": true
+      },
+      "children": {
+        "type": [
+          "n9"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n9",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n10",
+      "kind": "Parameter",
+      "attributes": {
+        "name": "X_ptr",
+        "binding": 4,
+        "isBuffer": true
+      },
+      "children": {
+        "type": [
+          "n11"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n11",
+      "kind": "BufferType",
+      "attributes": {
+        "element": "f32",
+        "access": "read"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n12",
+      "kind": "Parameter",
+      "attributes": {
+        "name": "X_row_stride",
+        "binding": 5,
+        "isBuffer": true
+      },
+      "children": {
+        "type": [
+          "n13"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n13",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n14",
+      "kind": "Parameter",
+      "attributes": {
+        "name": "R_ptr",
+        "binding": 6,
+        "isBuffer": true
+      },
+      "children": {
+        "type": [
+          "n15"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n15",
+      "kind": "BufferType",
+      "attributes": {
+        "element": "f32",
+        "access": "read"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n16",
+      "kind": "Parameter",
+      "attributes": {
+        "name": "R_row_stride",
+        "binding": 7,
+        "isBuffer": true
+      },
+      "children": {
+        "type": [
+          "n17"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n17",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n18",
+      "kind": "Parameter",
+      "attributes": {
+        "name": "W_ptr",
+        "binding": 8,
+        "isBuffer": true
+      },
+      "children": {
+        "type": [
+          "n19"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n19",
+      "kind": "BufferType",
+      "attributes": {
+        "element": "f32",
+        "access": "read"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n20",
+      "kind": "Parameter",
+      "attributes": {
+        "name": "W_row_stride",
+        "binding": 9,
+        "isBuffer": true
+      },
+      "children": {
+        "type": [
+          "n21"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n21",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n22",
+      "kind": "Parameter",
+      "attributes": {
+        "name": "RSTD_ptr",
+        "binding": 10,
+        "isBuffer": true
+      },
+      "children": {
+        "type": [
+          "n23"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n23",
+      "kind": "BufferType",
+      "attributes": {
+        "element": "f32",
+        "access": "write"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n24",
+      "kind": "Parameter",
+      "attributes": {
+        "name": "RSTD_row_stride",
+        "binding": 11,
+        "isBuffer": true
+      },
+      "children": {
+        "type": [
+          "n25"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n25",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n26",
+      "kind": "Parameter",
+      "attributes": {
+        "name": "n_cols",
+        "binding": 12,
+        "isBuffer": true
+      },
+      "children": {
+        "type": [
+          "n27"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n27",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n28",
+      "kind": "Parameter",
+      "attributes": {
+        "name": "eps",
+        "binding": 13,
+        "isBuffer": true
+      },
+      "children": {
+        "type": [
+          "n29"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n29",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "f32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n30",
+      "kind": "Parameter",
+      "attributes": {
+        "name": "offset",
+        "binding": 14,
+        "isBuffer": true
+      },
+      "children": {
+        "type": [
+          "n31"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n31",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "f32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n32",
+      "kind": "Groups",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n33",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "void"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n34",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n35",
+          "n37",
+          "n41",
+          "n45",
+          "n49",
+          "n54",
+          "n58",
+          "n62",
+          "n67",
+          "n71",
+          "n75",
+          "n80",
+          "n84",
+          "n88",
+          "n93",
+          "n97",
+          "n101",
+          "n106",
+          "n110",
+          "n115",
+          "n166",
+          "n171",
+          "n222",
+          "n227",
+          "n264",
+          "n309",
+          "n314",
+          "n363",
+          "n368",
+          "n405",
+          "n407",
+          "n441",
+          "n443",
+          "n449",
+          "n473",
+          "n477",
+          "n482",
+          "n487",
+          "n493",
+          "n504",
+          "n509",
+          "n544",
+          "n549",
+          "n584",
+          "n589",
+          "n626"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n35",
+      "kind": "Variable",
+      "attributes": {
+        "name": "s__mean_square_23"
+      },
+      "children": {
+        "type": [
+          "n36"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n36",
+      "kind": "SharedType",
+      "attributes": {
+        "element": "f32",
+        "length": 256
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n37",
+      "kind": "Variable",
+      "attributes": {
+        "name": "row_idx"
+      },
+      "children": {
+        "type": [
+          "n38"
+        ],
+        "value": [
+          "n39"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n38",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n39",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i32"
+      },
+      "children": {
+        "operand": [
+          "n40"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n40",
+      "kind": "GroupIndex",
+      "attributes": {
+        "axis": "x"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n41",
+      "kind": "Variable",
+      "attributes": {
+        "name": "row_idx_0"
+      },
+      "children": {
+        "type": [
+          "n42"
+        ],
+        "value": [
+          "n43"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n42",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i64"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n43",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i64"
+      },
+      "children": {
+        "operand": [
+          "n44"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n44",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n37"
+      }
+    },
+    {
+      "id": "n45",
+      "kind": "Variable",
+      "attributes": {
+        "name": "Y_ptr_2"
+      },
+      "children": {
+        "type": [
+          "n46"
+        ],
+        "value": [
+          "n47"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n46",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i64"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n47",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i64"
+      },
+      "children": {
+        "operand": [
+          "n48"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n48",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n4"
+      }
+    },
+    {
+      "id": "n49",
+      "kind": "Variable",
+      "attributes": {
+        "name": "Y_ptr_3"
+      },
+      "children": {
+        "type": [
+          "n50"
+        ],
+        "value": [
+          "n51"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n50",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i64"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n51",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n52"
+        ],
+        "right": [
+          "n53"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n52",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n41"
+      }
+    },
+    {
+      "id": "n53",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n45"
+      }
+    },
+    {
+      "id": "n54",
+      "kind": "Variable",
+      "attributes": {
+        "name": "Y_ptr_4"
+      },
+      "children": {
+        "type": [
+          "n55"
+        ],
+        "value": [
+          "n56"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n55",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n56",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i32"
+      },
+      "children": {
+        "operand": [
+          "n57"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n57",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n49"
+      }
+    },
+    {
+      "id": "n58",
+      "kind": "Variable",
+      "attributes": {
+        "name": "S_ptr_5"
+      },
+      "children": {
+        "type": [
+          "n59"
+        ],
+        "value": [
+          "n60"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n59",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i64"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n60",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i64"
+      },
+      "children": {
+        "operand": [
+          "n61"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n61",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n8"
+      }
+    },
+    {
+      "id": "n62",
+      "kind": "Variable",
+      "attributes": {
+        "name": "S_ptr_6"
+      },
+      "children": {
+        "type": [
+          "n63"
+        ],
+        "value": [
+          "n64"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n63",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i64"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n64",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n65"
+        ],
+        "right": [
+          "n66"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n65",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n41"
+      }
+    },
+    {
+      "id": "n66",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n58"
+      }
+    },
+    {
+      "id": "n67",
+      "kind": "Variable",
+      "attributes": {
+        "name": "S_ptr_7"
+      },
+      "children": {
+        "type": [
+          "n68"
+        ],
+        "value": [
+          "n69"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n68",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n69",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i32"
+      },
+      "children": {
+        "operand": [
+          "n70"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n70",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n62"
+      }
+    },
+    {
+      "id": "n71",
+      "kind": "Variable",
+      "attributes": {
+        "name": "X_ptr_8"
+      },
+      "children": {
+        "type": [
+          "n72"
+        ],
+        "value": [
+          "n73"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n72",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i64"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n73",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i64"
+      },
+      "children": {
+        "operand": [
+          "n74"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n74",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n12"
+      }
+    },
+    {
+      "id": "n75",
+      "kind": "Variable",
+      "attributes": {
+        "name": "X_ptr_9"
+      },
+      "children": {
+        "type": [
+          "n76"
+        ],
+        "value": [
+          "n77"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n76",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i64"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n77",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n78"
+        ],
+        "right": [
+          "n79"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n78",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n41"
+      }
+    },
+    {
+      "id": "n79",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n71"
+      }
+    },
+    {
+      "id": "n80",
+      "kind": "Variable",
+      "attributes": {
+        "name": "X_ptr_10"
+      },
+      "children": {
+        "type": [
+          "n81"
+        ],
+        "value": [
+          "n82"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n81",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n82",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i32"
+      },
+      "children": {
+        "operand": [
+          "n83"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n83",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n75"
+      }
+    },
+    {
+      "id": "n84",
+      "kind": "Variable",
+      "attributes": {
+        "name": "R_ptr_11"
+      },
+      "children": {
+        "type": [
+          "n85"
+        ],
+        "value": [
+          "n86"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n85",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i64"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n86",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i64"
+      },
+      "children": {
+        "operand": [
+          "n87"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n87",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n16"
+      }
+    },
+    {
+      "id": "n88",
+      "kind": "Variable",
+      "attributes": {
+        "name": "R_ptr_12"
+      },
+      "children": {
+        "type": [
+          "n89"
+        ],
+        "value": [
+          "n90"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n89",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i64"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n90",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n91"
+        ],
+        "right": [
+          "n92"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n91",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n41"
+      }
+    },
+    {
+      "id": "n92",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n84"
+      }
+    },
+    {
+      "id": "n93",
+      "kind": "Variable",
+      "attributes": {
+        "name": "R_ptr_13"
+      },
+      "children": {
+        "type": [
+          "n94"
+        ],
+        "value": [
+          "n95"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n94",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n95",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i32"
+      },
+      "children": {
+        "operand": [
+          "n96"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n96",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n88"
+      }
+    },
+    {
+      "id": "n97",
+      "kind": "Variable",
+      "attributes": {
+        "name": "RSTD_ptr_14"
+      },
+      "children": {
+        "type": [
+          "n98"
+        ],
+        "value": [
+          "n99"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n98",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i64"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n99",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i64"
+      },
+      "children": {
+        "operand": [
+          "n100"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n100",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n24"
+      }
+    },
+    {
+      "id": "n101",
+      "kind": "Variable",
+      "attributes": {
+        "name": "RSTD_ptr_15"
+      },
+      "children": {
+        "type": [
+          "n102"
+        ],
+        "value": [
+          "n103"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n102",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i64"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n103",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n104"
+        ],
+        "right": [
+          "n105"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n104",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n41"
+      }
+    },
+    {
+      "id": "n105",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n97"
+      }
+    },
+    {
+      "id": "n106",
+      "kind": "Variable",
+      "attributes": {
+        "name": "RSTD_ptr_16"
+      },
+      "children": {
+        "type": [
+          "n107"
+        ],
+        "value": [
+          "n108"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n107",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n108",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i32"
+      },
+      "children": {
+        "operand": [
+          "n109"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n109",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n101"
+      }
+    },
+    {
+      "id": "n110",
+      "kind": "Variable",
+      "attributes": {
+        "name": "X_row_18"
+      },
+      "children": {
+        "type": [
+          "n111"
+        ],
+        "value": [
+          "n112"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n111",
+      "kind": "ArrayType",
+      "attributes": {
+        "element": "f32",
+        "length": 2
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n112",
+      "kind": "ArrayValue",
+      "attributes": {},
+      "children": {
+        "elements": [
+          "n113",
+          "n114"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n113",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n114",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n115",
+      "kind": "For",
+      "attributes": {},
+      "children": {
+        "init": [
+          "n116"
+        ],
+        "condition": [
+          "n119"
+        ],
+        "step": [
+          "n122"
+        ],
+        "body": [
+          "n127"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n116",
+      "kind": "Variable",
+      "attributes": {
+        "name": "k"
+      },
+      "children": {
+        "type": [
+          "n117"
+        ],
+        "value": [
+          "n118"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n117",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n118",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n119",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n120"
+        ],
+        "right": [
+          "n121"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n120",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n116"
+      }
+    },
+    {
+      "id": "n121",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "2"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n122",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n123"
+        ],
+        "value": [
+          "n124"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n123",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n116"
+      }
+    },
+    {
+      "id": "n124",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n125"
+        ],
+        "right": [
+          "n126"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n125",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n116"
+      }
+    },
+    {
+      "id": "n126",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "1"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n127",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n128",
+          "n136"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n128",
+      "kind": "Variable",
+      "attributes": {
+        "name": "e"
+      },
+      "children": {
+        "type": [
+          "n129"
+        ],
+        "value": [
+          "n130"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n129",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n130",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n131"
+        ],
+        "right": [
+          "n134"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n131",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n132"
+        ],
+        "right": [
+          "n133"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n132",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n116"
+      }
+    },
+    {
+      "id": "n133",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "128"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n134",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i32"
+      },
+      "children": {
+        "operand": [
+          "n135"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n135",
+      "kind": "LocalIndex",
+      "attributes": {
+        "axis": "x"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n136",
+      "kind": "If",
+      "attributes": {},
+      "children": {
+        "condition": [
+          "n137"
+        ],
+        "thenBody": [
+          "n140"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n137",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n138"
+        ],
+        "right": [
+          "n139"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n138",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n128"
+      }
+    },
+    {
+      "id": "n139",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n140",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n141"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n141",
+      "kind": "If",
+      "attributes": {},
+      "children": {
+        "condition": [
+          "n142"
+        ],
+        "thenBody": [
+          "n147"
+        ],
+        "elseBody": [
+          "n160"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n142",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n143"
+        ],
+        "right": [
+          "n146"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n143",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "%"
+      },
+      "children": {
+        "left": [
+          "n144"
+        ],
+        "right": [
+          "n145"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n144",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n128"
+      }
+    },
+    {
+      "id": "n145",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n146",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n26"
+      }
+    },
+    {
+      "id": "n147",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n148"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n148",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n149"
+        ],
+        "value": [
+          "n152"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n149",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n150"
+        ],
+        "index": [
+          "n151"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n150",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n110"
+      }
+    },
+    {
+      "id": "n151",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n116"
+      }
+    },
+    {
+      "id": "n152",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n153"
+        ],
+        "index": [
+          "n154"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n153",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n10"
+      }
+    },
+    {
+      "id": "n154",
+      "kind": "Cast",
+      "attributes": {
+        "to": "u32"
+      },
+      "children": {
+        "operand": [
+          "n155"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n155",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n156"
+        ],
+        "right": [
+          "n157"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n156",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n80"
+      }
+    },
+    {
+      "id": "n157",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "%"
+      },
+      "children": {
+        "left": [
+          "n158"
+        ],
+        "right": [
+          "n159"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n158",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n128"
+      }
+    },
+    {
+      "id": "n159",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n160",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n161"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n161",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n162"
+        ],
+        "value": [
+          "n165"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n162",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n163"
+        ],
+        "index": [
+          "n164"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n163",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n110"
+      }
+    },
+    {
+      "id": "n164",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n116"
+      }
+    },
+    {
+      "id": "n165",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n166",
+      "kind": "Variable",
+      "attributes": {
+        "name": "R_row_20"
+      },
+      "children": {
+        "type": [
+          "n167"
+        ],
+        "value": [
+          "n168"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n167",
+      "kind": "ArrayType",
+      "attributes": {
+        "element": "f32",
+        "length": 2
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n168",
+      "kind": "ArrayValue",
+      "attributes": {},
+      "children": {
+        "elements": [
+          "n169",
+          "n170"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n169",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n170",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n171",
+      "kind": "For",
+      "attributes": {},
+      "children": {
+        "init": [
+          "n172"
+        ],
+        "condition": [
+          "n175"
+        ],
+        "step": [
+          "n178"
+        ],
+        "body": [
+          "n183"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n172",
+      "kind": "Variable",
+      "attributes": {
+        "name": "k_1"
+      },
+      "children": {
+        "type": [
+          "n173"
+        ],
+        "value": [
+          "n174"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n173",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n174",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n175",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n176"
+        ],
+        "right": [
+          "n177"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n176",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n172"
+      }
+    },
+    {
+      "id": "n177",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "2"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n178",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n179"
+        ],
+        "value": [
+          "n180"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n179",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n172"
+      }
+    },
+    {
+      "id": "n180",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n181"
+        ],
+        "right": [
+          "n182"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n181",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n172"
+      }
+    },
+    {
+      "id": "n182",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "1"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n183",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n184",
+          "n192"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n184",
+      "kind": "Variable",
+      "attributes": {
+        "name": "e_1"
+      },
+      "children": {
+        "type": [
+          "n185"
+        ],
+        "value": [
+          "n186"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n185",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n186",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n187"
+        ],
+        "right": [
+          "n190"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n187",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n188"
+        ],
+        "right": [
+          "n189"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n188",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n172"
+      }
+    },
+    {
+      "id": "n189",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "128"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n190",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i32"
+      },
+      "children": {
+        "operand": [
+          "n191"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n191",
+      "kind": "LocalIndex",
+      "attributes": {
+        "axis": "x"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n192",
+      "kind": "If",
+      "attributes": {},
+      "children": {
+        "condition": [
+          "n193"
+        ],
+        "thenBody": [
+          "n196"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n193",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n194"
+        ],
+        "right": [
+          "n195"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n194",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n184"
+      }
+    },
+    {
+      "id": "n195",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n196",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n197"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n197",
+      "kind": "If",
+      "attributes": {},
+      "children": {
+        "condition": [
+          "n198"
+        ],
+        "thenBody": [
+          "n203"
+        ],
+        "elseBody": [
+          "n216"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n198",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n199"
+        ],
+        "right": [
+          "n202"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n199",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "%"
+      },
+      "children": {
+        "left": [
+          "n200"
+        ],
+        "right": [
+          "n201"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n200",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n184"
+      }
+    },
+    {
+      "id": "n201",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n202",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n26"
+      }
+    },
+    {
+      "id": "n203",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n204"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n204",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n205"
+        ],
+        "value": [
+          "n208"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n205",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n206"
+        ],
+        "index": [
+          "n207"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n206",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n166"
+      }
+    },
+    {
+      "id": "n207",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n172"
+      }
+    },
+    {
+      "id": "n208",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n209"
+        ],
+        "index": [
+          "n210"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n209",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n14"
+      }
+    },
+    {
+      "id": "n210",
+      "kind": "Cast",
+      "attributes": {
+        "to": "u32"
+      },
+      "children": {
+        "operand": [
+          "n211"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n211",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n212"
+        ],
+        "right": [
+          "n213"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n212",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n93"
+      }
+    },
+    {
+      "id": "n213",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "%"
+      },
+      "children": {
+        "left": [
+          "n214"
+        ],
+        "right": [
+          "n215"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n214",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n184"
+      }
+    },
+    {
+      "id": "n215",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n216",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n217"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n217",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n218"
+        ],
+        "value": [
+          "n221"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n218",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n219"
+        ],
+        "index": [
+          "n220"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n219",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n166"
+      }
+    },
+    {
+      "id": "n220",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n172"
+      }
+    },
+    {
+      "id": "n221",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n222",
+      "kind": "Variable",
+      "attributes": {
+        "name": "S_row"
+      },
+      "children": {
+        "type": [
+          "n223"
+        ],
+        "value": [
+          "n224"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n223",
+      "kind": "ArrayType",
+      "attributes": {
+        "element": "f32",
+        "length": 2
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n224",
+      "kind": "ArrayValue",
+      "attributes": {},
+      "children": {
+        "elements": [
+          "n225",
+          "n226"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n225",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n226",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n227",
+      "kind": "For",
+      "attributes": {},
+      "children": {
+        "init": [
+          "n228"
+        ],
+        "condition": [
+          "n231"
+        ],
+        "step": [
+          "n234"
+        ],
+        "body": [
+          "n239"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n228",
+      "kind": "Variable",
+      "attributes": {
+        "name": "k_2"
+      },
+      "children": {
+        "type": [
+          "n229"
+        ],
+        "value": [
+          "n230"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n229",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n230",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n231",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n232"
+        ],
+        "right": [
+          "n233"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n232",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n228"
+      }
+    },
+    {
+      "id": "n233",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "2"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n234",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n235"
+        ],
+        "value": [
+          "n236"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n235",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n228"
+      }
+    },
+    {
+      "id": "n236",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n237"
+        ],
+        "right": [
+          "n238"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n237",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n228"
+      }
+    },
+    {
+      "id": "n238",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "1"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n239",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n240",
+          "n248"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n240",
+      "kind": "Variable",
+      "attributes": {
+        "name": "e_2"
+      },
+      "children": {
+        "type": [
+          "n241"
+        ],
+        "value": [
+          "n242"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n241",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n242",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n243"
+        ],
+        "right": [
+          "n246"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n243",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n244"
+        ],
+        "right": [
+          "n245"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n244",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n228"
+      }
+    },
+    {
+      "id": "n245",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "128"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n246",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i32"
+      },
+      "children": {
+        "operand": [
+          "n247"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n247",
+      "kind": "LocalIndex",
+      "attributes": {
+        "axis": "x"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n248",
+      "kind": "If",
+      "attributes": {},
+      "children": {
+        "condition": [
+          "n249"
+        ],
+        "thenBody": [
+          "n252"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n249",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n250"
+        ],
+        "right": [
+          "n251"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n250",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n240"
+      }
+    },
+    {
+      "id": "n251",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n252",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n253"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n253",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n254"
+        ],
+        "value": [
+          "n257"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n254",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n255"
+        ],
+        "index": [
+          "n256"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n255",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n222"
+      }
+    },
+    {
+      "id": "n256",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n228"
+      }
+    },
+    {
+      "id": "n257",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n258"
+        ],
+        "right": [
+          "n261"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n258",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n259"
+        ],
+        "index": [
+          "n260"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n259",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n110"
+      }
+    },
+    {
+      "id": "n260",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n228"
+      }
+    },
+    {
+      "id": "n261",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n262"
+        ],
+        "index": [
+          "n263"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n262",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n166"
+      }
+    },
+    {
+      "id": "n263",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n228"
+      }
+    },
+    {
+      "id": "n264",
+      "kind": "For",
+      "attributes": {},
+      "children": {
+        "init": [
+          "n265"
+        ],
+        "condition": [
+          "n268"
+        ],
+        "step": [
+          "n271"
+        ],
+        "body": [
+          "n276"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n265",
+      "kind": "Variable",
+      "attributes": {
+        "name": "k_3"
+      },
+      "children": {
+        "type": [
+          "n266"
+        ],
+        "value": [
+          "n267"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n266",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n267",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n268",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n269"
+        ],
+        "right": [
+          "n270"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n269",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n265"
+      }
+    },
+    {
+      "id": "n270",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "2"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n271",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n272"
+        ],
+        "value": [
+          "n273"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n272",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n265"
+      }
+    },
+    {
+      "id": "n273",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n274"
+        ],
+        "right": [
+          "n275"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n274",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n265"
+      }
+    },
+    {
+      "id": "n275",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "1"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n276",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n277",
+          "n285"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n277",
+      "kind": "Variable",
+      "attributes": {
+        "name": "e_3"
+      },
+      "children": {
+        "type": [
+          "n278"
+        ],
+        "value": [
+          "n279"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n278",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n279",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n280"
+        ],
+        "right": [
+          "n283"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n280",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n281"
+        ],
+        "right": [
+          "n282"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n281",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n265"
+      }
+    },
+    {
+      "id": "n282",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "128"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n283",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i32"
+      },
+      "children": {
+        "operand": [
+          "n284"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n284",
+      "kind": "LocalIndex",
+      "attributes": {
+        "axis": "x"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n285",
+      "kind": "If",
+      "attributes": {},
+      "children": {
+        "condition": [
+          "n286"
+        ],
+        "thenBody": [
+          "n289"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n286",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n287"
+        ],
+        "right": [
+          "n288"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n287",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n277"
+      }
+    },
+    {
+      "id": "n288",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n289",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n290"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n290",
+      "kind": "If",
+      "attributes": {},
+      "children": {
+        "condition": [
+          "n291"
+        ],
+        "thenBody": [
+          "n296"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n291",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n292"
+        ],
+        "right": [
+          "n295"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n292",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "%"
+      },
+      "children": {
+        "left": [
+          "n293"
+        ],
+        "right": [
+          "n294"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n293",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n277"
+      }
+    },
+    {
+      "id": "n294",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n295",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n26"
+      }
+    },
+    {
+      "id": "n296",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n297"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n297",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n298"
+        ],
+        "value": [
+          "n306"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n298",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n299"
+        ],
+        "index": [
+          "n300"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n299",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n6"
+      }
+    },
+    {
+      "id": "n300",
+      "kind": "Cast",
+      "attributes": {
+        "to": "u32"
+      },
+      "children": {
+        "operand": [
+          "n301"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n301",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n302"
+        ],
+        "right": [
+          "n303"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n302",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n67"
+      }
+    },
+    {
+      "id": "n303",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "%"
+      },
+      "children": {
+        "left": [
+          "n304"
+        ],
+        "right": [
+          "n305"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n304",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n277"
+      }
+    },
+    {
+      "id": "n305",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n306",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n307"
+        ],
+        "index": [
+          "n308"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n307",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n222"
+      }
+    },
+    {
+      "id": "n308",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n265"
+      }
+    },
+    {
+      "id": "n309",
+      "kind": "Variable",
+      "attributes": {
+        "name": "W_row_22"
+      },
+      "children": {
+        "type": [
+          "n310"
+        ],
+        "value": [
+          "n311"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n310",
+      "kind": "ArrayType",
+      "attributes": {
+        "element": "f32",
+        "length": 2
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n311",
+      "kind": "ArrayValue",
+      "attributes": {},
+      "children": {
+        "elements": [
+          "n312",
+          "n313"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n312",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n313",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n314",
+      "kind": "For",
+      "attributes": {},
+      "children": {
+        "init": [
+          "n315"
+        ],
+        "condition": [
+          "n318"
+        ],
+        "step": [
+          "n321"
+        ],
+        "body": [
+          "n326"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n315",
+      "kind": "Variable",
+      "attributes": {
+        "name": "k_4"
+      },
+      "children": {
+        "type": [
+          "n316"
+        ],
+        "value": [
+          "n317"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n316",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n317",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n318",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n319"
+        ],
+        "right": [
+          "n320"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n319",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n315"
+      }
+    },
+    {
+      "id": "n320",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "2"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n321",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n322"
+        ],
+        "value": [
+          "n323"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n322",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n315"
+      }
+    },
+    {
+      "id": "n323",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n324"
+        ],
+        "right": [
+          "n325"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n324",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n315"
+      }
+    },
+    {
+      "id": "n325",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "1"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n326",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n327",
+          "n335"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n327",
+      "kind": "Variable",
+      "attributes": {
+        "name": "e_4"
+      },
+      "children": {
+        "type": [
+          "n328"
+        ],
+        "value": [
+          "n329"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n328",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n329",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n330"
+        ],
+        "right": [
+          "n333"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n330",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n331"
+        ],
+        "right": [
+          "n332"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n331",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n315"
+      }
+    },
+    {
+      "id": "n332",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "128"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n333",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i32"
+      },
+      "children": {
+        "operand": [
+          "n334"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n334",
+      "kind": "LocalIndex",
+      "attributes": {
+        "axis": "x"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n335",
+      "kind": "If",
+      "attributes": {},
+      "children": {
+        "condition": [
+          "n336"
+        ],
+        "thenBody": [
+          "n339"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n336",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n337"
+        ],
+        "right": [
+          "n338"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n337",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n327"
+      }
+    },
+    {
+      "id": "n338",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n339",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n340"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n340",
+      "kind": "If",
+      "attributes": {},
+      "children": {
+        "condition": [
+          "n341"
+        ],
+        "thenBody": [
+          "n346"
+        ],
+        "elseBody": [
+          "n357"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n341",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n342"
+        ],
+        "right": [
+          "n345"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n342",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "%"
+      },
+      "children": {
+        "left": [
+          "n343"
+        ],
+        "right": [
+          "n344"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n343",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n327"
+      }
+    },
+    {
+      "id": "n344",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n345",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n26"
+      }
+    },
+    {
+      "id": "n346",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n347"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n347",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n348"
+        ],
+        "value": [
+          "n351"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n348",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n349"
+        ],
+        "index": [
+          "n350"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n349",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n309"
+      }
+    },
+    {
+      "id": "n350",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n315"
+      }
+    },
+    {
+      "id": "n351",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n352"
+        ],
+        "index": [
+          "n353"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n352",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n18"
+      }
+    },
+    {
+      "id": "n353",
+      "kind": "Cast",
+      "attributes": {
+        "to": "u32"
+      },
+      "children": {
+        "operand": [
+          "n354"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n354",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "%"
+      },
+      "children": {
+        "left": [
+          "n355"
+        ],
+        "right": [
+          "n356"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n355",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n327"
+      }
+    },
+    {
+      "id": "n356",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n357",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n358"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n358",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n359"
+        ],
+        "value": [
+          "n362"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n359",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n360"
+        ],
+        "index": [
+          "n361"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n360",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n309"
+      }
+    },
+    {
+      "id": "n361",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n315"
+      }
+    },
+    {
+      "id": "n362",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n363",
+      "kind": "Variable",
+      "attributes": {
+        "name": "mean_square"
+      },
+      "children": {
+        "type": [
+          "n364"
+        ],
+        "value": [
+          "n365"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n364",
+      "kind": "ArrayType",
+      "attributes": {
+        "element": "f32",
+        "length": 2
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n365",
+      "kind": "ArrayValue",
+      "attributes": {},
+      "children": {
+        "elements": [
+          "n366",
+          "n367"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n366",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n367",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n368",
+      "kind": "For",
+      "attributes": {},
+      "children": {
+        "init": [
+          "n369"
+        ],
+        "condition": [
+          "n372"
+        ],
+        "step": [
+          "n375"
+        ],
+        "body": [
+          "n380"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n369",
+      "kind": "Variable",
+      "attributes": {
+        "name": "k_5"
+      },
+      "children": {
+        "type": [
+          "n370"
+        ],
+        "value": [
+          "n371"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n370",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n371",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n372",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n373"
+        ],
+        "right": [
+          "n374"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n373",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n369"
+      }
+    },
+    {
+      "id": "n374",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "2"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n375",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n376"
+        ],
+        "value": [
+          "n377"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n376",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n369"
+      }
+    },
+    {
+      "id": "n377",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n378"
+        ],
+        "right": [
+          "n379"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n378",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n369"
+      }
+    },
+    {
+      "id": "n379",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "1"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n380",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n381",
+          "n389"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n381",
+      "kind": "Variable",
+      "attributes": {
+        "name": "e_5"
+      },
+      "children": {
+        "type": [
+          "n382"
+        ],
+        "value": [
+          "n383"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n382",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n383",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n384"
+        ],
+        "right": [
+          "n387"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n384",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n385"
+        ],
+        "right": [
+          "n386"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n385",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n369"
+      }
+    },
+    {
+      "id": "n386",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "128"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n387",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i32"
+      },
+      "children": {
+        "operand": [
+          "n388"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n388",
+      "kind": "LocalIndex",
+      "attributes": {
+        "axis": "x"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n389",
+      "kind": "If",
+      "attributes": {},
+      "children": {
+        "condition": [
+          "n390"
+        ],
+        "thenBody": [
+          "n393"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n390",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n391"
+        ],
+        "right": [
+          "n392"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n391",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n381"
+      }
+    },
+    {
+      "id": "n392",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n393",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n394"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n394",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n395"
+        ],
+        "value": [
+          "n398"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n395",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n396"
+        ],
+        "index": [
+          "n397"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n396",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n363"
+      }
+    },
+    {
+      "id": "n397",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n369"
+      }
+    },
+    {
+      "id": "n398",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n399"
+        ],
+        "right": [
+          "n402"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n399",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n400"
+        ],
+        "index": [
+          "n401"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n400",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n222"
+      }
+    },
+    {
+      "id": "n401",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n369"
+      }
+    },
+    {
+      "id": "n402",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n403"
+        ],
+        "index": [
+          "n404"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n403",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n222"
+      }
+    },
+    {
+      "id": "n404",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n369"
+      }
+    },
+    {
+      "id": "n405",
+      "kind": "Evaluate",
+      "attributes": {},
+      "children": {
+        "value": [
+          "n406"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n406",
+      "kind": "Barrier",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n407",
+      "kind": "For",
+      "attributes": {},
+      "children": {
+        "init": [
+          "n408"
+        ],
+        "condition": [
+          "n411"
+        ],
+        "step": [
+          "n414"
+        ],
+        "body": [
+          "n419"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n408",
+      "kind": "Variable",
+      "attributes": {
+        "name": "k_6"
+      },
+      "children": {
+        "type": [
+          "n409"
+        ],
+        "value": [
+          "n410"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n409",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n410",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n411",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n412"
+        ],
+        "right": [
+          "n413"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n412",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n408"
+      }
+    },
+    {
+      "id": "n413",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "2"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n414",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n415"
+        ],
+        "value": [
+          "n416"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n415",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n408"
+      }
+    },
+    {
+      "id": "n416",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n417"
+        ],
+        "right": [
+          "n418"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n417",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n408"
+      }
+    },
+    {
+      "id": "n418",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "1"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n419",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n420",
+          "n428"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n420",
+      "kind": "Variable",
+      "attributes": {
+        "name": "e_6"
+      },
+      "children": {
+        "type": [
+          "n421"
+        ],
+        "value": [
+          "n422"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n421",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n422",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n423"
+        ],
+        "right": [
+          "n426"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n423",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n424"
+        ],
+        "right": [
+          "n425"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n424",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n408"
+      }
+    },
+    {
+      "id": "n425",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "128"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n426",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i32"
+      },
+      "children": {
+        "operand": [
+          "n427"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n427",
+      "kind": "LocalIndex",
+      "attributes": {
+        "axis": "x"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n428",
+      "kind": "If",
+      "attributes": {},
+      "children": {
+        "condition": [
+          "n429"
+        ],
+        "thenBody": [
+          "n432"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n429",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n430"
+        ],
+        "right": [
+          "n431"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n430",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n420"
+      }
+    },
+    {
+      "id": "n431",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n432",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n433"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n433",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n434"
+        ],
+        "value": [
+          "n438"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n434",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n435"
+        ],
+        "index": [
+          "n436"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n435",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n35"
+      }
+    },
+    {
+      "id": "n436",
+      "kind": "Cast",
+      "attributes": {
+        "to": "u32"
+      },
+      "children": {
+        "operand": [
+          "n437"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n437",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n420"
+      }
+    },
+    {
+      "id": "n438",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n439"
+        ],
+        "index": [
+          "n440"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n439",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n363"
+      }
+    },
+    {
+      "id": "n440",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n408"
+      }
+    },
+    {
+      "id": "n441",
+      "kind": "Evaluate",
+      "attributes": {},
+      "children": {
+        "value": [
+          "n442"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n442",
+      "kind": "Barrier",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n443",
+      "kind": "Variable",
+      "attributes": {
+        "name": "mean_square_23_acc"
+      },
+      "children": {
+        "type": [
+          "n444"
+        ],
+        "value": [
+          "n445"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n444",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "f32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n445",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n446"
+        ],
+        "index": [
+          "n447"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n446",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n35"
+      }
+    },
+    {
+      "id": "n447",
+      "kind": "Cast",
+      "attributes": {
+        "to": "u32"
+      },
+      "children": {
+        "operand": [
+          "n448"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n448",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n449",
+      "kind": "For",
+      "attributes": {},
+      "children": {
+        "init": [
+          "n450"
+        ],
+        "condition": [
+          "n453"
+        ],
+        "step": [
+          "n456"
+        ],
+        "body": [
+          "n461"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n450",
+      "kind": "Variable",
+      "attributes": {
+        "name": "j"
+      },
+      "children": {
+        "type": [
+          "n451"
+        ],
+        "value": [
+          "n452"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n451",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n452",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "1"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n453",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n454"
+        ],
+        "right": [
+          "n455"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n454",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n450"
+      }
+    },
+    {
+      "id": "n455",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n456",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n457"
+        ],
+        "value": [
+          "n458"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n457",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n450"
+      }
+    },
+    {
+      "id": "n458",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n459"
+        ],
+        "right": [
+          "n460"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n459",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n450"
+      }
+    },
+    {
+      "id": "n460",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "1"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n461",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n462",
+          "n470"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n462",
+      "kind": "Variable",
+      "attributes": {
+        "name": "mean_square_33"
+      },
+      "children": {
+        "type": [
+          "n463"
+        ],
+        "value": [
+          "n464"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n463",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "f32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n464",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n465"
+        ],
+        "right": [
+          "n466"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n465",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n443"
+      }
+    },
+    {
+      "id": "n466",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n467"
+        ],
+        "index": [
+          "n468"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n467",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n35"
+      }
+    },
+    {
+      "id": "n468",
+      "kind": "Cast",
+      "attributes": {
+        "to": "u32"
+      },
+      "children": {
+        "operand": [
+          "n469"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n469",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n450"
+      }
+    },
+    {
+      "id": "n470",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n471"
+        ],
+        "value": [
+          "n472"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n471",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n443"
+      }
+    },
+    {
+      "id": "n472",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n462"
+      }
+    },
+    {
+      "id": "n473",
+      "kind": "Variable",
+      "attributes": {
+        "name": "mean_square_24"
+      },
+      "children": {
+        "type": [
+          "n474"
+        ],
+        "value": [
+          "n475"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n474",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "f32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n475",
+      "kind": "Cast",
+      "attributes": {
+        "to": "f32"
+      },
+      "children": {
+        "operand": [
+          "n476"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n476",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n26"
+      }
+    },
+    {
+      "id": "n477",
+      "kind": "Variable",
+      "attributes": {
+        "name": "mean_square_25"
+      },
+      "children": {
+        "type": [
+          "n478"
+        ],
+        "value": [
+          "n479"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n478",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "f32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n479",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "/"
+      },
+      "children": {
+        "left": [
+          "n480"
+        ],
+        "right": [
+          "n481"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n480",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n443"
+      }
+    },
+    {
+      "id": "n481",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n473"
+      }
+    },
+    {
+      "id": "n482",
+      "kind": "Variable",
+      "attributes": {
+        "name": "rstd"
+      },
+      "children": {
+        "type": [
+          "n483"
+        ],
+        "value": [
+          "n484"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n483",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "f32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n484",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n485"
+        ],
+        "right": [
+          "n486"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n485",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n477"
+      }
+    },
+    {
+      "id": "n486",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n28"
+      }
+    },
+    {
+      "id": "n487",
+      "kind": "Variable",
+      "attributes": {
+        "name": "rstd_26"
+      },
+      "children": {
+        "type": [
+          "n488"
+        ],
+        "value": [
+          "n489"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n488",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "f32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n489",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "/"
+      },
+      "children": {
+        "left": [
+          "n490"
+        ],
+        "right": [
+          "n491"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n490",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "1.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n491",
+      "kind": "Math",
+      "attributes": {
+        "function": "sqrt"
+      },
+      "children": {
+        "arguments": [
+          "n492"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n492",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n482"
+      }
+    },
+    {
+      "id": "n493",
+      "kind": "If",
+      "attributes": {},
+      "children": {
+        "condition": [
+          "n494"
+        ],
+        "thenBody": [
+          "n497"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n494",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "=="
+      },
+      "children": {
+        "left": [
+          "n495"
+        ],
+        "right": [
+          "n496"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n495",
+      "kind": "LocalIndex",
+      "attributes": {
+        "axis": "x"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n496",
+      "kind": "Literal",
+      "attributes": {
+        "value": "0u"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n497",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n498"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n498",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n499"
+        ],
+        "value": [
+          "n503"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n499",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n500"
+        ],
+        "index": [
+          "n501"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n500",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n22"
+      }
+    },
+    {
+      "id": "n501",
+      "kind": "Cast",
+      "attributes": {
+        "to": "u32"
+      },
+      "children": {
+        "operand": [
+          "n502"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n502",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n106"
+      }
+    },
+    {
+      "id": "n503",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n487"
+      }
+    },
+    {
+      "id": "n504",
+      "kind": "Variable",
+      "attributes": {
+        "name": "S_row_28"
+      },
+      "children": {
+        "type": [
+          "n505"
+        ],
+        "value": [
+          "n506"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n505",
+      "kind": "ArrayType",
+      "attributes": {
+        "element": "f32",
+        "length": 2
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n506",
+      "kind": "ArrayValue",
+      "attributes": {},
+      "children": {
+        "elements": [
+          "n507",
+          "n508"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n507",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n508",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n509",
+      "kind": "For",
+      "attributes": {},
+      "children": {
+        "init": [
+          "n510"
+        ],
+        "condition": [
+          "n513"
+        ],
+        "step": [
+          "n516"
+        ],
+        "body": [
+          "n521"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n510",
+      "kind": "Variable",
+      "attributes": {
+        "name": "k_7"
+      },
+      "children": {
+        "type": [
+          "n511"
+        ],
+        "value": [
+          "n512"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n511",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n512",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n513",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n514"
+        ],
+        "right": [
+          "n515"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n514",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n510"
+      }
+    },
+    {
+      "id": "n515",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "2"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n516",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n517"
+        ],
+        "value": [
+          "n518"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n517",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n510"
+      }
+    },
+    {
+      "id": "n518",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n519"
+        ],
+        "right": [
+          "n520"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n519",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n510"
+      }
+    },
+    {
+      "id": "n520",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "1"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n521",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n522",
+          "n530"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n522",
+      "kind": "Variable",
+      "attributes": {
+        "name": "e_7"
+      },
+      "children": {
+        "type": [
+          "n523"
+        ],
+        "value": [
+          "n524"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n523",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n524",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n525"
+        ],
+        "right": [
+          "n528"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n525",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n526"
+        ],
+        "right": [
+          "n527"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n526",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n510"
+      }
+    },
+    {
+      "id": "n527",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "128"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n528",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i32"
+      },
+      "children": {
+        "operand": [
+          "n529"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n529",
+      "kind": "LocalIndex",
+      "attributes": {
+        "axis": "x"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n530",
+      "kind": "If",
+      "attributes": {},
+      "children": {
+        "condition": [
+          "n531"
+        ],
+        "thenBody": [
+          "n534"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n531",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n532"
+        ],
+        "right": [
+          "n533"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n532",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n522"
+      }
+    },
+    {
+      "id": "n533",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n534",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n535"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n535",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n536"
+        ],
+        "value": [
+          "n539"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n536",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n537"
+        ],
+        "index": [
+          "n538"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n537",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n504"
+      }
+    },
+    {
+      "id": "n538",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n510"
+      }
+    },
+    {
+      "id": "n539",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n540"
+        ],
+        "right": [
+          "n543"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n540",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n541"
+        ],
+        "index": [
+          "n542"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n541",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n222"
+      }
+    },
+    {
+      "id": "n542",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n510"
+      }
+    },
+    {
+      "id": "n543",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n487"
+      }
+    },
+    {
+      "id": "n544",
+      "kind": "Variable",
+      "attributes": {
+        "name": "Y_row_29"
+      },
+      "children": {
+        "type": [
+          "n545"
+        ],
+        "value": [
+          "n546"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n545",
+      "kind": "ArrayType",
+      "attributes": {
+        "element": "f32",
+        "length": 2
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n546",
+      "kind": "ArrayValue",
+      "attributes": {},
+      "children": {
+        "elements": [
+          "n547",
+          "n548"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n547",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n548",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n549",
+      "kind": "For",
+      "attributes": {},
+      "children": {
+        "init": [
+          "n550"
+        ],
+        "condition": [
+          "n553"
+        ],
+        "step": [
+          "n556"
+        ],
+        "body": [
+          "n561"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n550",
+      "kind": "Variable",
+      "attributes": {
+        "name": "k_8"
+      },
+      "children": {
+        "type": [
+          "n551"
+        ],
+        "value": [
+          "n552"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n551",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n552",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n553",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n554"
+        ],
+        "right": [
+          "n555"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n554",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n550"
+      }
+    },
+    {
+      "id": "n555",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "2"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n556",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n557"
+        ],
+        "value": [
+          "n558"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n557",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n550"
+      }
+    },
+    {
+      "id": "n558",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n559"
+        ],
+        "right": [
+          "n560"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n559",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n550"
+      }
+    },
+    {
+      "id": "n560",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "1"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n561",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n562",
+          "n570"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n562",
+      "kind": "Variable",
+      "attributes": {
+        "name": "e_8"
+      },
+      "children": {
+        "type": [
+          "n563"
+        ],
+        "value": [
+          "n564"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n563",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n564",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n565"
+        ],
+        "right": [
+          "n568"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n565",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n566"
+        ],
+        "right": [
+          "n567"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n566",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n550"
+      }
+    },
+    {
+      "id": "n567",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "128"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n568",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i32"
+      },
+      "children": {
+        "operand": [
+          "n569"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n569",
+      "kind": "LocalIndex",
+      "attributes": {
+        "axis": "x"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n570",
+      "kind": "If",
+      "attributes": {},
+      "children": {
+        "condition": [
+          "n571"
+        ],
+        "thenBody": [
+          "n574"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n571",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n572"
+        ],
+        "right": [
+          "n573"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n572",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n562"
+      }
+    },
+    {
+      "id": "n573",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n574",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n575"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n575",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n576"
+        ],
+        "value": [
+          "n579"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n576",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n577"
+        ],
+        "index": [
+          "n578"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n577",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n544"
+      }
+    },
+    {
+      "id": "n578",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n550"
+      }
+    },
+    {
+      "id": "n579",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n580"
+        ],
+        "right": [
+          "n581"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n580",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n30"
+      }
+    },
+    {
+      "id": "n581",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n582"
+        ],
+        "index": [
+          "n583"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n582",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n309"
+      }
+    },
+    {
+      "id": "n583",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n550"
+      }
+    },
+    {
+      "id": "n584",
+      "kind": "Variable",
+      "attributes": {
+        "name": "Y_row_30"
+      },
+      "children": {
+        "type": [
+          "n585"
+        ],
+        "value": [
+          "n586"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n585",
+      "kind": "ArrayType",
+      "attributes": {
+        "element": "f32",
+        "length": 2
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n586",
+      "kind": "ArrayValue",
+      "attributes": {},
+      "children": {
+        "elements": [
+          "n587",
+          "n588"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n587",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n588",
+      "kind": "F32Literal",
+      "attributes": {
+        "value": "0.0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n589",
+      "kind": "For",
+      "attributes": {},
+      "children": {
+        "init": [
+          "n590"
+        ],
+        "condition": [
+          "n593"
+        ],
+        "step": [
+          "n596"
+        ],
+        "body": [
+          "n601"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n590",
+      "kind": "Variable",
+      "attributes": {
+        "name": "k_9"
+      },
+      "children": {
+        "type": [
+          "n591"
+        ],
+        "value": [
+          "n592"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n591",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n592",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n593",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n594"
+        ],
+        "right": [
+          "n595"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n594",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n590"
+      }
+    },
+    {
+      "id": "n595",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "2"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n596",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n597"
+        ],
+        "value": [
+          "n598"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n597",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n590"
+      }
+    },
+    {
+      "id": "n598",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n599"
+        ],
+        "right": [
+          "n600"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n599",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n590"
+      }
+    },
+    {
+      "id": "n600",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "1"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n601",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n602",
+          "n610"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n602",
+      "kind": "Variable",
+      "attributes": {
+        "name": "e_9"
+      },
+      "children": {
+        "type": [
+          "n603"
+        ],
+        "value": [
+          "n604"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n603",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n604",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n605"
+        ],
+        "right": [
+          "n608"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n605",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n606"
+        ],
+        "right": [
+          "n607"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n606",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n590"
+      }
+    },
+    {
+      "id": "n607",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "128"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n608",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i32"
+      },
+      "children": {
+        "operand": [
+          "n609"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n609",
+      "kind": "LocalIndex",
+      "attributes": {
+        "axis": "x"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n610",
+      "kind": "If",
+      "attributes": {},
+      "children": {
+        "condition": [
+          "n611"
+        ],
+        "thenBody": [
+          "n614"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n611",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n612"
+        ],
+        "right": [
+          "n613"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n612",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n602"
+      }
+    },
+    {
+      "id": "n613",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n614",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n615"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n615",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n616"
+        ],
+        "value": [
+          "n619"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n616",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n617"
+        ],
+        "index": [
+          "n618"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n617",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n584"
+      }
+    },
+    {
+      "id": "n618",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n590"
+      }
+    },
+    {
+      "id": "n619",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n620"
+        ],
+        "right": [
+          "n623"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n620",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n621"
+        ],
+        "index": [
+          "n622"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n621",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n504"
+      }
+    },
+    {
+      "id": "n622",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n590"
+      }
+    },
+    {
+      "id": "n623",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n624"
+        ],
+        "index": [
+          "n625"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n624",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n544"
+      }
+    },
+    {
+      "id": "n625",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n590"
+      }
+    },
+    {
+      "id": "n626",
+      "kind": "For",
+      "attributes": {},
+      "children": {
+        "init": [
+          "n627"
+        ],
+        "condition": [
+          "n630"
+        ],
+        "step": [
+          "n633"
+        ],
+        "body": [
+          "n638"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n627",
+      "kind": "Variable",
+      "attributes": {
+        "name": "k_10"
+      },
+      "children": {
+        "type": [
+          "n628"
+        ],
+        "value": [
+          "n629"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n628",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n629",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "0"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n630",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n631"
+        ],
+        "right": [
+          "n632"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n631",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n627"
+      }
+    },
+    {
+      "id": "n632",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "2"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n633",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n634"
+        ],
+        "value": [
+          "n635"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n634",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n627"
+      }
+    },
+    {
+      "id": "n635",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n636"
+        ],
+        "right": [
+          "n637"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n636",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n627"
+      }
+    },
+    {
+      "id": "n637",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "1"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n638",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n639",
+          "n647"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n639",
+      "kind": "Variable",
+      "attributes": {
+        "name": "e_10"
+      },
+      "children": {
+        "type": [
+          "n640"
+        ],
+        "value": [
+          "n641"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n640",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n641",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n642"
+        ],
+        "right": [
+          "n645"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n642",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "*"
+      },
+      "children": {
+        "left": [
+          "n643"
+        ],
+        "right": [
+          "n644"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n643",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n627"
+      }
+    },
+    {
+      "id": "n644",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "128"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n645",
+      "kind": "Cast",
+      "attributes": {
+        "to": "i32"
+      },
+      "children": {
+        "operand": [
+          "n646"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n646",
+      "kind": "LocalIndex",
+      "attributes": {
+        "axis": "x"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n647",
+      "kind": "If",
+      "attributes": {},
+      "children": {
+        "condition": [
+          "n648"
+        ],
+        "thenBody": [
+          "n651"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n648",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n649"
+        ],
+        "right": [
+          "n650"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n649",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n639"
+      }
+    },
+    {
+      "id": "n650",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n651",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n652"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n652",
+      "kind": "If",
+      "attributes": {},
+      "children": {
+        "condition": [
+          "n653"
+        ],
+        "thenBody": [
+          "n658"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n653",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "<"
+      },
+      "children": {
+        "left": [
+          "n654"
+        ],
+        "right": [
+          "n657"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n654",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "%"
+      },
+      "children": {
+        "left": [
+          "n655"
+        ],
+        "right": [
+          "n656"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n655",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n639"
+      }
+    },
+    {
+      "id": "n656",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n657",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n26"
+      }
+    },
+    {
+      "id": "n658",
+      "kind": "Block",
+      "attributes": {},
+      "children": {
+        "statements": [
+          "n659"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n659",
+      "kind": "Assign",
+      "attributes": {},
+      "children": {
+        "target": [
+          "n660"
+        ],
+        "value": [
+          "n668"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n660",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n661"
+        ],
+        "index": [
+          "n662"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n661",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n2"
+      }
+    },
+    {
+      "id": "n662",
+      "kind": "Cast",
+      "attributes": {
+        "to": "u32"
+      },
+      "children": {
+        "operand": [
+          "n663"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n663",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "+"
+      },
+      "children": {
+        "left": [
+          "n664"
+        ],
+        "right": [
+          "n665"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n664",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n54"
+      }
+    },
+    {
+      "id": "n665",
+      "kind": "Binary",
+      "attributes": {
+        "operator": "%"
+      },
+      "children": {
+        "left": [
+          "n666"
+        ],
+        "right": [
+          "n667"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n666",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n639"
+      }
+    },
+    {
+      "id": "n667",
+      "kind": "I32Literal",
+      "attributes": {
+        "value": "256"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n668",
+      "kind": "Index",
+      "attributes": {},
+      "children": {
+        "base": [
+          "n669"
+        ],
+        "index": [
+          "n670"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n669",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n584"
+      }
+    },
+    {
+      "id": "n670",
+      "kind": "Name",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "declaration": "n627"
+      }
+    },
+    {
+      "id": "n671",
+      "kind": "Pipeline",
+      "attributes": {
+        "name": "triton_liger_fused_add_rms_norm_forward_launch"
+      },
+      "children": {
+        "resources": [
+          "n672",
+          "n674",
+          "n676",
+          "n678",
+          "n680",
+          "n682",
+          "n684",
+          "n686",
+          "n688",
+          "n690",
+          "n692",
+          "n694",
+          "n696",
+          "n698",
+          "n700",
+          "n702",
+          "n704",
+          "n706",
+          "n708",
+          "n710",
+          "n712",
+          "n714"
+        ],
+        "stages": [
+          "n716"
+        ]
+      },
+      "links": {
+        "module": "n0"
+      }
+    },
+    {
+      "id": "n672",
+      "kind": "Resource",
+      "attributes": {
+        "name": "programs",
+        "kind": "shape"
+      },
+      "children": {
+        "type": [
+          "n673"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n673",
+      "kind": "Shape3DType",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n674",
+      "kind": "Resource",
+      "attributes": {
+        "name": "Y_ptr_size",
+        "kind": "shape"
+      },
+      "children": {
+        "type": [
+          "n675"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n675",
+      "kind": "Shape3DType",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n676",
+      "kind": "Resource",
+      "attributes": {
+        "name": "S_ptr_size",
+        "kind": "shape"
+      },
+      "children": {
+        "type": [
+          "n677"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n677",
+      "kind": "Shape3DType",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n678",
+      "kind": "Resource",
+      "attributes": {
+        "name": "X_ptr_size",
+        "kind": "shape"
+      },
+      "children": {
+        "type": [
+          "n679"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n679",
+      "kind": "Shape3DType",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n680",
+      "kind": "Resource",
+      "attributes": {
+        "name": "R_ptr_size",
+        "kind": "shape"
+      },
+      "children": {
+        "type": [
+          "n681"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n681",
+      "kind": "Shape3DType",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n682",
+      "kind": "Resource",
+      "attributes": {
+        "name": "W_ptr_size",
+        "kind": "shape"
+      },
+      "children": {
+        "type": [
+          "n683"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n683",
+      "kind": "Shape3DType",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n684",
+      "kind": "Resource",
+      "attributes": {
+        "name": "RSTD_ptr_size",
+        "kind": "shape"
+      },
+      "children": {
+        "type": [
+          "n685"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n685",
+      "kind": "Shape3DType",
+      "attributes": {},
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n686",
+      "kind": "Resource",
+      "attributes": {
+        "name": "Y_ptr",
+        "kind": "inout"
+      },
+      "children": {
+        "type": [
+          "n687"
+        ]
+      },
+      "links": {
+        "extent": "n674"
+      }
+    },
+    {
+      "id": "n687",
+      "kind": "BufferType",
+      "attributes": {
+        "element": "f32",
+        "access": "write"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n688",
+      "kind": "Resource",
+      "attributes": {
+        "name": "Y_row_stride",
+        "kind": "value"
+      },
+      "children": {
+        "type": [
+          "n689"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n689",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n690",
+      "kind": "Resource",
+      "attributes": {
+        "name": "S_ptr",
+        "kind": "inout"
+      },
+      "children": {
+        "type": [
+          "n691"
+        ]
+      },
+      "links": {
+        "extent": "n676"
+      }
+    },
+    {
+      "id": "n691",
+      "kind": "BufferType",
+      "attributes": {
+        "element": "f32",
+        "access": "write"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n692",
+      "kind": "Resource",
+      "attributes": {
+        "name": "S_row_stride",
+        "kind": "value"
+      },
+      "children": {
+        "type": [
+          "n693"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n693",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n694",
+      "kind": "Resource",
+      "attributes": {
+        "name": "X_ptr",
+        "kind": "input"
+      },
+      "children": {
+        "type": [
+          "n695"
+        ]
+      },
+      "links": {
+        "extent": "n678"
+      }
+    },
+    {
+      "id": "n695",
+      "kind": "BufferType",
+      "attributes": {
+        "element": "f32",
+        "access": "read"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n696",
+      "kind": "Resource",
+      "attributes": {
+        "name": "X_row_stride",
+        "kind": "value"
+      },
+      "children": {
+        "type": [
+          "n697"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n697",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n698",
+      "kind": "Resource",
+      "attributes": {
+        "name": "R_ptr",
+        "kind": "input"
+      },
+      "children": {
+        "type": [
+          "n699"
+        ]
+      },
+      "links": {
+        "extent": "n680"
+      }
+    },
+    {
+      "id": "n699",
+      "kind": "BufferType",
+      "attributes": {
+        "element": "f32",
+        "access": "read"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n700",
+      "kind": "Resource",
+      "attributes": {
+        "name": "R_row_stride",
+        "kind": "value"
+      },
+      "children": {
+        "type": [
+          "n701"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n701",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n702",
+      "kind": "Resource",
+      "attributes": {
+        "name": "W_ptr",
+        "kind": "input"
+      },
+      "children": {
+        "type": [
+          "n703"
+        ]
+      },
+      "links": {
+        "extent": "n682"
+      }
+    },
+    {
+      "id": "n703",
+      "kind": "BufferType",
+      "attributes": {
+        "element": "f32",
+        "access": "read"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n704",
+      "kind": "Resource",
+      "attributes": {
+        "name": "W_row_stride",
+        "kind": "value"
+      },
+      "children": {
+        "type": [
+          "n705"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n705",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n706",
+      "kind": "Resource",
+      "attributes": {
+        "name": "RSTD_ptr",
+        "kind": "inout"
+      },
+      "children": {
+        "type": [
+          "n707"
+        ]
+      },
+      "links": {
+        "extent": "n684"
+      }
+    },
+    {
+      "id": "n707",
+      "kind": "BufferType",
+      "attributes": {
+        "element": "f32",
+        "access": "write"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n708",
+      "kind": "Resource",
+      "attributes": {
+        "name": "RSTD_row_stride",
+        "kind": "value"
+      },
+      "children": {
+        "type": [
+          "n709"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n709",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n710",
+      "kind": "Resource",
+      "attributes": {
+        "name": "n_cols",
+        "kind": "value"
+      },
+      "children": {
+        "type": [
+          "n711"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n711",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "i32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n712",
+      "kind": "Resource",
+      "attributes": {
+        "name": "eps",
+        "kind": "value"
+      },
+      "children": {
+        "type": [
+          "n713"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n713",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "f32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n714",
+      "kind": "Resource",
+      "attributes": {
+        "name": "offset",
+        "kind": "value"
+      },
+      "children": {
+        "type": [
+          "n715"
+        ]
+      },
+      "links": {}
+    },
+    {
+      "id": "n715",
+      "kind": "ScalarType",
+      "attributes": {
+        "scalar": "f32"
+      },
+      "children": {},
+      "links": {}
+    },
+    {
+      "id": "n716",
+      "kind": "Dispatch",
+      "attributes": {
+        "blockSize": 128,
+        "completionBarrier": true,
+        "blockHeight": 1,
+        "blockDepth": 1,
+        "groupsX": "W",
+        "groupsY": "H",
+        "groupsZ": "N"
+      },
+      "children": {
+        "bindings": [
+          "n717",
+          "n718",
+          "n719",
+          "n720",
+          "n721",
+          "n722",
+          "n723",
+          "n724",
+          "n725",
+          "n726",
+          "n727",
+          "n728",
+          "n729",
+          "n730",
+          "n731"
+        ]
+      },
+      "links": {
+        "kernel": "n1",
+        "grid": "n672"
+      }
+    },
+    {
+      "id": "n717",
+      "kind": "Binding",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "parameter": "n2",
+        "resource": "n686"
+      }
+    },
+    {
+      "id": "n718",
+      "kind": "Binding",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "parameter": "n4",
+        "resource": "n688"
+      }
+    },
+    {
+      "id": "n719",
+      "kind": "Binding",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "parameter": "n6",
+        "resource": "n690"
+      }
+    },
+    {
+      "id": "n720",
+      "kind": "Binding",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "parameter": "n8",
+        "resource": "n692"
+      }
+    },
+    {
+      "id": "n721",
+      "kind": "Binding",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "parameter": "n10",
+        "resource": "n694"
+      }
+    },
+    {
+      "id": "n722",
+      "kind": "Binding",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "parameter": "n12",
+        "resource": "n696"
+      }
+    },
+    {
+      "id": "n723",
+      "kind": "Binding",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "parameter": "n14",
+        "resource": "n698"
+      }
+    },
+    {
+      "id": "n724",
+      "kind": "Binding",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "parameter": "n16",
+        "resource": "n700"
+      }
+    },
+    {
+      "id": "n725",
+      "kind": "Binding",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "parameter": "n18",
+        "resource": "n702"
+      }
+    },
+    {
+      "id": "n726",
+      "kind": "Binding",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "parameter": "n20",
+        "resource": "n704"
+      }
+    },
+    {
+      "id": "n727",
+      "kind": "Binding",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "parameter": "n22",
+        "resource": "n706"
+      }
+    },
+    {
+      "id": "n728",
+      "kind": "Binding",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "parameter": "n24",
+        "resource": "n708"
+      }
+    },
+    {
+      "id": "n729",
+      "kind": "Binding",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "parameter": "n26",
+        "resource": "n710"
+      }
+    },
+    {
+      "id": "n730",
+      "kind": "Binding",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "parameter": "n28",
+        "resource": "n712"
+      }
+    },
+    {
+      "id": "n731",
+      "kind": "Binding",
+      "attributes": {},
+      "children": {},
+      "links": {
+        "parameter": "n30",
+        "resource": "n714"
+      }
+    }
+  ]
+}

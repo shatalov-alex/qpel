@@ -18,6 +18,13 @@ numpy, and the CPU build of torch for Triton's interpreter):
         -v $PWD/corpus/triton:/corpus qpel/triton:3.8.0 \
         python /tool/compile.py /corpus/kernels.py /corpus/kernels.json /corpus/build
 
+For a vendored library the corpus folder is the package root and `kernels.json` names each kernel's
+`function` as `module:name` (corpus/liger, Liger-Kernel; `--network none`: its code runs offline):
+
+    docker run --rm --network none --label qpel=1 --memory 4g --cpus 2 -v $PWD/frontends/triton:/tool:ro \
+        -v $PWD/corpus/liger:/corpus qpel/triton:3.8.0 \
+        python /tool/compile.py /corpus /corpus/kernels.json /corpus/build
+
 `compile.py` compiles each kernel of `kernels.json` (signature, constexprs, num_warps) for
 NVIDIA sm_75 with `enable_fp_fusion=False` (so `a * b + c` stays two roundings, as qpel
 computes it), and writes `build/<kernel>.ttir`, `.ttgir`, `.ptx` and `.json` (launch metadata).
@@ -74,6 +81,10 @@ CUDA on the CPU simulator, and qpel's Metal on the Apple GPU.
   `/` and `exp` to approximate PTX instructions (`div.full.f32`, `ex2.approx`). qpel's division is
   correctly rounded, as the interpreter's is.
 - **Bounded math functions** (`exp`, `log`, ...) agree within 2 * MATH_ULPS (NUMERICS.md).
+  Triton's interpreter cannot run libdevice; `reference.py` installs numpy float32 versions of
+  `rsqrt` (1 / sqrt, as the interpreter's own `tl.math.rsqrt`), `tanh` and `erf` in its place. qpel
+  computes libdevice's `rsqrt` as `1.0f / math.sqrt(x)`. Where a later step cancels (Liger's GeGLU
+  backward: `1 - tanh^2`), a case gives the output a scale from the terms around it (`case.scales`).
 - **Float sum reductions** over n elements agree within 2 * ceil(log2 n) + 4 more epsilons of
   max(1, |value|): numpy sums pairwise, qpel in index order. On these cases the largest difference
   measured was 3 epsilons.

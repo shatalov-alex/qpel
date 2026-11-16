@@ -1,0 +1,25 @@
+{
+ "kernel": "liger_relu_squared_backward",
+ "function": "liger_kernel.ops.relu_squared:_relu_squared_backward_kernel",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 0,
+ "ptx_name": "_relu_squared_backward_kernel",
+ "signature": {
+  "dX_ptr": "*fp32",
+  "dX_stride": "i32",
+  "dY_ptr": "*fp32",
+  "dY_stride": "i32",
+  "X_ptr": "*fp32",
+  "X_stride": "i32"
+ },
+ "constexprs": {
+  "n_cols": 200,
+  "BLOCK_SIZE": 256
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}

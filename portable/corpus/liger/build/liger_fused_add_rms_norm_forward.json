@@ -1,0 +1,34 @@
+{
+ "kernel": "liger_fused_add_rms_norm_forward",
+ "function": "liger_kernel.ops.fused_add_rms_norm:_fused_add_rms_norm_forward_kernel",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 16,
+ "ptx_name": "_fused_add_rms_norm_forward_kernel",
+ "signature": {
+  "Y_ptr": "*fp32",
+  "Y_row_stride": "i32",
+  "S_ptr": "*fp32",
+  "S_row_stride": "i32",
+  "X_ptr": "*fp32",
+  "X_row_stride": "i32",
+  "R_ptr": "*fp32",
+  "R_row_stride": "i32",
+  "W_ptr": "*fp32",
+  "W_row_stride": "i32",
+  "RSTD_ptr": "*fp32",
+  "RSTD_row_stride": "i32",
+  "n_cols": "i32",
+  "eps": "fp32",
+  "offset": "fp32"
+ },
+ "constexprs": {
+  "casting_mode": 0,
+  "BLOCK_SIZE": 256
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}

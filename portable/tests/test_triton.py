@@ -58,9 +58,10 @@ class Reader(unittest.TestCase):
         self.assertEqual(ttir.strip_locations('a loc(callsite(#loc1 at #loc2)) b\n#loc1 = loc("x":1:2)'), 'a b')
 
     def test_corpus_functions(self):
+        from frontends.triton import corpora
         for name in corpus_kernels():
-            f = ttir.parse((BUILD/f'{name}.ttir').read_text())
-            self.assertEqual(f.name, name)
+            f = ttir.parse(corpora.ttir(name))
+            self.assertEqual(f.name, corpora.specs(corpora.corpus_of(name))[name].get('function', name).split(':')[-1])
             self.assertTrue(f.body.ops)
         loop = next(o for o in ttir.parse((BUILD/'layer_norm_kernel.ttir').read_text()).body.ops if o.name == 'scf.for')
         self.assertTrue(loop.regions[0].ops)

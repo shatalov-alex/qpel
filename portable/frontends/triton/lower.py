@@ -76,7 +76,10 @@ LIBDEVICE = {f'__nv_{name}f': f'math.{qpel}' for name, qpel in (
     ('floor', 'floor'), ('ceil', 'ceil'), ('trunc', 'trunc'), ('round', 'round'), ('fmax', 'fmax'), ('fmin', 'fmin'),
     ('copysign', 'copysign'))}
 LIBDEVICE['__nv_fmaf'] = 'qpel.fma'
-LIBDEVICE_BOUNDED = {'__nv_erff', '__nv_tanhf', '__nv_expf', '__nv_exp2f', '__nv_logf', '__nv_log2f', '__nv_log1pf',
+# rsqrt: libdevice's is rsqrt.approx (2 ulp); Triton's interpreter computes 1 / sqrt(x), and so does qpel
+# (two correctly rounded operations, within MATH_ULPS of the exact value): bounded, like the other approximations.
+LIBDEVICE['__nv_rsqrtf'] = lambda a: f'1.0f / math.sqrt({a})'
+LIBDEVICE_BOUNDED = {'__nv_rsqrtf', '__nv_erff', '__nv_tanhf', '__nv_expf', '__nv_exp2f', '__nv_logf', '__nv_log2f', '__nv_log1pf',
                      '__nv_expm1f', '__nv_sinf', '__nv_cosf'}
 
 
@@ -154,6 +157,8 @@ class Lowering:
         self.function = function
         self.T = num_warps * 32
         self.module = module or function.name
+        # qpel reserves identifiers starting with _ (Liger's kernels are _rms_norm_forward_kernel and the like)
+        self.kernel_name = function.name.lstrip('_') or 'kernel'
         self.values = {}
         self.taken = set()
         self.shared = []  # (name, type text) declared at the kernel's top
@@ -356,7 +361,9 @@ class Lowering:
                 raise Unsupported(op, f'libdevice {symbol or "function"} has no qpel equivalent')
             self.bounded |= symbol in LIBDEVICE_BOUNDED
             self.fused |= symbol == '__nv_fmaf'
-            return self.elementwise(op, combine=lambda *a, f=LIBDEVICE[symbol]: f'{f}({", ".join(a)})')
+            self.divides |= symbol == '__nv_rsqrtf'
+            f = LIBDEVICE[symbol]
+            return self.elementwise(op, combine=f if callable(f) else lambda *a, f=f: f'{f}({", ".join(a)})')
         if name in INT_BINARY or name in FLOAT_BINARY or name in CALLS or name in CASTS or name in EXACT_OPS or \
                 name in ('arith.cmpi', 'arith.cmpf', 'arith.select', 'arith.negf'):
             if name in MATH_BOUNDED:
@@ -405,7 +412,10 @@ class Lowering:
         base, offset = (self.value(x) for x in op.operands)
         t = self.result_type(op)
         if not t.is_tensor:
-            text = f'({base.text} + {offset.text})' if base.text != '0' else offset.text
+            off = offset.text
+            if offset.type.element == 'i64':  # (Liger: program_id(0).to(tl.int64) * stride) an element offset of
+                off = f'cast<i32>({off})'      # a buffer of at most INT32_MAX elements (the hosts' limit): exact
+            text = f'({base.text} + {off})' if base.text != '0' else off
             name = self.fresh(op.results[0])
             self.emit(f'let {name}: i32 = {text};')
             return self.define(op, Scalar(t, name, buffer=base.buffer))
@@ -808,9 +818,11 @@ class Lowering:
         for arg, var, _ in variables:
             self.values[arg] = var
         index = self.fresh(iv)
-        bounds = [self.value(x).text for x in (lb, ub, step)]
-        self.open(f'for (let {index}: i32 = {bounds[0]}; {index} < {bounds[1]}; {index} = {index} + {bounds[2]})')
-        self.values[iv] = Scalar(Type((), 'i32'), index)
+        bound_values = [self.value(x) for x in (lb, ub, step)]
+        bounds = [v.text for v in bound_values]
+        element = bound_values[0].type.element  # i32, or i64 (Liger: range(row_start, row_end) of int64 rows)
+        self.open(f'for (let {index}: {scalar_term(element)} = {bounds[0]}; {index} < {bounds[1]}; {index} = {index} + {bounds[2]})')
+        self.values[iv] = Scalar(Type((), element), index)
         body = op.regions[0].ops
         self.block(body)
         yielded = next((o for o in body if o.name == 'scf.yield'), None)
@@ -850,7 +862,7 @@ class Lowering:
                 params.append(f'{name}: buffer<{scalar_term(t.pointee)}, {access}> @{i}')
             else:
                 params.append(f'{name}: {scalar_term(t.element)} @{i}')
-        head = [f'module {self.module} {{', f'  kernel {self.function.name}({", ".join(params)}) groups {{']
+        head = [f'module {self.module} {{', f'  kernel {self.kernel_name}({", ".join(params)}) groups {{']
         head += [f'    let {name}: {t};' for name, t in self.shared]
         body = ['  ' + line for line in self.lines]
         return '\n'.join(head + body + ['  }', '}']) + '\n'
@@ -870,7 +882,7 @@ class Lowering:
             else:
                 lines.append(f'  value {name}: {scalar_term(t.element)};')
             binds.append(f'{name} = {name}')
-        lines.append(f'  dispatch {self.function.name} over programs block ({self.T}, 1, 1) groups ("W", "H", "N") '
+        lines.append(f'  dispatch {self.kernel_name} over programs block ({self.T}, 1, 1) groups ("W", "H", "N") '
                      f'({", ".join(binds)});')
         lines.append('}')
         return '\n'.join(lines) + '\n'

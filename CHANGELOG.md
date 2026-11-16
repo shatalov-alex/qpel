@@ -7,6 +7,10 @@ older programs keep building.
 ## [Unreleased] — Phase 5
 
 ### Added
+- **Liger-Kernel as a Triton corpus** (`portable/corpus/liger`, BSD-2, vendored unmodified):
+  fifteen kernels pass Triton's interpreter against qpel's CUDA (CPU simulator) and Metal (Apple
+  GPU), and Liger's own PTX on GPGPU-Sim. The Triton frontend reads libdevice `rsqrt`, int64
+  program ids, offsets and loop indices; Triton corpora are listed in `frontends/triton/corpora.py`.
 - **Subgroup operations (IR version 5):** `qpel.subgroup_lane|index|size`; `qpel.shuffle`,
   `shuffle_xor`, `shuffle_down` and `shuffle_up`; and `qpel.subgroup_add|min|max|and|or|xor`.
   Reductions use one fixed butterfly order, so float sums have the same bits on every backend.

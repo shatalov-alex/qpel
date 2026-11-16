@@ -1,0 +1,23 @@
+{
+ "kernel": "liger_softmax_single_block_forward",
+ "function": "liger_kernel.ops.softmax:_softmax_single_block_forward_kernel",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 16,
+ "ptx_name": "_softmax_single_block_forward_kernel",
+ "signature": {
+  "Y_ptr": "*fp32",
+  "Y_row_stride": "i32",
+  "X_ptr": "*fp32",
+  "X_row_stride": "i32",
+  "n_cols": "i32"
+ },
+ "constexprs": {
+  "BLOCK_SIZE": 256
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}

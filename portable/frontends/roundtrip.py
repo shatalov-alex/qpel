@@ -33,9 +33,9 @@ CORPUS = HERE/'corpus'  # unmodified real sources; entries with a fixture must i
 
 
 def triton_kernels():
-    """The kernels of corpus/triton (frontends/triton/README.md)."""
-    listed = CORPUS/'triton/kernels.json'
-    return list(json.loads(listed.read_text())) if listed.exists() else []
+    """The kernels of the Triton corpora, corpus/triton and corpus/liger (frontends/triton/corpora.py)."""
+    from frontends.triton import corpora
+    return corpora.kernels()
 
 
 def corpus_entries():
@@ -247,7 +247,7 @@ def rows(fixtures=None):
         for port in entry.get('ports', ()):  # hand ports to the other language must give the same program
             path = HERE/port
             yield f'{"cuda" if path.suffix == ".cu" else "metal"} -> qpel', port, check(fixture(entry['fixture']), path, plan, validate)
-    for name in triton_kernels():  # Triton: the committed TTIR of corpus/triton lowers to its fixture
+    for name in triton_kernels():  # Triton: the committed TTIR of each corpus kernel lowers to its fixture
         try:
             from frontends.triton.__main__ import corpus_program
             lowered = corpus_program(name)
@@ -255,7 +255,8 @@ def rows(fixtures=None):
             error = difference(fixture(f'triton_{name}'), lowered)
         except Exception as failure:  # noqa: BLE001 - the row's failure
             error = f'{type(failure).__name__}: {failure}'
-        yield 'triton -> qpel', f'corpus/triton/build/{name}.ttir', error
+        from frontends.triton import corpora
+        yield 'triton -> qpel', str((corpora.build(name)/f'{name}.ttir').relative_to(HERE)), error
     for entry, program in corpus_programs():
         source = CORPUS/entry['source']
         include = [CORPUS/folder for folder in entry.get('include', ())]

@@ -1,0 +1,24 @@
+{
+ "kernel": "liger_swiglu_forward",
+ "function": "liger_kernel.ops.swiglu:_swiglu_forward_kernel",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 0,
+ "ptx_name": "_swiglu_forward_kernel",
+ "signature": {
+  "a_ptr": "*fp32",
+  "b_ptr": "*fp32",
+  "c_ptr": "*fp32",
+  "stride": "i32",
+  "gate_multiplier": "fp32"
+ },
+ "constexprs": {
+  "n_cols": 200,
+  "BLOCK_SIZE": 256
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}
