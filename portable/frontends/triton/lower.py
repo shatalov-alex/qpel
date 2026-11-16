@@ -356,6 +356,10 @@ class Lowering:
             return self.early_return(op)
         if name == 'scf.while':
             return self.while_loop(op)
+        if name == 'tt.join':
+            return self.join(op)
+        if name == 'tt.split':
+            return self.split(op)
         if name == 'tt.trans':
             return self.transpose(op)
         if name == 'tt.atomic_rmw':
@@ -693,49 +697,97 @@ class Lowering:
             return self.element(s, source, False)
         self.define(op, Lazy(t, gen, buffer=src.buffer))
 
+    def join(self, op):
+        """tt.join a, b: a new last axis of 2, element [..., 0] from a and [..., 1] from b."""
+        a, b = (self.value(x) for x in op.operands)
+        a, b = (self.materialize(v, op.results[0]) if isinstance(v, Data) else v for v in (a, b))
+        t = self.result_type(op)
+
+        def gen(c, own, a=a, b=b):
+            inner = c[:-1]
+            return f'(({c[-1]}) == 0 ? {self.element(a, inner, False)} : {self.element(b, inner, False)})'
+        self.define(op, Lazy(t, gen, buffer=a.buffer))
+
+    def split(self, op):
+        """tt.split x: x's last axis (of 2) split into its two halves, [..., 0] and [..., 1]."""
+        x = self.value(op.operands[0])
+        if isinstance(x, Data):
+            x = self.materialize(x, op.results[0])
+        t = self.result_type(op)
+        for half, result in enumerate(op.results):
+            self.values[result] = Lazy(t, lambda c, own, x=x, half=half: self.element(x, list(c) + [str(half)], False),
+                                       buffer=x.buffer)
+
     def while_loop(self, op):
         """scf.while: `while (true) { before; results = forwarded; if (!condition) break; after }`, the
         before region ending in scf.condition (its value, and what it forwards to the after region
-        and, on exit, to the results), the after region's yield giving the next iteration's values."""
+        and, on exit, to the results), the after region's yield giving the next iteration's values.
+        Scalars and tensors are carried (a tensor in per-thread slots, as scf.for carries it). When the
+        loop carries tensors or reduces, its test is Triton's scalar, the same in every thread but not
+        provably so (a reduction's result is read from shared memory), and the loop holds barriers: the
+        test is written `qpel.barrier_count(test) == 0`, which every thread computes alike."""
         header = re.match(r'\s*\((.*?)\)\s*:', op.text)
         inits = re.findall(r'(%[\w$.#-]+)\s*=\s*(%[\w$.#-]+)', header.group(1)) if header else []
         before, after = op.regions
-        variables = []
+        variables = []  # (arg, Scalar or Data)
         for arg, init in inits:
             v = self.value(init)
             if v.type.is_tensor:
-                raise Unsupported(op, 'a while loop carrying tensors')
-            name = self.fresh(arg)
-            self.emit(f'let {name}: {scalar_term(v.type.element)} = {v.text};')
-            self.values[arg] = Scalar(v.type, name, buffer=v.buffer)
-            variables.append(name)
+                name = self.new_data(v.type, arg)
+                self.owned(v.type, lambda c, v=v, name=name: self.emit(f'{name}[{self.k}] = {self.element(v, c, True)};'))
+                var = Data(v.type, name, buffer=v.buffer)
+            else:
+                name = self.fresh(arg)
+                self.emit(f'let {name}: {scalar_term(v.type.element)} = {v.text};')
+                var = Scalar(v.type, name, buffer=v.buffer)
+            self.values[arg] = var
+            variables.append((arg, var))
+        uniform = any(isinstance(var, Data) for _, var in variables) or \
+            any(o.name in ('tt.reduce', 'tt.scan', 'tt.dot') for o in self.walk_ops(before.ops + after.ops))
         condition = next(o for o in before.ops if o.name == 'scf.condition')
         self.open('while (true)')
         self.block(before.ops)
         test = self.value(condition.operands[0]).text
         forwarded = [self.value(x) for x in condition.operands[1:]]
-        self.open(f'if (!{test})')
+        self.open(f'if (qpel.barrier_count({test}) == 0)' if uniform else f'if (!{test})')
         self.emit('break;')
         self.close()
         for (arg, t), v in zip(after.arguments, forwarded):
-            self.values[arg] = Scalar(t, v.text, buffer=v.buffer)
+            self.values[arg] = v if isinstance(v, (Data, Lazy)) else Scalar(t, v.text, buffer=v.buffer)
         self.block(after.ops)
         yielded = next((o for o in after.ops if o.name == 'scf.yield'), None)
-        new = [self.value(x).text for x in yielded.operands] if yielded else []
+        new = [self.value(x) for x in yielded.operands] if yielded else []
         temps = []
-        for name, text in zip(variables, new):
-            tmp = self.fresh(name + '_next')
-            term = scalar_term(self.values[inits[variables.index(name)][0]].type.element)
-            self.emit(f'let {tmp}: {term} = {text};')
+        for (arg, var), v in zip(variables, new):  # yields are computed before any is assigned
+            if isinstance(var, Data):
+                if isinstance(v, Data) and v.name == var.name:
+                    temps.append(None)
+                    continue
+                tmp = self.new_data(var.type, arg + '_next')
+                self.owned(var.type, lambda c, v=v, tmp=tmp: self.emit(f'{tmp}[{self.k}] = {self.element(v, c, True)};'))
+            else:
+                tmp = self.fresh(var.text + '_next')
+                self.emit(f'let {tmp}: {scalar_term(var.type.element)} = {v.text};')
             temps.append(tmp)
-        for name, tmp in zip(variables, temps):
-            self.emit(f'{name} = {tmp};')
+        for (arg, var), tmp in zip(variables, temps):
+            if tmp is None:
+                continue
+            if isinstance(var, Data):
+                self.owned(var.type, lambda c, var=var, tmp=tmp: self.emit(f'{var.name}[{self.k}] = {tmp}[{self.k}];'))
+            else:
+                self.emit(f'{var.text} = {tmp};')
         self.close()
         # on exit the results are what the condition forwarded: the before region reads only the
         # loop variables, so it is computed once more after the loop, outside it
         self.block([o for o in before.ops if o.name != 'scf.condition'])
         for result, v in zip(op.results, [self.value(x) for x in condition.operands[1:]]):
-            self.values[result] = Scalar(v.type, v.text, buffer=v.buffer)
+            self.values[result] = v if isinstance(v, (Data, Lazy)) else Scalar(v.type, v.text, buffer=v.buffer)
+
+    def walk_ops(self, ops):
+        for o in ops:
+            yield o
+            for region in o.regions:
+                yield from self.walk_ops(region.ops)
 
     def atomic(self, op):
         """tt.atomic_rmw (relaxed): each owned element of the mask applies the operation to its address."""

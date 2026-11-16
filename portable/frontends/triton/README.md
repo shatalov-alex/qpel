@@ -60,7 +60,7 @@ Supported: `tt.get_program_id`, `tt.get_num_programs`, `tt.make_range`, `tt.spla
 and any number of operands (argmax carries values and indices), `tt.dot`, `tt.atomic_rmw` (relaxed
 add, min, max, and, or, xor, exchange on 32-bit integers; add and exchange on float32), `scf.for`
 (with scalars, tensors and tensors of pointers carried), `scf.if` on a scalar (results yielded by
-both branches), `scf.while` carrying scalars (`while (true)` with the condition's `break`),
+both branches), `scf.while` carrying scalars and tensors (`while (true)` with the condition's `break`; a loop that carries tensors or reduces tests `qpel.barrier_count(c) == 0`, since its scalar condition is the same in every thread but not provably so), `tt.join` and `tt.split` (a last axis of 2),
 `tt.trans`, an early `return` under an `if` on a scalar (Triton's `cf.cond_br` to a block ending in `tt.return`: `if (c) { ...; return; }`), `tl.debug_barrier()`, libdevice calls (`triton.language.extra.libdevice`, `tt.extern_elementwise`) with a
 qpel equivalent (erf, tanh, exp, log, log1p, expm1, sin, cos, sqrt, floor, ceil, fma and others),
 exact operations (`tl.maximum`/`tl.minimum` with `propagate_nan`, `tl.clamp`,

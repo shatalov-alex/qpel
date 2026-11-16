@@ -280,3 +280,36 @@ def gelu_libdevice_kernel(x_ptr, erf_ptr, tanh_ptr, n, BLOCK: tl.constexpr):
     approx = 0.5 * x * (1.0 + libdevice.tanh(inner))
     tl.store(erf_ptr + offs, exact, mask=mask)
     tl.store(tanh_ptr + offs, approx, mask=mask)
+
+
+@triton.jit
+def newton_sqrt_kernel(x_ptr, out_ptr, iterations_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
+    """A while loop carrying a tensor: Newton steps for sqrt until the block's largest relative error
+    is small (at most 50 steps)."""
+    pid = tl.program_id(0)
+    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < n_elements
+    a = tl.load(x_ptr + offsets, mask=mask, other=1.0)
+    y = tl.where(a > 1.0, a, 1.0)
+    err = tl.max(tl.abs(y * y - a) / a, axis=0)
+    steps = 0
+    while (err > 1e-6) & (steps < 50):
+        y = 0.5 * (y + a / y)
+        err = tl.max(tl.abs(y * y - a) / a, axis=0)
+        steps += 1
+    tl.store(out_ptr + offsets, y, mask=mask)
+    tl.store(iterations_ptr + pid, steps)
+
+
+@triton.jit
+def complex_mul_kernel(a_ptr, b_ptr, out_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
+    """Interleaved complex numbers (re, im pairs): tl.split of a loaded [BLOCK, 2] tile, tl.join of the
+    product's parts."""
+    pid = tl.program_id(0)
+    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    pair = 2 * offsets[:, None] + tl.arange(0, 2)[None, :]
+    mask = (offsets < n_elements)[:, None] & (tl.arange(0, 2)[None, :] < 2)
+    ar, ai = tl.split(tl.load(a_ptr + pair, mask=mask, other=0.0))
+    br, bi = tl.split(tl.load(b_ptr + pair, mask=mask, other=0.0))
+    product = tl.join(ar * br - ai * bi, ar * bi + ai * br)
+    tl.store(out_ptr + pair, product, mask=mask)

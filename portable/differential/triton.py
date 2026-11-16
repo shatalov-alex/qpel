@@ -296,7 +296,32 @@ def gelu_oracle(case):
 ORACLES = {'gelu_libdevice_kernel': gelu_oracle}
 
 
-CASES = {'gelu_libdevice_kernel': gelu_cases, 'precise_ops_kernel': precise_ops_cases, 'block_ptr_matmul_kernel': block_ptr_matmul_cases, 'transpose_kernel': transpose_cases,
+def newton_sqrt_cases(rng):
+    """Positive inputs over several magnitudes; a program stops when its block's largest relative
+    error is small, so programs take different numbers of steps (iterations_ptr), at most 50."""
+    out = []
+    for n, scale in ((1, 1.0), (128, 1.0), (300, 1e4), (257, 1e-3)):
+        x = (rng.uniform(0.01, 10.0, n) * scale).astype(np.float32)
+        programs = -(-n // 128)
+        out.append(Case({'programs': (programs, 1, 1), 'x_ptr_size': (n, 1, 1), 'out_ptr_size': (n, 1, 1),
+                         'iterations_ptr_size': (programs, 1, 1)},
+                        {'x_ptr': x, 'out_ptr': np.zeros(n, np.float32), 'iterations_ptr': np.zeros(programs, np.int32)},
+                        {'n_elements': n}, f'n={n} scale={scale}'))
+    return out
+
+
+def complex_mul_cases(rng):
+    """n complex numbers as (re, im) pairs, NaN and infinities among them."""
+    out = []
+    for n in (1, 64, 100, 200):
+        a, b = specials(rng, 2 * n), rng.standard_normal(2 * n).astype(np.float32)
+        out.append(Case({'programs': (-(-n // 64), 1, 1), 'a_ptr_size': (2 * n, 1, 1), 'b_ptr_size': (2 * n, 1, 1),
+                         'out_ptr_size': (2 * n, 1, 1)},
+                        {'a_ptr': a, 'b_ptr': b, 'out_ptr': np.zeros(2 * n, np.float32)}, {'n_elements': n}, f'n={n}'))
+    return out
+
+
+CASES = {'newton_sqrt_kernel': newton_sqrt_cases, 'complex_mul_kernel': complex_mul_cases, 'gelu_libdevice_kernel': gelu_cases, 'precise_ops_kernel': precise_ops_cases, 'block_ptr_matmul_kernel': block_ptr_matmul_cases, 'transpose_kernel': transpose_cases,
          'collatz_kernel': collatz_cases, 'attention_fwd_kernel': attention_cases, 'argmax_kernel': argmax_cases, 'cumsum_kernel': cumsum_cases, 'clip_rows_kernel': clip_rows_cases,
          'histogram_kernel': histogram_cases, 'matmul_kernel': matmul_cases, 'row_stats_kernel': row_stats_cases, 'add_kernel': add_cases, 'scale_shift_kernel': scale_shift_cases, 'softmax_kernel': softmax_cases,
          'copy2d_kernel': copy2d_cases, 'layer_norm_kernel': layer_norm_cases}
