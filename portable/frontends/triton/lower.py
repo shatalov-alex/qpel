@@ -273,7 +273,7 @@ class Lowering:
 
     def op(self, op):
         name = op.name
-        if name in ('tt.return', 'scf.yield', 'tt.reduce.return'):
+        if name in ('tt.return', 'scf.yield', 'tt.reduce.return', 'scf.condition'):
             return
         if name == 'arith.constant':
             return self.constant(op)
@@ -309,6 +309,10 @@ class Lowering:
             return self.scan(op)
         if name == 'scf.if':
             return self.branch(op)
+        if name == 'scf.while':
+            return self.while_loop(op)
+        if name == 'tt.trans':
+            return self.transpose(op)
         if name == 'tt.atomic_rmw':
             return self.atomic(op)
         if name in INT_BINARY or name in FLOAT_BINARY or name in CALLS or name in CASTS or \
@@ -601,6 +605,65 @@ class Lowering:
             self.close()
         for result, var in results:
             self.values[result] = var
+
+    def transpose(self, op):
+        """tt.trans {order}: element c of the result is element c[inverse(order)] of the operand."""
+        src = self.value(op.operands[0])
+        order = [int(x) for x in re.search(r'array<i32:\s*([0-9,\s]+)>', op.text).group(1).split(',')]
+        t = self.result_type(op)
+        if isinstance(src, Data):
+            src = self.materialize(src, op.results[0])
+
+        def gen(c, own, s=src, order=order):
+            source = [None] * len(order)
+            for result_axis, source_axis in enumerate(order):
+                source[source_axis] = c[result_axis]
+            return self.element(s, source, False)
+        self.define(op, Lazy(t, gen, buffer=src.buffer))
+
+    def while_loop(self, op):
+        """scf.while: `while (true) { before; results = forwarded; if (!condition) break; after }`, the
+        before region ending in scf.condition (its value, and what it forwards to the after region
+        and, on exit, to the results), the after region's yield giving the next iteration's values."""
+        header = re.match(r'\s*\((.*?)\)\s*:', op.text)
+        inits = re.findall(r'(%[\w$.#-]+)\s*=\s*(%[\w$.#-]+)', header.group(1)) if header else []
+        before, after = op.regions
+        variables = []
+        for arg, init in inits:
+            v = self.value(init)
+            if v.type.is_tensor:
+                raise Unsupported(op, 'a while loop carrying tensors')
+            name = self.fresh(arg)
+            self.emit(f'let {name}: {scalar_term(v.type.element)} = {v.text};')
+            self.values[arg] = Scalar(v.type, name, buffer=v.buffer)
+            variables.append(name)
+        condition = next(o for o in before.ops if o.name == 'scf.condition')
+        self.open('while (true)')
+        self.block(before.ops)
+        test = self.value(condition.operands[0]).text
+        forwarded = [self.value(x) for x in condition.operands[1:]]
+        self.open(f'if (!{test})')
+        self.emit('break;')
+        self.close()
+        for (arg, t), v in zip(after.arguments, forwarded):
+            self.values[arg] = Scalar(t, v.text, buffer=v.buffer)
+        self.block(after.ops)
+        yielded = next((o for o in after.ops if o.name == 'scf.yield'), None)
+        new = [self.value(x).text for x in yielded.operands] if yielded else []
+        temps = []
+        for name, text in zip(variables, new):
+            tmp = self.fresh(name + '_next')
+            term = scalar_term(self.values[inits[variables.index(name)][0]].type.element)
+            self.emit(f'let {tmp}: {term} = {text};')
+            temps.append(tmp)
+        for name, tmp in zip(variables, temps):
+            self.emit(f'{name} = {tmp};')
+        self.close()
+        # on exit the results are what the condition forwarded: the before region reads only the
+        # loop variables, so it is computed once more after the loop, outside it
+        self.block([o for o in before.ops if o.name != 'scf.condition'])
+        for result, v in zip(op.results, [self.value(x) for x in condition.operands[1:]]):
+            self.values[result] = Scalar(v.type, v.text, buffer=v.buffer)
 
     def atomic(self, op):
         """tt.atomic_rmw (relaxed): each owned element of the mask applies the operation to its address."""

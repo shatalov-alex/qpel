@@ -218,7 +218,37 @@ def attention_cases(rng):
     return out
 
 
-CASES = {'attention_fwd_kernel': attention_cases, 'argmax_kernel': argmax_cases, 'cumsum_kernel': cumsum_cases, 'clip_rows_kernel': clip_rows_cases,
+def block_ptr_matmul_cases(rng):
+    """matmul_cases' shapes through block pointers (one program per output tile, no grouping)."""
+    out = []
+    for case in matmul_cases(rng):
+        v = case.values
+        case.shapes['programs'] = (-(-v['M'] // 32), -(-v['N'] // 32), 1)
+        out.append(case)
+    return out
+
+
+def transpose_cases(rng):
+    out = []
+    for m, n in ((1, 1), (32, 32), (33, 70), (100, 17)):
+        out.append(Case({'programs': (-(-m // 32), -(-n // 32), 1), 'x_ptr_size': (m * n, 1, 1), 'y_ptr_size': (m * n, 1, 1)},
+                        {'x_ptr': specials(rng, m * n), 'y_ptr': np.zeros(m * n, np.float32)}, {'M': m, 'N': n}, f'{m}x{n}'))
+    return out
+
+
+def collatz_cases(rng):
+    """Steps of the Collatz map to 1, one program per start value: all end (the map is checked far
+    beyond these values), the longest here after a few hundred steps."""
+    out = []
+    for n in (1, 7, 100):
+        x = np.concatenate([[1, 27, 97, 871], rng.integers(1, 100000, max(0, n - 4))])[:n].astype(np.int32)
+        out.append(Case({'programs': (n, 1, 1), 'x_ptr_size': (n, 1, 1), 'steps_ptr_size': (n, 1, 1)},
+                        {'x_ptr': x, 'steps_ptr': np.zeros(n, np.int32)}, {'n': n}, f'{n} start values'))
+    return out
+
+
+CASES = {'block_ptr_matmul_kernel': block_ptr_matmul_cases, 'transpose_kernel': transpose_cases,
+         'collatz_kernel': collatz_cases, 'attention_fwd_kernel': attention_cases, 'argmax_kernel': argmax_cases, 'cumsum_kernel': cumsum_cases, 'clip_rows_kernel': clip_rows_cases,
          'histogram_kernel': histogram_cases, 'matmul_kernel': matmul_cases, 'row_stats_kernel': row_stats_cases, 'add_kernel': add_cases, 'scale_shift_kernel': scale_shift_cases, 'softmax_kernel': softmax_cases,
          'copy2d_kernel': copy2d_cases, 'layer_norm_kernel': layer_norm_cases}
 

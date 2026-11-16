@@ -197,3 +197,49 @@ def attention_fwd_kernel(Q, K, V, Out, sm_scale, N_CTX, stride_h, stride_m,
         m_i = m_ij
     acc = acc / l_i[:, None]
     tl.store(Out + base + offs_m[:, None] * stride_m + offs_d[None, :], acc.to(tl.float16), mask=offs_m[:, None] < N_CTX)
+
+
+@triton.jit
+def block_ptr_matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, stride_am, stride_ak, stride_bk, stride_bn, stride_cm, stride_cn,
+                            BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr):
+    """C = A @ B with block pointers (tl.make_block_ptr, tl.advance, boundary checks)."""
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+    a_block = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(stride_am, stride_ak), offsets=(pid_m * BLOCK_M, 0),
+                                block_shape=(BLOCK_M, BLOCK_K), order=(1, 0))
+    b_block = tl.make_block_ptr(b_ptr, shape=(K, N), strides=(stride_bk, stride_bn), offsets=(0, pid_n * BLOCK_N),
+                                block_shape=(BLOCK_K, BLOCK_N), order=(1, 0))
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+    for k in range(0, K, BLOCK_K):
+        a = tl.load(a_block, boundary_check=(0, 1), padding_option="zero")
+        b = tl.load(b_block, boundary_check=(0, 1), padding_option="zero")
+        acc = tl.dot(a, b, acc, input_precision="ieee")
+        a_block = tl.advance(a_block, (0, BLOCK_K))
+        b_block = tl.advance(b_block, (BLOCK_K, 0))
+    c_block = tl.make_block_ptr(c_ptr, shape=(M, N), strides=(stride_cm, stride_cn), offsets=(pid_m * BLOCK_M, pid_n * BLOCK_N),
+                                block_shape=(BLOCK_M, BLOCK_N), order=(1, 0))
+    tl.store(c_block, acc, boundary_check=(0, 1))
+
+
+@triton.jit
+def transpose_kernel(x_ptr, y_ptr, M, N, BLOCK: tl.constexpr):
+    """y = x^T through a register transpose (tl.trans)."""
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+    rm = pid_m * BLOCK + tl.arange(0, BLOCK)
+    rn = pid_n * BLOCK + tl.arange(0, BLOCK)
+    tile = tl.load(x_ptr + rm[:, None] * N + rn[None, :], mask=(rm[:, None] < M) & (rn[None, :] < N), other=0.0)
+    tl.store(y_ptr + rn[:, None] * M + rm[None, :], tl.trans(tile), mask=(rn[:, None] < N) & (rm[None, :] < M))
+
+
+@triton.jit
+def collatz_kernel(x_ptr, steps_ptr, n, BLOCK: tl.constexpr):
+    """Per program: steps of the Collatz map for one starting value (a data-dependent while loop on a scalar)."""
+    pid = tl.program_id(0)
+    if pid < n:
+        v = tl.load(x_ptr + pid)
+        steps = 0
+        while v != 1:
+            v = tl.where(v % 2 == 0, v // 2, 3 * v + 1)
+            steps += 1
+        tl.store(steps_ptr + pid, steps)

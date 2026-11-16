@@ -1,0 +1,21 @@
+{
+ "kernel": "transpose_kernel",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 4096,
+ "ptx_name": "transpose_kernel",
+ "signature": {
+  "x_ptr": "*fp32",
+  "y_ptr": "*fp32",
+  "M": "i32",
+  "N": "i32"
+ },
+ "constexprs": {
+  "BLOCK": 32
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}

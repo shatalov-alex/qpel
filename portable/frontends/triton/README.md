@@ -53,7 +53,9 @@ Supported: `tt.get_program_id`, `tt.get_num_programs`, `tt.make_range`, `tt.spla
 and any number of operands (argmax carries values and indices), `tt.dot`, `tt.atomic_rmw` (relaxed
 add, min, max, and, or, xor, exchange on 32-bit integers; add and exchange on float32), `scf.for`
 (with scalars, tensors and tensors of pointers carried), `scf.if` on a scalar (results yielded by
-both branches), `arith` integer and
+both branches), `scf.while` carrying scalars (`while (true)` with the condition's `break`),
+`tt.trans`, block pointers (`tl.make_block_ptr`, `tl.advance`: Triton's own TTIR passes
+rewrite them to pointer tensors with boundary masks, which the lowering reads like any others), `arith` integer and
 float arithmetic, comparisons, `select`, casts, `maxnumf`/`minnumf`/`maxsi`/`minsi`, and the
 `math` functions qpel has (`exp`, `exp2`, `log`, `log2`, `sqrt`, `absf`, `sin`, `cos`, `tanh`,
 `floor`, `ceil`). Anything else is reported by operation and line (`Unsupported`).
@@ -97,7 +99,7 @@ rewritten first (`for_gpgpusim`: the PTX version, `.reqntid`, debug information,
 qualifiers, one-register braces, `.shared::cta`, `atom`'s default order and scope spelled out).
 Triton's NVIDIA code approximates fp32 `/` (`div.full.f32`) and `exp` (`ex2.approx`), so a
 kernel that divides or calls `exp` compares within a few more ulp; the others compare as the
-interpreter rows do. All twelve kernels pass both rows. Getting there found a GPGPU-Sim bug:
+interpreter rows do. All fifteen kernels pass both rows. Getting there found a GPGPU-Sim bug:
 `setp.ne.b32` compared bits above the register's width, and Triton's matmul loop never ended
 (`gpgpusim/qpel-setp.patch`, image `qpel14`).
 
@@ -107,7 +109,9 @@ interpreter rows do. All twelve kernels pass both rows. Getting there found a GP
 fused softmax, layer norm, matrix multiplication with the grouped program order), plus an
 element-wise select with scalar arguments, a 2D strided transpose-copy, per-row statistics of a
 2D tile (reductions along axis 1), a row argmax (`return_indices`), a block cumsum, a row clip
-under `if`, an integer histogram with atomics, and the forward pass of fused attention (the
-tutorial's online softmax over key blocks with two dots per block, float16 inputs and output). Each is a fixture (`triton_<kernel>`), so it is part of the round-trip matrix
+under `if`, an integer histogram with atomics, the forward pass of fused attention (the
+tutorial's online softmax over key blocks with two dots per block, float16 inputs and output),
+a matmul through block pointers, a register transpose (`tl.trans`) and a data-dependent `while`
+(Collatz steps). Each is a fixture (`triton_<kernel>`), so it is part of the round-trip matrix
 (the TTIR lowers to exactly the fixture, and qpel's own CUDA and Metal import back to it) and of
 the nvcc check.

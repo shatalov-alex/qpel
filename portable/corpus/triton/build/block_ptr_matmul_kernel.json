@@ -1,0 +1,31 @@
+{
+ "kernel": "block_ptr_matmul_kernel",
+ "triton": "3.8.0",
+ "num_warps": 4,
+ "shared": 4096,
+ "ptx_name": "block_ptr_matmul_kernel",
+ "signature": {
+  "a_ptr": "*fp32",
+  "b_ptr": "*fp32",
+  "c_ptr": "*fp32",
+  "M": "i32",
+  "N": "i32",
+  "K": "i32",
+  "stride_am": "i32",
+  "stride_ak": "i32",
+  "stride_bk": "i32",
+  "stride_bn": "i32",
+  "stride_cm": "i32",
+  "stride_cn": "i32"
+ },
+ "constexprs": {
+  "BLOCK_M": 32,
+  "BLOCK_N": 32,
+  "BLOCK_K": 16
+ },
+ "options": {
+  "num_warps": 4,
+  "enable_fp_fusion": false
+ },
+ "target": "cuda sm_75"
+}

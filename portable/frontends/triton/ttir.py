@@ -234,18 +234,22 @@ class Reader:
                     results.append(r)
             body = m.group(2)
         generic = re.match(r'"([a-z_.]+)"(.*)$', body)
-        name, rest = (generic.group(1), generic.group(2)) if generic else body.split(' ', 1) if ' ' in body else (body, '')
+        if generic:
+            name, rest = generic.group(1), generic.group(2)
+        else:  # a name ends at a space or an opening parenthesis (scf.condition(%c) ...)
+            named = re.match(r'([A-Za-z_][\w.]*)(.*)$', body)
+            name, rest = (named.group(1), named.group(2)) if named else (body, '')
         regions = []
         if rest.rstrip().endswith('({'):  # a generic op with a region: "tt.reduce"(%x) <{...}> ({ ^bb0(...): ... }) : ...
             regions.append(self.block())
             close = self.next()  # }) : (types) -> types
             rest = rest.rstrip()[:-2] + close[2:]
-        elif rest.rstrip().endswith('{'):  # scf.for ... {, scf.if ... {
+        elif rest.rstrip().endswith('{'):  # scf.for ... {, scf.if ... { } else { }, scf.while ... { } do { }
             rest = rest.rstrip()[:-1].rstrip()
-            regions.append(Block([], self.ops()))
+            regions.append(self.region())
             close = self.next()
-            while close.startswith('} else {'):
-                regions.append(Block([], self.ops()))
+            while close.startswith('} else {') or close.startswith('} do {'):
+                regions.append(self.region())
                 close = self.next()
             if close != '}':
                 rest += ' ' + close[1:].strip()
@@ -253,6 +257,18 @@ class Reader:
         operand_types, result_types = types_of(types_text) if types_text else ([], None)
         operands = re.findall(NAME, re.sub(r'\{[^{}]*\}', '', before))
         return Op(name, results, operands, rest, operand_types, result_types, regions, number)
+
+    def region(self):
+        """A region's block, with its arguments when it starts with a block header (`^bb0(...):`)."""
+        if self.peek() is not None and self.peek().startswith('^bb'):
+            header = self.next()
+            m = re.match(r'\^bb[0-9]+\((.*)\):$', header)
+            arguments = []
+            for part in split_top(m.group(1)) if m else []:
+                name, _, t = part.partition(':')
+                arguments.append((name.strip(), parse_type(t)))
+            return Block(arguments, self.ops())
+        return Block([], self.ops())
 
     def block(self):
         header = self.next()
