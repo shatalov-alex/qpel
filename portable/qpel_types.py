@@ -41,8 +41,9 @@ LEGACY = {'VoidType': 'void', 'BoolType': 'bool', 'U8Type': 'u8', 'U32Type': 'u3
           'ReadOnlyF16BufferType': 'buffer<f16, read>', 'F16BufferType': 'buffer<f16, write>'}
 BUFFER = re.compile(r'buffer<(\w+), (read|write|atomic)>')
 # IR version 4: a fixed-size array of scalars, for thread-private local variables only; IR version 11:
-# of vectors too (`array<vec<f32, 2>, 4>`, CUB items of a pair type, mamba's scan).
-ARRAY = re.compile(r'array<(\w+|vec<\w+, [234]>), ([1-9][0-9]{0,3})>')
+# of vectors too (`array<vec<f32, 2>, 4>`, CUB items of a pair type, mamba's scan); IR version 14: of
+# matrices (`array<matrix<f32, 8, 8>, 8>`, llama.cpp's kernel_mul_mm), indexed the same by every lane.
+ARRAY = re.compile(r'array<(\w+|vec<\w+, [234]>|matrix<(?:f32|f16), 8, 8>), ([1-9][0-9]{0,3})>')
 MAX_ARRAY = 1024
 # IR version 4: a small vector value (CUDA's int4, uint2, float3; Metal's vectors), copied whole,
 # passed to and returned from functions; its elements are read and written as .x .y .z .w.
@@ -200,8 +201,8 @@ def is_valid(t):
         return True
     m = ARRAY.fullmatch(t)
     if m:
-        return (m.group(1) in SCALAR_TERMS or is_valid(m.group(1)) and is_vector(m.group(1))) and \
-            1 <= int(m.group(2)) <= MAX_ARRAY  # (vectors: IR version 11)
+        return (m.group(1) in SCALAR_TERMS or is_valid(m.group(1)) and (is_vector(m.group(1)) or is_matrix(m.group(1)))) and \
+            1 <= int(m.group(2)) <= MAX_ARRAY  # (vectors: IR version 11; matrices: IR version 14)
     m = VECTOR.fullmatch(t)
     if m:
         return m.group(1) in VECTOR_ELEMENTS
@@ -773,6 +774,8 @@ class TypeChecker:
                 t, a = self.declared(param), param['attributes']
                 self.require(param, is_valid(t) and t != 'void', 'PARAM_TYPE', 'Unsupported parameter type')
                 self.require(param, not is_struct(t) or t[len('struct '):] in self.structs, 'PARAM_TYPE', 'Unknown struct ' + t)
+                self.require(param, not is_matrix(t) and not (is_array(t) and is_matrix(array_element(t))), 'PARAM_TYPE',
+                             'A matrix, or an array of them, is a local of the function that uses it, not a parameter')
                 if kernel:
                     self.require(param, (is_buffer(t) or t in VALUE_TERMS or t == 'shape3' or is_struct(t)) and a.get('isBuffer', False), 'KERNEL_ABI', 'Kernel parameter must be a bound buffer, shape, struct, or integer/f32 value')
                     binding = a.get('binding', 0)

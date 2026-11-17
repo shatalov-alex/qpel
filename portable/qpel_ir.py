@@ -20,7 +20,7 @@ TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType','StructType','ArrayType','Vect
 KINDS=TYPE_KINDS|set('MatrixFill MatrixLoad MatrixStore MatrixMma ConstantDecl ArrayValue VectorValue Barrier BarrierCount View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange AtomicMax AtomicAnd AtomicOr AtomicXor AtomicExchange Bitcast SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce BufferPresent Pipeline Resource Dispatch Binding'.split())
 COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage','groups','math_exact','math_bounded','subgroups','atomics_f32','atomics_u64','matrix'}
 PROFILES={'metal':COMMON_FEATURES,'cuda':COMMON_FEATURES}
-SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3',4:'qpel-portable-core-v4',5:'qpel-portable-core-v5',6:'qpel-portable-core-v6',7:'qpel-portable-core-v7',8:'qpel-portable-core-v8',9:'qpel-portable-core-v9',10:'qpel-portable-core-v10',11:'qpel-portable-core-v11',12:'qpel-portable-core-v12',13:'qpel-portable-core-v13'}
+SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3',4:'qpel-portable-core-v4',5:'qpel-portable-core-v5',6:'qpel-portable-core-v6',7:'qpel-portable-core-v7',8:'qpel-portable-core-v8',9:'qpel-portable-core-v9',10:'qpel-portable-core-v10',11:'qpel-portable-core-v11',12:'qpel-portable-core-v12',13:'qpel-portable-core-v13',14:'qpel-portable-core-v14'}
 # Version 2 adds else, for/do/break/continue, signed 32-bit integers and their atomics,
 # shifts, ~, conversion to u8, scalar arguments and 2D/3D kernels.
 V2_KINDS={'Grid3D','ThreadIndex','For','DoWhile','Break','Continue','I32Type','ReadOnlyI32BufferType','I32BufferType','AtomicI32BufferType','I32Literal','I32Cast','U32Cast','U8Cast'}
@@ -157,9 +157,14 @@ def version_13_features(nodes):
     return {'matrix' for n in nodes if n['kind'] in ('MatrixType','MatrixFill','MatrixLoad','MatrixStore','MatrixMma')}
 
 
+def version_14_features(nodes):
+    """Version 14: arrays of matrices (llama.cpp's simdgroup_float8x8 mc[8])."""
+    return {'array of matrices' for n in nodes if n['kind']=='ArrayType' and is_matrix(n['attributes'].get('element',''))}
+
+
 def minimum_version(program):
     nodes=program['nodes']
-    return 13 if version_13_features(nodes) else 12 if version_12_features(nodes) else 11 if version_11_features(nodes) else 10 if version_10_features(nodes) else 9 if version_9_features(nodes) else 8 if version_8_features(nodes) else 7 if version_7_features(nodes) else 6 if version_6_features(nodes) else 5 if version_5_features(nodes) else 4 if version_4_features(nodes) else 3 if version_3_features(nodes) else 2 if version_2_features(nodes) else 1
+    return 14 if version_14_features(nodes) else 13 if version_13_features(nodes) else 12 if version_12_features(nodes) else 11 if version_11_features(nodes) else 10 if version_10_features(nodes) else 9 if version_9_features(nodes) else 8 if version_8_features(nodes) else 7 if version_7_features(nodes) else 6 if version_6_features(nodes) else 5 if version_5_features(nodes) else 4 if version_4_features(nodes) else 3 if version_3_features(nodes) else 2 if version_2_features(nodes) else 1
 
 
 def validate(program, backend=None):
@@ -182,6 +187,8 @@ def validate(program, backend=None):
         raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_8_features(program['nodes'])))+'; declare version 8')
     if program['version']<10 and version_10_features(program['nodes']):
         raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_10_features(program['nodes'])))+'; declare version 10')
+    if program['version']<14 and version_14_features(program['nodes']):
+        raise ValueError(f"IR version {program['version']} cannot use: array of matrices; declare version 14")
     if program['version']<13 and version_13_features(program['nodes']):
         raise ValueError(f"IR version {program['version']} cannot use: matrix; declare version 13")
     if program['version']<12 and version_12_features(program['nodes']):
@@ -501,7 +508,8 @@ class Lowering:
         if kinds&(V6_KINDS-{'Bitcast'}) or any(is_buffer(t) and access(t)=='atomic' and element(t) not in ('u32','i32') for t in terms):found.add('atomics')
         if kinds&V5_KINDS:found.add('subgroups')
         if kinds&{'MatrixFill','MatrixLoad','MatrixStore','MatrixMma'}:found.update({'matrix','subgroups'})
-        if any(n['kind'] in ('MatrixType','MatrixFill') and n['attributes'].get('element')=='f16' for n in self.program['nodes']):
+        if any(n['kind'] in ('MatrixType','MatrixFill') and n['attributes'].get('element')=='f16' for n in self.program['nodes']) \
+                or any(is_matrix(t) and matrix_element(t)=='f16' for t in terms):
             found.add('float16_storage')  # an f16 matrix holds __half on CUDA (backends/cuda.h)
         for n in nodes:
             if n['kind']=='Parameter' and n['attributes'].get('isBuffer'):

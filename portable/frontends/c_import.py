@@ -1368,6 +1368,9 @@ class Importer:
             if builtin in SUBGROUP_BUILTINS:
                 self.scope[p['id']] = ('subgroup-builtin', SUBGROUP_BUILTINS[builtin], scalar_of(p))
                 continue
+            if builtin == 'MetalThreadIndexGroupAttr' and self.groups:  # thread_index_in_threadgroup
+                self.scope[p['id']] = ('local-linear', scalar_of(p))
+                continue
             if builtin == 'grid':
                 vector = is_position_vector(p)
                 self.scope[p['id']] = ('position',) if vector else ('grid', 'x')
@@ -1908,6 +1911,14 @@ class Importer:
             if node['inner'][0]['value'] == 'true':
                 return self.read_statement(node['inner'][1])
             return self.read_statement(node['inner'][-1]) if node.get('hasElse') else []
+        if kind == 'CallExpr' and self.callee(node) == 'simdgroup_barrier' and len(node['inner']) == 2 and \
+                [decl_name(x) for x in walk(node['inner'][1]) if x.get('kind') == 'DeclRefExpr'] == ['mem_none']:
+            # waits for the simdgroup's lanes and orders no memory: qpel's matrix operations already take all
+            # 32 lanes together, and it makes no write visible, so it changes no result
+            message = f'{self.current}: simdgroup_barrier(mem_none), which orders no memory, was left out'
+            if message not in self.adaptations:
+                self.adaptations.append(message)
+            return []
         if kind == 'AttributedStmt':  # [[unroll]], likely/unlikely: hints that do not change meaning
             return self.read_statement(node['inner'][-1])
         if kind == 'DeclStmt':
@@ -2088,6 +2099,8 @@ class Importer:
         """A thread-private array, `uint32_t point[3] = {...}` (IR version 4). Elements the
         initializer leaves out are zero, as in C; an array without one starts all zero (C leaves
         it undefined)."""
+        if matrix_of(array.group(1)) and not set(decl['type']['qualType'].replace('[', ' ').split()) & {'threadgroup', 'constant', 'device'}:
+            return self.matrix_array_local(decl, name, matrix_of(array.group(1)), int(array.group(2)))
         element = describe(array.group(1))
         if element[0] != 'scalar' or element[1] not in SCALAR_TERMS and not is_vector(element[1]):  # `input_t[4]`: float[4]
             plain = LOCAL_ARRAY.fullmatch(decl['type'].get('desugaredQualType', '').strip())
@@ -2130,6 +2143,33 @@ class Importer:
                             {'type': self.graph.add('ArrayType', {'element': scalar, 'length': length}),
                              'value': self.graph.add('ArrayValue', children={'elements': values})})
         self.scope[decl['id']] = ('local', ir, f'array<{scalar}, {length}>')
+        return [ir]
+
+    def matrix_array_local(self, decl, name, mtype, length):
+        """An array of simdgroup matrices (IR version 14), `simdgroup_float8x8 mc[8];` as llama.cpp's
+        kernel_mul_mm keeps its accumulators: each element a matrix value, those the initializer leaves
+        out (or all, without one) starting at zero, as a matrix local does."""
+        if not 1 <= length <= 1024:
+            raise Unsupported(decl, 'local-type', f'local {name}: an array holds 1 to 1024 matrices')
+        init = decl['inner'][0] if 'init' in decl else None
+        while init is not None and init['kind'] in ('ExprWithCleanups', 'ConstantExpr') and init.get('inner'):
+            init = init['inner'][0]
+        if init is not None and init['kind'] in ('CXXConstructExpr', 'ArrayInitLoopExpr') and not any(
+                x.get('kind') not in ('CXXConstructExpr', 'ArrayInitLoopExpr', 'ArrayInitIndexExpr', 'OpaqueValueExpr')
+                for x in walk(init)):
+            init = None  # each element default-constructed (undefined): no initializer
+        items = []
+        if init is not None:
+            if init['kind'] != 'InitListExpr' or 'array_filler' in init or len(init.get('inner', ())) > length:
+                raise Unsupported(decl, 'array-init', f'local matrix array {name} is initialized with one value per element or not at all')
+            items = [self.matrix_value(x, mtype) for x in init.get('inner', ())]
+        element = mtype[len('matrix<'):len('matrix<') + 3]
+        items += [self.graph.add('MatrixFill', {'element': element}, {'value': self.graph.add('F32Literal', {'value': '0.0'})})
+                  for _ in range(length - len(items))]
+        ir = self.graph.add('Variable', {'name': self.unique_name(name)},
+                            {'type': self.graph.add('ArrayType', {'element': mtype, 'length': length}),
+                             'value': self.graph.add('ArrayValue', children={'elements': items})})
+        self.scope[decl['id']] = ('local', ir, f'array<{mtype}, {length}>')
         return [ir]
 
     def dynamic_shared_local(self, decl, name, element):
@@ -2214,10 +2254,19 @@ class Importer:
         if node['kind'] == 'CallExpr' and self.callee(node) == 'make_filled_simdgroup_matrix':
             element = (found or mtype)[len('matrix<'):len('matrix<') + 3]
             value = node['inner'][1]
+            core = value
+            while core['kind'] in ('ParenExpr', 'ImplicitCastExpr') and core.get('inner'):
+                core = core['inner'][0]
+            if element == 'f16' and core['kind'] in ('CStyleCastExpr', 'CXXFunctionalCastExpr') and scalar_of(core) == 'f16':
+                inner = core['inner'][0]
+                while inner['kind'] in ('ParenExpr', 'ImplicitCastExpr') and scalar_of(inner) != 'f32' and inner.get('inner'):
+                    inner = inner['inner'][0]
+                if scalar_of(inner) == 'f32':
+                    value = inner  # qpel's Metal (half)(x): the rounding to f16 is the fill's own
             return self.graph.add('MatrixFill', {'element': element},
                                   {'value': self.convert_types(self.expr(value), scalar_of(value), 'f32', node)})
-        if node['kind'] == 'DeclRefExpr' and found is not None:
-            return self.expr(node)
+        if node['kind'] in ('DeclRefExpr', 'ArraySubscriptExpr') and found is not None:
+            return self.expr(node)  # a matrix local, or an element of an array of them (IR version 14)
         if node['kind'] == 'CXXConstructExpr':
             raise Unsupported(node, 'matrix', 'simdgroup_matrix(x) is a diagonal matrix, which qpel does not have; '
                                               'use make_filled_simdgroup_matrix')
@@ -2250,12 +2299,21 @@ class Importer:
             return self.expr(array), self.offset(index)
         return self.expr(core), None
 
+    @staticmethod
+    def zero_origin(node):
+        """A matrix origin of zero: `0` or `ulong2(0)`, through the conversions clang writes."""
+        found = [x for x in walk(node) if x.get('kind') in ('IntegerLiteral', 'DeclRefExpr', 'CallExpr', 'FloatingLiteral')]
+        return bool(found) and all(x['kind'] == 'IntegerLiteral' and int(x['value']) == 0 for x in found)
+
     def matrix_statement(self, n, callee):
         """simdgroup_load(m, p, stride), simdgroup_store(m, p, stride), simdgroup_multiply_accumulate(d, a, b, c)
         and simdgroup_multiply(d, a, b) (IR version 13)."""
         add = self.graph.add
         args = [a for a in n['inner'][1:] if a['kind'] != 'CXXDefaultArgExpr']
         if callee in ('simdgroup_load', 'simdgroup_store'):
+            if len(args) == 5 and self.zero_origin(args[3]) and peel(args[4]).get('kind') == 'CXXBoolLiteralExpr' \
+                    and not peel(args[4]).get('value'):
+                args = args[:3]  # simdgroup_load(m, p, stride, 0, false): the default origin, not transposed
             if len(args) != 3:
                 raise Unsupported(n, 'matrix', f'{callee} with a matrix origin or transposed is not in qpel '
                                                '(give the address of the first element and the row stride)')
@@ -2978,6 +3036,13 @@ class Importer:
                 if entry[2]:
                     raise Unsupported(n, 'thread-builtin', 'use the .x, .y and .z components of a thread builtin')
                 return add(GROUP_NODES[entry[1]], {'axis': 'x'})
+            if entry[0] == 'local-linear':  # the thread's place in its group, x fastest: x + X (y + Y z)
+                axis = lambda kind, a: add(kind, {'axis': a})
+                times = lambda l, r: add('Binary', {'operator': '*'}, {'left': l, 'right': r})
+                plus = lambda l, r: add('Binary', {'operator': '+'}, {'left': l, 'right': r})
+                yz = plus(axis('LocalIndex', 'y'), times(axis('GroupSize', 'y'), axis('LocalIndex', 'z')))
+                node = plus(axis('LocalIndex', 'x'), times(axis('GroupSize', 'x'), yz))
+                return self.convert_types(node, 'u32', entry[1], n) if entry[1] in INTEGER_TERMS and entry[1] != 'u32' else node
             if entry[0] == 'subgroup-builtin':
                 node = add(entry[1])
                 return self.convert_types(node, 'u32', entry[2], n) if entry[2] in INTEGER_TERMS and entry[2] != 'u32' else node

@@ -198,8 +198,9 @@ Pilot: Microsoft TRELLIS.2's `o-voxel` extension (13 kernels: Z-order and Hilber
     - On a Tesla T4 (Kaggle run 5, through the generated CuPy host): f32 bit for bit, f16 through `mma.sync` tensor cores within the bound; the self-test's lane-by-lane check of the fragment layout passes there too.
   - GPGPU-Sim had no `mma.sync`. It was added in `qpel-mma.patch` (image `qpel16`), with a self-test of the PTX ISA fragment layout, which also runs on the T4.
   - The Metal importer reads simdgroup matrices: a Metal GEMM imports, and qpel's Metal agrees with it bit for bit (qpel's CUDA in k order).
+  - **Arrays of matrices: IR version 14** (CORE.md), as `kernel_mul_mm` keeps `simdgroup_float8x8 mc[8]`, indexed by values the same for all 32 lanes. `examples/matrix_blocks.qpel` (16 x 16 blocks from 2 x 2 accumulators, f32 and f16) passes the CPU simulator (bit for bit), GPGPU-Sim and the Apple GPU. A Metal kernel built like `kernel_mul_mm` (threadgroup tiles, `ma[2]`, `mb[2]`, `mc[4]`, `simdgroup_load(m, p, stride, 0, false)`, `simdgroup_barrier(mem_none)`, `thread_index_in_threadgroup`) imports, and qpel's Metal agrees with it bit for bit on the Apple GPU (qpel's CUDA in k order on the CPU simulator).
   - Open:
-    - arrays of matrices (llama.cpp's `kernel_mul_mm`);
+    - llama.cpp's own `kernel_mul_mm`, which needs more than matrices: Metal function constants, `char` buffers cast to quantised block types, its kargs struct, dynamic threadgroup memory and dequantisation through a function pointer;
     - NVIDIA's WMMA fragments in the importer;
     - Apple M5's matrix tiles (no M5 to test on).
 - **Vectorised loads** (`qpel_opt.py`, CORE.md Optimisation passes). A vector of N consecutive buffer elements is one aligned N-wide load, with the element loads as the fallback; TRELLIS.2's `render` reads its tile ranges with one 64-bit load again. Constant folding and CSE stay with nvcc and Metal, which already do them.

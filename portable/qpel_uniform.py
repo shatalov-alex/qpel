@@ -27,7 +27,7 @@ IR version 7 allows barriers in helpers (library code such as qpel's CUB subset)
 barriers is checked as a kernel is, with its parameters taken as varying, a call of it counts as
 a barrier, and a kernel that reaches one through calls is a Groups kernel.
 """
-from qpel_types import TypeChecker, is_shared, is_shared_view, term
+from qpel_types import TypeChecker, is_shared, is_shared_view, term, is_array, array_element, is_matrix
 
 THREAD_OWN = {'GridIndex', 'ThreadIndex', 'LocalIndex', 'SubgroupLane'}
 SUBGROUP_OPS = {'SubgroupShuffle', 'SubgroupReduce', 'MatrixFill', 'MatrixLoad', 'MatrixStore', 'MatrixMma'}  # (matrices: IR version 13)
@@ -145,6 +145,12 @@ class Uniformity(TypeChecker):
             if base['kind'] == 'Name' and self.group_memory(self.declared(self.target(base, 'declaration'))):
                 return False  # another thread may have written it
         return all(self.uniform(self.nodes[c]) for values in node['children'].values() for c in values)
+
+    def matrix_array(self, base):
+        if base['kind'] != 'Name':
+            return False
+        t = term(self.declared(self.target(base, 'declaration')))
+        return is_array(t) and is_matrix(array_element(t))
 
     @staticmethod
     def group_memory(t):
@@ -266,6 +272,11 @@ class Uniformity(TypeChecker):
                 self.statements(body, True, None, None)
             report = []
             self.statements(body, True, None, report)
+            if self.level == 'subgroup':  # IR version 14: the lanes hold one matrix together, so they pick the same one
+                for n in self.walk(body):
+                    if n['kind'] == 'Index' and self.matrix_array(self.child(n, 'base')):
+                        self.require(n, self.uniform(self.child(n, 'index')), 'SUBGROUP_UNIFORM',
+                                     'An array of matrices is indexed by a value the same for all 32 lanes of a subgroup')
             for node in report:
                 if node['kind'] == 'Return' and self.level == 'subgroup':
                     self.require(node, False, 'SUBGROUP_UNIFORM', 'In a function with subgroup operations, a return taken '

@@ -714,10 +714,11 @@ def run_bitcast(name, host, plan):
 
 
 def run_matrix_tiles(name, host, plan):
-    """8x8 subgroup matrices (IR version 13), a tiled GEMM (tests/test_matrix_tiles.py's oracle): f32 on
-    NVIDIA bit for bit in k order, everything else within the bound of a sum of products in any order
-    (Metal's simdgroup_multiply_accumulate, NVIDIA's tensor cores for f16)."""
-    module = test_module('test_matrix_tiles')
+    """8x8 subgroup matrices (IR version 13), a tiled GEMM (tests/test_matrix_tiles.py's oracle), and arrays
+    of them (IR version 14, tests/test_matrix_arrays.py): f32 on NVIDIA bit for bit in k order, everything
+    else within the bound of a sum of products in any order (Metal's simdgroup_multiply_accumulate,
+    NVIDIA's tensor cores for f16)."""
+    module = test_module({'matrix_tiles': 'test_matrix_tiles', 'matrix_blocks': 'test_matrix_arrays'}[name])
     cases = module.cases()
     for case in cases:
         inputs = {k: torch.from_numpy(v.copy()).to(DEVICE) for k, v in case.inputs.items()}
@@ -738,7 +739,7 @@ TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fm
          'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components,
          'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset, 'box_sum': run_box_sum,
          'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride, 'math_ops': run_math_ops, 'math_v8': run_math_v8, 'optional_bias': run_optional_bias, 'array_refs': run_array_refs, 'sort_bytes': run_sort_bytes, 'atomics': run_atomics, 'bitcast': run_bitcast,
-         'matrix_tiles': run_matrix_tiles}
+         'matrix_tiles': run_matrix_tiles, 'matrix_blocks': run_matrix_tiles}
 
 
 def main(argv=None):

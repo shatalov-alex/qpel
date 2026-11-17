@@ -6,11 +6,11 @@ importers, the text syntax, and the checks that run all of them. For an overview
 
 ## Current scope
 
-- **IR version 13** (`CORE.md`): typed programs with integer widths from 8 to 64 bits, `f16`/`bf16`
+- **IR version 14** (`CORE.md`): typed programs with integer widths from 8 to 64 bits, `f16`/`bf16`
   storage, float32 arithmetic (f32-strict-v1), exact and bounded math functions, structs, buffer
   views, vectors and local arrays, 1D/2D/3D and explicit-group launch geometry, shared memory and
   barriers, subgroup shuffles and reductions, atomics, module constants, 8x8 matrices held by a
-  subgroup (Metal's `simdgroup_matrix`, NVIDIA's `mma.sync`), and multi-stage launch plans.
+  subgroup (Metal's `simdgroup_matrix`, NVIDIA's `mma.sync`) and arrays of them, and multi-stage launch plans.
 - **Importers** (`IMPORT.md`): unmodified CUDA and Metal source through clang's JSON AST, with
   per-construct diagnostics; templates, library-header device functions, Metal function
   constants, a CUB subset and Metal's simdgroup matrices are supported. A Triton pilot reads

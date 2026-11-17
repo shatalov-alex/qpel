@@ -103,7 +103,7 @@ examples/lookup_tables.qpel, tests/test_lookup_tables.py. A program with either 
 
 Matrices for matrix multiplication, held by a subgroup together: Metal's `simdgroup_matrix`, NVIDIA's `mma.sync` fragments.
 
-- **Type.** `MatrixType {element}`, text `matrix<f32, 8, 8>` or `matrix<f16, 8, 8>`: an 8 by 8 matrix whose elements are spread over the 32 lanes of a subgroup. A matrix is a value of locals and expressions only (not a parameter, field, array element or buffer element), and its elements are never read or written one by one.
+- **Type.** `MatrixType {element}`, text `matrix<f32, 8, 8>` or `matrix<f16, 8, 8>`: an 8 by 8 matrix whose elements are spread over the 32 lanes of a subgroup. A matrix is a value of locals, expressions and (IR version 14) local arrays only (not a parameter, field or buffer element), and its elements are never read or written one by one.
 - **Operations**, each an expression that every lane of the subgroup reaches together (the uniformity rules of shuffles and subgroup reductions, IR version 5), only in `groups` kernels:
   - `qpel.matrix_fill<T>(x)` (`MatrixFill {element}`, an f32 `value`): every element `x`, rounded to f16 for `T = f16`.
   - `qpel.matrix_load(base, offset, stride)` (`MatrixLoad`): element (r, c) is `base[offset + r stride + c]`, from a buffer or shared memory of f32 or f16 (its element type), `offset` and `stride` u32.
@@ -114,6 +114,16 @@ Matrices for matrix multiplication, held by a subgroup together: Metal's `simdgr
 - **Feature** `matrix` (`QPEL_MATRIX_ENABLED`), which implies `subgroups`.
 
 examples/matrix_tiles.qpel (a tiled GEMM, f32 and f16 with f32 accumulation), tests/test_matrix_tiles.py. A program with a matrix is version 13.
+
+## IR version 14
+
+Arrays of matrices, as llama.cpp's `kernel_mul_mm` keeps its accumulators (`simdgroup_float8x8 mc[8]`).
+
+- **Type.** `ArrayType {element, length}` with a matrix element, text `array<matrix<f32, 8, 8>, 4>`: a local array (1 to 1024 matrices), initialized with one matrix value per element, as every local array is. Its elements are read (`m[i]`, a matrix value) and assigned whole (`m[i] = qpel.matrix_mma(a[i / 2u], b[i % 2u], m[i])`); like a matrix, it is not a parameter, and neither is a reference to one.
+- **Uniformity.** The 32 lanes hold each element together, so they pick the same one: an index is a value the same for every lane of the subgroup (built from constants, parameters, group and subgroup indices, uniform locals such as a loop counter, or `x / 32k` of a thread's x index), checked with the subgroup rules of IR version 5 (`SUBGROUP_UNIFORM`).
+- **Lowering.** Both backends declare `QPEL_MATRIX_F32 m[N] = {...}`: an array of `simdgroup_float8x8` on Metal, of the two-element fragment struct on CUDA (registers once nvcc unrolls the loops with constant trip counts).
+
+examples/matrix_blocks.qpel (each subgroup a 16 x 16 block of C from 2 x 2 accumulators, f32 and f16), tests/test_matrix_arrays.py: the CPU simulator bit for bit in k order, GPGPU-Sim (f32 bit for bit, f16 within the bound) and the Apple GPU (within the bound). A program with an array of matrices is version 14.
 
 ## Optimisation passes
 

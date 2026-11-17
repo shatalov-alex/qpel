@@ -1,0 +1,63 @@
+// Arrays of matrices (IR version 14): C = A B as in matrix_tiles.qpel, each subgroup computing a
+// 16 x 16 block of C as 2 x 2 accumulators from two matrices of A and two of B at a time, as
+// llama.cpp's kernel_mul_mm keeps simdgroup_float8x8 mc[8]. The shape is n = (N, M, K), N and M
+// multiples of 16, K of 8. An array of matrices is indexed by a value the same for all 32 lanes.
+module matrix_blocks {
+  kernel blocks_f32(a: buffer<f32, read> @0, b: buffer<f32, read> @1, c: buffer<f32, write> @2, n: shape3 @3) groups {
+    let block: u32 = (qpel.group.x * 2u) + qpel.subgroup_index;
+    let across: u32 = n.x / 16u;
+    if (block < (across * (n.y / 16u))) {
+      let row: u32 = (block / across) * 16u;
+      let column: u32 = (block % across) * 16u;
+      let sums: array<matrix<f32, 8, 8>, 4> = [qpel.matrix_fill<f32>(0.0f), qpel.matrix_fill<f32>(0.0f), qpel.matrix_fill<f32>(0.0f), qpel.matrix_fill<f32>(0.0f)];
+      let left: array<matrix<f32, 8, 8>, 2> = [qpel.matrix_fill<f32>(0.0f), qpel.matrix_fill<f32>(0.0f)];
+      let right: array<matrix<f32, 8, 8>, 2> = [qpel.matrix_fill<f32>(0.0f), qpel.matrix_fill<f32>(0.0f)];
+      for (let k: u32 = 0u; k < n.z; k = k + 8u) {
+        for (let i: u32 = 0u; i < 2u; i = i + 1u) {
+          left[i] = qpel.matrix_load(a, ((row + (i * 8u)) * n.z) + k, n.z);
+          right[i] = qpel.matrix_load(b, ((k * n.x) + column) + (i * 8u), n.x);
+        }
+        for (let j: u32 = 0u; j < 4u; j = j + 1u) {
+          sums[j] = qpel.matrix_mma(left[j / 2u], right[j % 2u], sums[j]);
+        }
+      }
+      for (let s: u32 = 0u; s < 4u; s = s + 1u) {
+        qpel.matrix_store(sums[s], c, (((row + ((s / 2u) * 8u)) * n.x) + column) + ((s % 2u) * 8u), n.x);
+      }
+    }
+  }
+  kernel blocks_f16(a: buffer<f16, read> @0, b: buffer<f16, read> @1, c: buffer<f32, write> @2, n: shape3 @3) groups {
+    let block: u32 = (qpel.group.x * 2u) + qpel.subgroup_index;
+    let across: u32 = n.x / 16u;
+    if (block < (across * (n.y / 16u))) {
+      let row: u32 = (block / across) * 16u;
+      let column: u32 = (block % across) * 16u;
+      let sums: array<matrix<f32, 8, 8>, 4> = [qpel.matrix_fill<f32>(0.0f), qpel.matrix_fill<f32>(0.0f), qpel.matrix_fill<f32>(0.0f), qpel.matrix_fill<f32>(0.0f)];
+      let left: array<matrix<f16, 8, 8>, 2> = [qpel.matrix_fill<f16>(0.0f), qpel.matrix_fill<f16>(0.0f)];
+      let right: array<matrix<f16, 8, 8>, 2> = [qpel.matrix_fill<f16>(0.0f), qpel.matrix_fill<f16>(0.0f)];
+      for (let k: u32 = 0u; k < n.z; k = k + 8u) {
+        for (let i: u32 = 0u; i < 2u; i = i + 1u) {
+          left[i] = qpel.matrix_load(a, ((row + (i * 8u)) * n.z) + k, n.z);
+          right[i] = qpel.matrix_load(b, ((k * n.x) + column) + (i * 8u), n.x);
+        }
+        for (let j: u32 = 0u; j < 4u; j = j + 1u) {
+          sums[j] = qpel.matrix_mma(left[j / 2u], right[j % 2u], sums[j]);
+        }
+      }
+      for (let s: u32 = 0u; s < 4u; s = s + 1u) {
+        qpel.matrix_store(sums[s], c, (((row + ((s / 2u) * 8u)) * n.x) + column) + ((s % 2u) * 8u), n.x);
+      }
+    }
+  }
+}
+pipeline matrix_blocks_launch {
+  shape n;
+  input a: buffer<f32, read> in n;
+  input b: buffer<f32, read> in n;
+  input a16: buffer<f16, read> in n;
+  input b16: buffer<f16, read> in n;
+  output c: buffer<f32, write> in n;
+  output c16: buffer<f32, write> in n;
+  dispatch blocks_f32 over n block (64, 1, 1) groups ("(W*H/256 + 1)/2", "1", "1") (a = a, b = b, c = c, n = n);
+  dispatch blocks_f16 over n block (64, 1, 1) groups ("(W*H/256 + 1)/2", "1", "1") (a = a16, b = b16, c = c16, n = n);
+}
