@@ -15,6 +15,13 @@ static_assert(sizeof(QpelShape) == 16, "qpel shape ABI must be 16 bytes");
 // An optional buffer (IR version 9): the pointer, null when the caller leaves the buffer out.
 #define QPEL_OPTIONAL_PARAM(type, name, binding, presence) type name
 #define QPEL_PRESENT(name) ((name) != nullptr)
+// IR version 12: module-level constant tables, and the leading zero bits of an integer.
+#define QPEL_CONSTANT_ARRAY(T, name, length) __device__ const T name[length]
+#define QPEL_CONSTANT(T, name) __device__ const T name
+#define QPEL_CLZ_U32(x) ((unsigned int)__clz((int)(x)))
+#define QPEL_CLZ_I32(x) (__clz((x)))
+#define QPEL_CLZ_U64(x) ((unsigned long long)__clzll((long long)(x)))
+#define QPEL_CLZ_I64(x) ((long long)__clzll((x)))
 #define QPEL_GRID_PARAM(name)
 #define QPEL_GRID_LOCAL(name) const unsigned int name = blockIdx.x * blockDim.x + threadIdx.x;
 // Legacy CUDA atomics have relaxed ordering at device scope. An atomic load or store is a

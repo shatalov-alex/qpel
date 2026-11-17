@@ -226,6 +226,7 @@ template <class T> T __shfl_up(T v, unsigned d, int width = 32) { return __shfl_
 template <class T> T __shfl_down(T v, unsigned d, int width = 32) { return __shfl_down_sync(0xffffffffu, v, d, width); }
 // __ldg: a load through the read-only data cache, the value at p
 template <class T> T __ldg(const T* p) { return *p; }
+template <class T> T __ldcs(const T* p) { return *p; }  // a streaming load (bitsandbytes)
 #ifdef QPEL_SIM_THREADED
 inline int __syncthreads_count(int p) { return qpel_sync(p); }
 inline int __syncthreads_or(int p) { return qpel_sync(p) != 0; }
@@ -241,6 +242,7 @@ inline void __trap() { std::abort(); }
 inline unsigned __umulhi(unsigned a, unsigned b) { return (unsigned)(((unsigned long long)a * b) >> 32); }
 inline int __popc(unsigned x) { return __builtin_popcount(x); }
 inline int __clz(int x) { return x ? __builtin_clz((unsigned)x) : 32; }
+inline int __clzll(long long x) { return x ? __builtin_clzll((unsigned long long)x) : 64; }
 inline int __ffs(int x) { return __builtin_ffs(x); }
 inline int __dp4a(int a, int b, int c) {
   for (int k = 0; k < 4; ++k) c += (signed char)(a >> 8 * k) * (signed char)(b >> 8 * k);
@@ -253,6 +255,7 @@ inline unsigned __byte_perm(unsigned x, unsigned y, unsigned s) {
 }
 inline float __expf(float x) { return std::exp(x); }
 inline float __logf(float x) { return std::log(x); }
+inline float __powf(float x, float y) { return std::pow(x, y); }
 inline float __fdividef(float a, float b) { return a / b; }
 inline float __saturatef(float x) { return x < 0 ? 0.0f : x > 1 ? 1.0f : x; }
 inline float __int_as_float(int x) { float f; std::memcpy(&f, &x, 4); return f; }

@@ -84,6 +84,8 @@ diff:
 
 Once the pull requests are merged, pin `GPGPUSIM_COMMIT` past them and drop the patch.
 
+**Open (2026-11-17):** GPGPU-Sim's PTX grammar takes only registers in a vector operand, so `mov.b32 %f12, {0,%rs306};` (cuda_bf16.hpp widening a bfloat16) is a syntax error, after which the functions that follow are missing and `add_ptxinfo` asserts. bitsandbytes' `kernels.cu` has such bf16 kernels, so its originals are skipped here (`SIMULATOR_ISSUES`); qpel's CUDA of the dequantisation programs passes.
+
 **Open (2026-11-13):** with the fixes, TRELLIS.2's `render` still finds no voxel on
 GPGPU-Sim, for the original and qpel's CUDA alike (the CPU simulator and the Apple GPU
 agree with each other). Tracing one pixel shows a bool (`inside`) changing between its

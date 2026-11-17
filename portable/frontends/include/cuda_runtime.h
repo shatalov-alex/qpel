@@ -221,6 +221,8 @@ enum cudaFuncAttribute { cudaFuncAttributeMaxDynamicSharedMemorySize = 8 };
 template <class F> cudaError_t cudaFuncSetAttribute(F*, int, int);
 // Read-only cache loads (sm_35+): the value at p.
 template <class T> __device__ T __ldg(const T* p);
+template <class T> __device__ T __ldcs(const T* p);  // a streaming load: read as *p, as __ldg (statics.py)
+__device__ bool signbit(float);
 // nvcc's cuda_runtime.h brings in these C headers.
 #include <float.h>
 #include <assert.h>

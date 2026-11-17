@@ -1,0 +1,25 @@
+// Module-level constants and qpel.clz (IR version 12), as bitsandbytes dequantises NF4: each byte
+// holds two 4-bit codes, each code is looked up in a 16-entry table and scaled by its block's
+// absmax; the block of element i is i >> log2(blocksize), written 31 - clz(blocksize).
+module lookup_tables {
+  const nf4: array<f32, 16> = [-1.0f, -0.6961928009986877f, -0.5250730514526367f, -0.39491748809814453f, -0.28444138169288635f, -0.18477343022823334f, -0.09105003625154495f, 0.0f, 0.07958029955625534f, 0.16093020141124725f, 0.24611230194568634f, 0.33791524171829224f, 0.44070982933044434f, 0.5626170039176941f, 0.7229568362236023f, 1.0f];
+  const shift_bias: i32 = 31;
+  kernel lookup_tables(codes: buffer<u8, read> @0, absmax: buffer<f32, read> @1, out: buffer<f32, write> @2, blocksize: i32 @3, n: shape3 @4) grid1d {
+    if (qpel.index >= ((n.x * n.y) * n.z)) {
+      return;
+    }
+    let shift: i32 = shift_bias - qpel.clz(blocksize);
+    let scale: f32 = absmax[cast<u32>(cast<i32>(qpel.index * 2u) >> shift)];
+    let byte: u32 = cast<u32>(codes[qpel.index]);
+    out[qpel.index * 2u] = nf4[byte >> 4u] * scale;
+    out[(qpel.index * 2u) + 1u] = nf4[byte & 15u] * scale;
+  }
+}
+pipeline lookup_tables_launch {
+  input codes: buffer<u8, read> in n;
+  input absmax: buffer<f32, read> in n;
+  output out: buffer<f32, write> in n * 2;
+  value blocksize: i32;
+  shape n;
+  dispatch lookup_tables over n block (64) (codes = codes, absmax = absmax, out = out, blocksize = blocksize, n = n);
+}

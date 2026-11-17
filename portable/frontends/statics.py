@@ -107,7 +107,7 @@ def lift_statics(unit):
                 function = renamed[node['referencedDecl']['id']]
                 node['referencedDecl'] = dict(node['referencedDecl'], kind='FunctionDecl', name=function['name'])
     for node in walk(unit):  # __ldg(p) -> *p
-        if node.get('kind') == 'CallExpr' and node.get('inner') and callee_name(node) == '__ldg' and len(node['inner']) == 2:
+        if node.get('kind') == 'CallExpr' and node.get('inner') and callee_name(node) in ('__ldg', '__ldcs') and len(node['inner']) == 2:
             pointer = node['inner'][1]
             node.clear()
             node.update({'kind': 'UnaryOperator', 'opcode': '*', 'type': dict(pointer.get('type', {})),
@@ -604,6 +604,156 @@ def flatten_argument_structs(unit):
     return flattened
 
 
+def instances_to_definitions(unit):
+    """clang lists a function template's instantiations under its first declaration. When that is a
+    prototype in a header (bitsandbytes' kernels.cuh) and the definition is in the source (kernels.cu,
+    which instantiates them explicitly), the instantiations, with their bodies, move to the
+    definition's FunctionTemplateDecl, so they are the source's own kernels."""
+    if unit.get('_qpel_instances_moved'):
+        return
+    def pattern(template):
+        return next((c for c in template.get('inner', ()) if c.get('kind') == 'FunctionDecl'), None)
+    templates = [n for n in walk(unit) if n.get('kind') == 'FunctionTemplateDecl' and pattern(n) is not None]
+    defined = {}
+    for t in templates:
+        p = pattern(t)
+        if _body(p) is not None:
+            defined.setdefault((t.get('name'), p.get('type', {}).get('qualType')), t)
+    for t in templates:
+        p = pattern(t)
+        if _body(p) is not None:
+            continue
+        target = defined.get((t.get('name'), p.get('type', {}).get('qualType')))
+        if target is None:
+            continue
+        moved = [c for c in t['inner'][1:] if c.get('kind') == 'FunctionDecl' and _body(c) is not None]
+        if not moved:
+            continue
+        ids = {c['id'] for c in moved}
+        t['inner'] = [c for c in t['inner'] if c.get('id') not in ids]
+        target['inner'] = [c for c in target['inner'] if not (c.get('kind') == 'FunctionDecl' and c.get('id') in ids)] + moved
+    unit['_qpel_instances_moved'] = True
+
+
+def _switch_groups(body):
+    """[(labels, statements)] of a switch body, labels a list of values and 'default', each group
+    ending at its `break` (left out), a `return` or `continue`, or the end; None when a group falls
+    through into the next one or a `break` is nested inside it (qpel has no switch: it reads one
+    whose cases do not fall through as an if-else chain)."""
+    groups, labels, statements = [], [], []
+
+    def label_of(node):  # CaseStmt [value, statement] nests for `case 1: case 2:`; DefaultStmt [statement]
+        found = []
+        while node.get('kind') in ('CaseStmt', 'DefaultStmt'):
+            if node['kind'] == 'CaseStmt':
+                value = node['inner'][0]
+                if value.get('kind') != 'ConstantExpr' or 'value' not in value:
+                    return None, None
+                found.append(int(value['value']))
+            else:
+                found.append('default')
+            node = node['inner'][-1] if node.get('inner') and (node['kind'] == 'DefaultStmt' or len(node['inner']) > 1) else {}
+        return found, node
+
+    def close():
+        if labels:
+            groups.append((list(labels), list(statements)))
+        labels.clear()
+        statements.clear()
+
+    for child in body.get('inner', ()):
+        if child.get('kind') in ('CaseStmt', 'DefaultStmt'):
+            if labels and statements and statements[-1].get('kind') not in ('ReturnStmt', 'ContinueStmt'):
+                return None  # falls through into this case
+            if labels and not statements:
+                pass  # `case 1:` directly followed by `case 2:` in clang's flat form
+            elif labels:
+                close()
+            found, first = label_of(child)
+            if found is None:
+                return None
+            labels.extend(found)
+            if first:
+                statements.append(first)
+        elif child.get('kind') == 'BreakStmt' and labels:
+            close()
+        elif labels:
+            statements.append(child)
+        else:
+            return None  # statements before the first label
+    if labels and statements and statements[-1].get('kind') not in ('ReturnStmt', 'ContinueStmt', 'BreakStmt'):
+        pass  # the last group may run to the end of the switch
+    close()
+    for _, group in groups:
+        if any(_escapes_switch(n) for n in group):
+            return None
+    return groups
+
+
+def _escapes_switch(node):
+    """A break inside node that leaves the switch (not one of a nested loop or switch)."""
+    if node.get('kind') == 'BreakStmt':
+        return True
+    if node.get('kind') in LOOPS + ('SwitchStmt',):
+        return False
+    return any(_escapes_switch(c) for c in node.get('inner', ()) if isinstance(c, dict))
+
+
+def lower_switches(unit):
+    """`switch` as qpel reads it (see _switch_groups): on a constant (a template parameter, bitsandbytes'
+    `switch (DATA_TYPE)`) the statements of the case it takes; otherwise its value in a local and an
+    if-else chain over the cases, the default last. A switch qpel cannot read so is left (reported)."""
+    if unit.get('_qpel_switches'):
+        return
+    counter = [0]
+    for function in walk(unit):
+        if function.get('kind') != 'FunctionDecl' or _body(function) is None:
+            continue
+        for node in [n for n in walk(_body(function)) if n.get('kind') == 'SwitchStmt']:
+            inner = [c for c in node.get('inner', ()) if isinstance(c, dict)]
+            if len(inner) != 2 or inner[1].get('kind') != 'CompoundStmt':
+                continue
+            cond, body = inner
+            groups = _switch_groups(body)
+            if groups is None:
+                continue
+            value = _literal(cond)
+            if value is not None:
+                taken = next((g for labels, g in groups if value in labels), None)
+                if taken is None:
+                    taken = next((g for labels, g in groups if 'default' in labels), [])
+                node.clear()
+                node.update({'kind': 'CompoundStmt', 'inner': list(taken)})
+                continue
+            counter[0] += 1
+            t = dict(cond.get('type', {'qualType': 'int'}))
+            local = {'id': f'{function.get("id")}.switch{counter[0]}', 'kind': 'VarDecl', 'name': f'switch_value_{counter[0]}',
+                     'type': t, 'init': 'c', 'inner': [cond], 'range': node.get('range'), 'loc': node.get('loc')}
+            def ref():
+                return {'kind': 'ImplicitCastExpr', 'type': dict(t), 'valueCategory': 'prvalue', 'castKind': 'LValueToRValue',
+                        'inner': [{'kind': 'DeclRefExpr', 'type': dict(t), 'valueCategory': 'lvalue',
+                                   'referencedDecl': {'id': local['id'], 'kind': 'VarDecl', 'name': local['name'], 'type': dict(t)}}]}
+            chain = None
+            ordered = [g for g in groups if 'default' not in g[0]] + [g for g in groups if 'default' in g[0]]
+            for labels, group in reversed(ordered):
+                block = {'kind': 'CompoundStmt', 'inner': list(group)}
+                values = [v for v in labels if v != 'default']
+                if 'default' in labels:
+                    chain = block  # (cases that share the default's group need no test)
+                    continue
+                test = None
+                for v in values:
+                    eq = {'kind': 'BinaryOperator', 'type': {'qualType': 'bool'}, 'valueCategory': 'prvalue', 'opcode': '==',
+                          'inner': [ref(), {'kind': 'IntegerLiteral', 'type': dict(t), 'valueCategory': 'prvalue', 'value': str(v)}]}
+                    test = eq if test is None else {'kind': 'BinaryOperator', 'type': {'qualType': 'bool'},
+                                                    'valueCategory': 'prvalue', 'opcode': '||', 'inner': [test, eq]}
+                chain = {'kind': 'IfStmt', 'inner': [test, block] + ([chain] if chain is not None else []),
+                         **({'hasElse': True} if chain is not None else {})}
+            node.clear()
+            node.update({'kind': 'CompoundStmt', 'inner': [{'kind': 'DeclStmt', 'inner': [local]}] + ([chain] if chain else [])})
+    unit['_qpel_switches'] = True
+
+
 LOOPS = ('ForStmt', 'WhileStmt', 'DoStmt', 'CXXForRangeStmt')
 UNIT_ROWS = re.compile(r'(.*\S)\s*\[1\]\[([0-9]+)\]')
 
@@ -611,6 +761,10 @@ UNIT_ROWS = re.compile(r'(.*\S)\s*\[1\]\[([0-9]+)\]')
 def _literal(node):
     """The value of an expression of integer literals and operators, or None."""
     node = _peel(node)
+    while node.get('kind') in ('SubstNonTypeTemplateParmExpr', 'ConstantExpr') and node.get('inner'):
+        if node.get('kind') == 'ConstantExpr' and 'value' in node and str(node['value']).lstrip('-').isdigit():
+            return int(node['value'])
+        node = _peel(node['inner'][-1])
     kind = node.get('kind')
     inner = [c for c in node.get('inner', ()) if isinstance(c, dict)]
     if kind == 'IntegerLiteral':

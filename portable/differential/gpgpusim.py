@@ -45,6 +45,12 @@ DOCKERFILE = HERE/'gpgpusim'
 # (differential/hardware.py) runs them.
 SIMULATOR_ISSUES = {'trellis2_raster_render': 'skipped: GPGPU-Sim finds no voxel for the original either '
                                               '(gpgpusim/README.md, Open); it passes on a Tesla T4 (differential/hardware.py)'}
+# bitsandbytes' kernels.cu: GPGPU-Sim's PTX parser rejects an immediate in a vector operand, `mov.b32 %f, {0, %rs};`
+# (cuda_bf16.hpp's bfloat16 to float, in its bf16 optimiser kernels), and then misses the kernels after it.
+# qpel's CUDA of these programs passes there (2026-11-17); a Tesla T4 runs the originals.
+for _name in ('bnb_dequantize_8bit', 'bnb_dequantize_fp4', 'bnb_dequantize_nf4'):
+    SIMULATOR_ISSUES[_name] = ('skipped: GPGPU-Sim does not parse `mov.b32 %f, {0, %rs}` in the original\'s bf16 kernels '
+                               '(gpgpusim/README.md, Open); a Tesla T4 runs it (differential/hardware.py)')
 CONFIG = 'SM75_RTX2060'
 ARCH = 'compute_75'
 

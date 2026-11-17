@@ -56,6 +56,8 @@ class Printer:
             fields = ' '.join(f'{f["attributes"]["name"]}: {self.type(self.child(f, "type"))};'
                               for f in self.children(s, 'fields'))
             lines.append(f'  struct {s["attributes"]["name"]} {{ {fields} }}')
+        for c in self.children(module, 'constants'):  # IR version 12
+            lines.append(f'  const {c["attributes"]["name"]}: {self.type(self.child(c, "type"))} = {self.expr(self.child(c, "value"))};')
         for f in self.children(module, 'functions'):
             lines.extend(self.function(f))
         lines.append('}')
@@ -187,6 +189,8 @@ class Printer:
             return f'{self.operand(self.child(n, "base"))}.{a["member"]}'
         if k == 'Call':
             return f'{self.link(n, "function")["attributes"]["name"]}({args("arguments")})'
+        if k == 'Unary' and a['operator'] == 'clz':  # IR version 12
+            return f'qpel.clz({self.expr(self.child(n, "operand"))})'
         if k == 'Unary':
             return f'{a["operator"]}{self.operand(self.child(n, "operand"))}'
         if k == 'Binary':
@@ -304,6 +308,8 @@ class Parser:
         for scope in reversed(self.scopes):
             if name in scope:
                 return scope[name]
+        if name in getattr(self, 'module_constants', {}):
+            return self.module_constants[name]
         self.fail(f'unknown name {name}')
 
     # program
@@ -311,13 +317,28 @@ class Parser:
         self.take('module')
         module_name = self.take(kind='name')
         self.take('{')
-        structs, functions = [], []
+        structs, functions, constants = [], [], []
+        self.module_constants = {}
         while not self.accept('}'):
             if self.peek()[1] == 'struct':
                 structs.append(self.struct())
+            elif self.peek()[1] == 'const':  # IR version 12: const name: type = value;
+                self.take('const')
+                name = self.take(kind='name')
+                self.take(':')
+                t = self.type()
+                self.take('=')
+                value = self.expr()
+                self.take(';')
+                ident = self.add('ConstantDecl', {'name': name}, {'type': t, 'value': value})
+                self.module_constants[name] = ident
+                constants.append(ident)
             else:
                 functions.append(self.function())
-        module = self.add('GpuModule', {'name': module_name}, {'functions': functions, 'structs': structs})
+        children = {'functions': functions, 'structs': structs}
+        if constants:
+            children['constants'] = constants
+        module = self.add('GpuModule', {'name': module_name}, children)
         pipeline = self.pipeline(module)
         self.take(kind='end')
         return self.graph.program(module, pipeline)
@@ -661,6 +682,11 @@ class Parser:
                 return self.add('Barrier')
             if what == 'barrier_count':
                 return self.add('BarrierCount', children={'value': self.arguments()[0]})
+            if what == 'clz':  # qpel.clz(x): the leading zero bits of an integer (IR version 12)
+                self.take('(')
+                operand = self.expr()
+                self.take(')')
+                return self.add('Unary', {'operator': 'clz'}, {'operand': operand})
             if what == 'present':  # qpel.present(x): an optional buffer parameter was given (IR version 9)
                 self.take('(')
                 name = self.take(kind='name')

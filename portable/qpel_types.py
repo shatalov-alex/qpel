@@ -266,6 +266,9 @@ class TypeChecker:
         self.parents = {ref: n for n in program['nodes'] for values in n['children'].values() for ref in values}
         self.order = {f['id']: i for i, f in enumerate(self.functions)}
         # IR version 3: struct name -> {field: type term}, for kernel arguments such as ggml's kargs
+        # IR version 12: module-level constants (lookup tables), visible in every function
+        self.constants = self.children(self.nodes[program['roots']['module']], 'constants')
+        self.constant_ids = {c['id'] for c in self.constants}
         self.structs = {}
         for decl in self.children(self.nodes[program['roots']['module']], 'structs'):
             self.structs[decl['attributes']['name']] = {f['attributes']['name']: term(self.child(f, 'type'))
@@ -476,6 +479,8 @@ class TypeChecker:
                 return arithmetic(operand)
             if a['operator'] == '-' and operand == 'f32':
                 return 'f32'
+            if a['operator'] == 'clz' and operand in ('u32', 'i32', 'u64', 'i64'):  # IR version 12
+                return operand  # the leading zero bits of the pattern, 0 to its width
             check(False, 'UNARY', 'Unsupported operand type')
         if k in {'Binary', 'Minimum', 'Maximum'}:
             left, right = e('left'), e('right')
@@ -620,10 +625,15 @@ class TypeChecker:
             writable = target['kind'] == 'Name' and (expected in SCALAR_TERMS or is_vector(expected) or
                                                       (is_buffer(expected) or is_shared_view(expected))
                                                       and self.target(target, 'declaration')['kind'] == 'Variable')
+            if target['kind'] == 'Name' and self.target(target, 'declaration')['kind'] == 'ConstantDecl':
+                writable = False
             if target['kind'] == 'Member' and self.child(target, 'base')['kind'] == 'Name':
                 writable = is_vector(self.expr(self.child(target, 'base'), env, function))  # v.x = ...
             if target['kind'] == 'Index':
                 base = self.expr(self.child(target, 'base'), env, function)
+                indexed = self.child(target, 'base')
+                if indexed['kind'] == 'Name' and self.target(indexed, 'declaration')['kind'] == 'ConstantDecl':
+                    base = 'void'  # a constant table is read-only (IR version 12)
                 writable = is_buffer(base) and access(base) == 'write' or is_array(base) or is_shared(base) \
                     or is_shared_view(base)
             check(writable, 'READ_ONLY', 'Assignment target is not writable')
@@ -689,7 +699,24 @@ class TypeChecker:
             for field, t in fields.items():
                 if t not in SCALAR_TERMS:
                     raise ValueError(f'struct {name}: field {field} must be a scalar, not {t}')
-        function_names = set()
+        constant_names = set()
+        for constant in self.constants:
+            self.unique(constant, constant_names)
+            t = self.declared(constant)
+            value = self.child(constant, 'value')
+            literal = lambda n: n['kind'] in ('Literal', 'I32Literal', 'F32Literal', 'Constant') or \
+                n['kind'] == 'Unary' and n['attributes'].get('operator') == '-' and literal(self.child(n, 'operand'))
+            if is_array(t):
+                self.require(constant, value['kind'] == 'ArrayValue' and len(self.children(value, 'elements')) == array_length(t)
+                             and all(literal(x) for x in self.children(value, 'elements')), 'CONSTANT_VALUE',
+                             'A constant array is initialized with one literal per element')
+                for x in self.children(value, 'elements'):
+                    self.require(x, fits(array_element(t), self.expr(x, set(), None)), 'CONSTANT_VALUE',
+                                 f'Expected {array_element(t)}')
+            else:
+                self.require(constant, t in SCALAR_TERMS and literal(value) and fits(t, self.expr(value, set(), None)),
+                             'CONSTANT_VALUE', 'A constant is a scalar or an array of scalars, given by literals')
+        function_names = set(constant_names)
         for function in self.functions:
             self.unique(function, function_names)
             kernel = function['attributes'].get('isKernel', False)
@@ -699,7 +726,7 @@ class TypeChecker:
             self.require(function, result in SCALAR_TERMS | {'void'} or is_vector(result) and is_valid(result), 'RESULT_TYPE',
                          'Result must be a scalar, a vector or void')
             self.require(function, (result == 'void' and bool(domain) and bool(params)) if kernel else not domain, 'FUNCTION_ABI', 'Kernel needs void result, Grid1D and parameters; helpers cannot have domains')
-            names, bindings, env = set(), set(), set()
+            names, bindings, env = set(), set(), set(self.constant_ids)
             for param in params:
                 self.unique(param, names)
                 t, a = self.declared(param), param['attributes']

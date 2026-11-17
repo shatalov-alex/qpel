@@ -23,7 +23,9 @@ def optional(kinds):
     return (set(kinds.split()) if isinstance(kinds, str) else kinds, 0, 1)
 
 CHILDREN = {
-    'GpuModule': {'functions': many('Function'), 'structs': many('StructDecl')},
+    'GpuModule': {'functions': many('Function'), 'structs': many('StructDecl'), 'constants': many('ConstantDecl')},
+    # IR version 12: a module-level constant (a lookup table: bitsandbytes' NF4 values), read by every function
+    'ConstantDecl': {'type': one(TYPE_KINDS), 'value': one(EXPRESSIONS)},
     'StructDecl': {'fields': many('Field')},
     'Field': {'type': one(TYPE_KINDS)},
     'Function': {'parameters': many('Parameter'), 'resultType': one(TYPE_KINDS), 'body': one('Block'), 'domain': optional('Grid1D Grid3D Groups')},
@@ -83,7 +85,7 @@ CHILDREN['Bitcast'] = {'operand': one(EXPRESSIONS)}
 
 # Links are required except Resource.extent (shape resources have no extent).
 LINKS = {
-    'Name': {'declaration': {'Parameter', 'Variable'}},
+    'Name': {'declaration': {'Parameter', 'Variable', 'ConstantDecl'}},
     'Call': {'function': {'Function'}},
     'Pipeline': {'module': {'GpuModule'}},
     'Resource': {'extent': {'Resource'}},
@@ -94,7 +96,7 @@ LINKS = {
 ATTRIBUTES = {
     'GpuModule': {'name': str}, 'Function': {'name': str, 'isKernel': bool},
     'Parameter': {'name': str, 'binding': int, 'isBuffer': bool, 'reference': bool, 'optional': bool},
-    'Variable': {'name': str}, 'Literal': {'value': str}, 'I32Literal': {'value': str}, 'F32Literal': {'value': str},
+    'Variable': {'name': str}, 'ConstantDecl': {'name': str}, 'Literal': {'value': str}, 'I32Literal': {'value': str}, 'F32Literal': {'value': str},
     'Binary': {'operator': str}, 'Unary': {'operator': str},
     'Member': {'member': str}, 'Pipeline': {'name': str},
     'Resource': {'name': str, 'kind': str, 'scale': int, 'length': int, 'optional': bool},

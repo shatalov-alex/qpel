@@ -89,6 +89,16 @@ Arrays passed to helpers by reference, as kernels pass several items per thread 
 
 Arrays of vectors: an `ArrayType` element may be a vector (`array<vec<f32, 2>, 4>`), as CUB-style code keeps several items of a pair type per thread (mamba's selective scan scans `float2` pairs). Everything that holds for arrays holds for these: thread-private locals initialized element by element (an `ArrayValue` of `VectorValue`s, zero vectors where C has no initializer), indexed, never values otherwise, and passed to helpers by reference. An element is a vector value (`items[k].x`, `items[k] = vec<f32, 2>(a, b)`). CUDA and Metal write `float2 items[4]`. The CUDA importer reads such locals (a default-constructed `float2 items[4]` has no initializer) and `float2 (&)[N]` parameters. examples/vector_arrays.qpel, tests/test_vector_arrays.py. A program with one is version 11.
 
+## IR version 12
+
+Module-level constants and `qpel.clz`, as bitsandbytes dequantises its 4-bit codes.
+
+- **Constants.** `GpuModule` has `constants`: `ConstantDecl {name}` with a type (a scalar, or an array of scalars) and a value given by literals (an `ArrayValue` of one literal per element; a negative number is `-` of a literal). Every function may read it by `Name`, an array only indexed (`nf4[code]`), and none may assign it. Text: `const nf4: array<f32, 16> = [...];` among the module's functions. CUDA writes `__device__ const T name[N]`, Metal `constant T name[N]`.
+- **`qpel.clz(x)`** (a `Unary` with operator `clz`) is the number of leading zero bits of an integer's pattern: on `u32` and `i32` 0 to 32, on `u64` and `i64` 0 to 64, of the operand's type (CUDA `__clz`/`__clzll`, Metal `clz`).
+- **The CUDA importer** reads a program-scope array with an initializer list that no function writes, takes the address of or passes on (`__device__ static float lut[8] = {...}`) as a module constant where a function first reads it, and `__clz`, `__clzll` and Metal's `clz` as `qpel.clz`. It also reads `switch` statements, which qpel does not have: on a constant (a template parameter) as the case taken, otherwise as a local holding the value and an if-else chain, when no case falls through and no `break` is nested in a case.
+
+examples/lookup_tables.qpel, tests/test_lookup_tables.py. A program with either is version 12.
+
 ## Numeric revision
 
 New exports use `qpel-portable-core-v1` and the `u32-modulo-v1` numeric emitter. See NUMERICS.md for exact rules, migration limitations and CPU UBSan evidence. Earlier sections describing exact native source parity and incomplete numeric lowering refer to the preceding revision; only the compatibility rendering now has native token parity. Dynamic division-by-zero, pointer validity and GPU execution remain unchecked.

@@ -32,7 +32,7 @@ namespace lib {
 template <typename T> __device__ T twice(T v) { return v + v; }
 __device__ int lowest(long long* s, int n) {
   double done[2];
-  switch (n) { default: atomicAdd(s + n, 1ll); }
+  switch (n) { case 0: atomicAdd(s + n, 1ll); case 1: break; }  // case 0 falls through: not in qpel
   return n;
 }
 __global__ void k(long long* s, float* out, unsigned int n) {
@@ -45,7 +45,7 @@ void launch(long long* s, float* out, unsigned int n) { lib::k<<<1, 1>>>(s, out,
         self.assertEqual(results['launch']['kind'], 'host')
         # a template used with two types becomes one function per instantiation
         self.assertEqual((codes['twice_u32'], codes['twice_i32']), ([], []))
-        # the switch is reported, and so is what is inside it
+        # a switch whose case falls through is reported, and so is what is inside it
         self.assertEqual(sorted(set(codes['lowest'])), ['atomic-type', 'local-type', 'switch'])
         # k's own blocker (signed 64-bit atomics, through lowest's parameter) and those of the functions it calls
         self.assertEqual(codes['k'], ['atomic-type'])

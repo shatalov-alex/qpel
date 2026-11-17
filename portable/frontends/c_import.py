@@ -22,7 +22,7 @@ from .facades import inline_facades
 from .views import dead_parameters, shared_views
 from .functors import scalarize_functors
 from .demote import demote_unit
-from .statics import constant_values, desugar_aliases, flatten_argument_structs, lift_statics, single_rows, read_enums, local_pointers_as_references
+from .statics import constant_values, desugar_aliases, flatten_argument_structs, instances_to_definitions, lift_statics, lower_switches, single_rows, read_enums, local_pointers_as_references
 
 IR_HEADER = {'format': 'qpel.ir', 'version': 1, 'semantics': 'qpel-portable-core-v1'}
 U32_MAX = 2**32 - 1
@@ -601,7 +601,9 @@ class Graph:
 class Importer:
     def __init__(self, unit, source, path, dialect, module, survey=False):
         self.dialect = DIALECT[dialect]
+        instances_to_definitions(unit)  # template <...> __global__ void k(...); in a header, defined here (statics.py)
         desugar_aliases(unit)  # typename Traits<...>::input_t *: float * (statics.py)
+        lower_switches(unit)  # switch (DATA_TYPE): the case taken; switch (x): an if-else chain (statics.py)
         single_rows(unit)  # for (int r = 0; r < kNRows; ++r) with kNRows = 1, T a[1][N] (statics.py)
         flatten_argument_structs(unit)  # SSMParamsBase params: params_u_ptr, params_seqlen, ... (statics.py)
         read_enums(unit)  # SUM, MEAN, ...: their values; enum-typed expressions: the underlying integer
@@ -705,6 +707,9 @@ class Importer:
                     if t[0] == 'scalar' and t[1] in SCALAR_TERMS and 'const' in node['type']['qualType'].split():
                         self.global_values.setdefault(node['id'], (node['name'], node['inner'][0]))
         header_constants(unit.get('inner', ()))
+        self.tables = constant_tables(unit)  # clang id -> VarDecl of a program-scope table never written (IR version 12)
+        self.table_idents = {}  # clang id -> its ConstantDecl, made where a function first reads it
+        self.constant_decls = []
         headers = [d['name'] for d in decls if d.get('_header')]
         if headers:
             self.adaptations.append('device functions from included headers were imported: ' + ', '.join(headers))
@@ -1233,7 +1238,10 @@ class Importer:
         structs = [self.graph.add('StructDecl', {'name': name},
                                   {'fields': [self.graph.add('Field', {'name': f}, {'type': self.type_node(t)}) for f, t in fields]})
                    for name, fields in self.structs.items()]
-        module = self.graph.add('GpuModule', {'name': self.module}, {'functions': function_ids, 'structs': structs})
+        children = {'functions': function_ids, 'structs': structs}
+        if self.constant_decls:
+            children['constants'] = list(self.constant_decls)
+        module = self.graph.add('GpuModule', {'name': self.module}, children)
         pipeline = self.pipeline(module, plan, block_size)
         return self.graph.program(module, pipeline)
 
@@ -2212,6 +2220,71 @@ class Importer:
             return self.graph.add('I32Literal', {'value': str(value)})
         return self.graph.add('Constant', {'scalar': scalar, 'value': str(value)})
 
+    def constant_table(self, ident, where):
+        """The module constant (IR version 12) of a program-scope lookup table, made when first read:
+        `__device__ static float lut[8] = {...}` (bitsandbytes), `constant float x[4] = {...}` (Metal)."""
+        if ident in self.table_idents:
+            return self.table_idents[ident]
+        decl = self.tables[ident]
+        array = LOCAL_ARRAY.fullmatch(' '.join(w for w in decl['type']['qualType'].split() if w not in ('const', 'static', 'constant')))
+        element = describe(array.group(1)) if array else ('other',)
+        if not array or element[0] != 'scalar' or element[1] not in SCALAR_TERMS - {'bool'}:
+            raise Unsupported(where, 'global-variable', f'{decl["name"]} is a table of {decl["type"]["qualType"]}; '
+                                                         'module constants hold scalars')
+        scalar, length = element[1], int(array.group(2))
+        init = next(c for c in decl['inner'] if c.get('kind') in ('InitListExpr', 'ExprWithCleanups', 'ConstantExpr'))
+        while init.get('kind') in ('ExprWithCleanups', 'ConstantExpr') and init.get('inner'):
+            init = init['inner'][0]
+        items = list(init.get('inner', ()))
+        if 'array_filler' in init:
+            filler, *written = init['array_filler']
+            items = written + items
+        if len(items) > length:
+            raise Unsupported(where, 'global-variable', f'{decl["name"]} has more initializers than elements')
+        values = [self.literal_value(item, scalar, where) for item in items] + \
+            [self.literal_value(None, scalar, where) for _ in range(length - len(items))]
+        node = self.graph.add('ConstantDecl', {'name': self.safe_name(decl['name'])},
+                              {'type': self.graph.add('ArrayType', {'element': scalar, 'length': length}),
+                               'value': self.graph.add('ArrayValue', children={'elements': values})})
+        self.table_idents[ident] = node
+        self.constant_decls.append(node)
+        message = f'program-scope table {decl["name"]} became a module constant'
+        if message not in self.adaptations:
+            self.adaptations.append(message)
+        return node
+
+    def literal_value(self, item, scalar, where):
+        """A literal of the scalar type for one element of a table's initializer (None: zero)."""
+        value, negative = 0, False
+        if item is not None:
+            core = item
+            while True:
+                core = peel(core) if core.get('kind') in PASSTHROUGH else core
+                if core.get('kind') == 'UnaryOperator' and core.get('opcode') == '-' and core.get('inner'):
+                    negative, core = not negative, core['inner'][0]
+                    continue
+                if core.get('kind') in EXPLICIT_CASTS and core.get('inner'):
+                    core = core['inner'][0]
+                    continue
+                break
+            if core.get('kind') == 'FloatingLiteral':
+                value = float(core['value'])
+            elif core.get('kind') == 'IntegerLiteral':
+                value = int(core['value'])
+            elif core.get('kind') == 'CXXBoolLiteralExpr':
+                value = int(bool(core['value']))
+            else:
+                raise Unsupported(item, 'global-variable', 'a module constant is initialized with literals')
+        if scalar in ('f32', 'f16', 'bf16'):
+            if scalar != 'f32':
+                raise Unsupported(where, 'global-variable', f'module constants of {scalar} are not in qpel yet')
+            text = repr(float(abs(value)))
+            text = text if ('e' in text or '.' in text) else text + '.0'
+            literal = self.graph.add('F32Literal', {'value': text})
+        else:
+            literal = self.int_value(scalar, abs(int(value)))
+        return self.graph.add('Unary', {'operator': '-'}, {'operand': literal}) if negative and value != 0 else literal
+
     def copy_in_place(self, decl, args, arguments):
         """CUB's block methods may be given one array as input and output (`InclusiveScan(items, items,
         ...)`, mamba's scan), and give what they would for a copy of the input; qpel passes a variable by
@@ -2244,12 +2317,14 @@ class Importer:
                 self.adaptations.append(message)
 
     def local_array(self, base):
-        """The qpel Variable of a local array that `base` names, or None."""
+        """The qpel Variable of a local array that `base` names (or a module constant table), or None."""
         core = base
         while core.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and core.get('inner'):
             core = core['inner'][0]
         if core.get('kind') != 'DeclRefExpr':
             return None
+        if core['referencedDecl']['id'] in self.tables and self.scope.get(core['referencedDecl']['id']) is None:
+            return self.constant_table(core['referencedDecl']['id'], core)
         entry = self.scope.get(core['referencedDecl']['id'])
         group = entry and entry[0] in ('local', 'param') and (is_shared(entry[2]) or is_shared_view(entry[2]))
         return entry[1] if entry and (entry[0] in ('local', 'param') and is_array(entry[2]) or group) else None
@@ -2992,6 +3067,17 @@ class Importer:
         folded = constexpr_call(n, self.function_decls)
         if folded is not None and scalar_of(n) in INTEGER_TERMS:
             return self.int_value(scalar_of(n), folded)  # ggml_cuda_get_physical_warp_size(): 32
+        if callee in ('__clz', '__clzll', 'clz') and len(args) == 1:  # leading zero bits (IR version 12)
+            kind = scalar_of(args[0])
+            if callee == '__clz':
+                kind = 'i32'
+            elif callee == '__clzll':
+                kind = 'i64'
+            if kind not in ('u32', 'i32', 'u64', 'i64'):
+                raise Unsupported(n, 'call', f'{callee} of {kind} is not in qpel')
+            value = self.convert_types(self.expr(args[0]), scalar_of(args[0]), kind, n)
+            result = add('Unary', {'operator': 'clz'}, {'operand': value})
+            return self.convert_types(result, kind, scalar_of(n), n) if scalar_of(n) in INTEGER_TERMS else result
         if callee in ('__syncthreads', 'threadgroup_barrier'):  # (Metal's flags: qpel's barrier orders both)
             return add('Barrier')
         if callee in ('__syncthreads_count', 'qpel_barrier_count'):
@@ -3764,6 +3850,45 @@ def assigned_decls(body):
             if core['kind'] == 'DeclRefExpr':
                 out.add(core['referencedDecl']['id'])
     return out
+
+
+def constant_tables(unit):
+    """{clang id: VarDecl} of the program-scope arrays with an initializer list that no function
+    writes, takes the address of or passes on: lookup tables, read as module constants."""
+    found = {}
+
+    def visit(node):
+        kind = node.get('kind')
+        if kind in ('NamespaceDecl', 'LinkageSpecDecl'):
+            for child in node.get('inner', ()):
+                visit(child)
+        elif kind == 'VarDecl' and 'init' in node and node.get('inner') and '[' in node.get('type', {}).get('qualType', '') \
+                and any(c.get('kind') == 'InitListExpr' or c.get('kind') == 'ExprWithCleanups' for c in node['inner']):
+            found[node['id']] = node
+    for node in unit.get('inner', ()):
+        visit(node)
+    if not found:
+        return found
+    for node in walk(unit):
+        inner = node.get('inner') or ()
+        target = None
+        if node.get('kind') in ('BinaryOperator', 'CompoundAssignOperator') and node.get('opcode', '').endswith('=') \
+                and node.get('opcode') not in ('==', '!=', '<=', '>=') and inner:
+            target = inner[0]
+        elif node.get('kind') == 'UnaryOperator' and node.get('opcode') in ('++', '--', '&') and inner:
+            target = inner[0]
+        elif node.get('kind') == 'CallExpr':
+            for arg in inner[1:]:
+                core = arg
+                while core.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and core.get('inner'):
+                    core = core['inner'][0]
+                if core.get('kind') == 'DeclRefExpr':
+                    found.pop(core.get('referencedDecl', {}).get('id'), None)  # passed on whole
+        while target is not None and target.get('kind') in ('ImplicitCastExpr', 'ParenExpr', 'ArraySubscriptExpr') and target.get('inner'):
+            target = target['inner'][0]
+        if target is not None and target.get('kind') == 'DeclRefExpr':
+            found.pop(target.get('referencedDecl', {}).get('id'), None)
+    return found
 
 
 def original_shared(importer):

@@ -1,0 +1,118 @@
+{
+ "schema": 2,
+ "module": "bnb_dequantize_nf4",
+ "resources": [
+  {
+   "name": "size",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "packed",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "blocks",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "codebook",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "code",
+   "kind": "input",
+   "type": "buffer<f32, write>",
+   "extent": "codebook"
+  },
+  {
+   "name": "A",
+   "kind": "input",
+   "type": "buffer<u8, write>",
+   "extent": "packed"
+  },
+  {
+   "name": "absmax",
+   "kind": "input",
+   "type": "buffer<f32, write>",
+   "extent": "blocks"
+  },
+  {
+   "name": "out",
+   "kind": "output",
+   "type": "buffer<f32, write>",
+   "extent": "size"
+  },
+  {
+   "name": "blocksize",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "n",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "kDequantizeBlockwise_f32_512_64_8_2",
+   "grid": "size",
+   "blockSize": 64,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "code",
+     "resource": "code"
+    },
+    {
+     "parameter": "A",
+     "resource": "A"
+    },
+    {
+     "parameter": "absmax",
+     "resource": "absmax"
+    },
+    {
+     "parameter": "out",
+     "resource": "out"
+    },
+    {
+     "parameter": "blocksize",
+     "resource": "blocksize"
+    },
+    {
+     "parameter": "n",
+     "resource": "n"
+    }
+   ],
+   "domain": "groups",
+   "blockShape": [
+    64,
+    1,
+    1
+   ],
+   "groups": [
+    "(W + 1023) / 1024",
+    "1",
+    "1"
+   ]
+  }
+ ],
+ "features": [
+  "groups",
+  "int32",
+  "int64",
+  "scalar_arguments",
+  "typed_buffers"
+ ]
+}

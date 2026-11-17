@@ -4,6 +4,11 @@
 #include <cstring>
 struct __nv_bfloat16 {
   unsigned short bits;
+  __nv_bfloat16() = default;
+  // As CUDA's type: assigned and constructed from numbers, rounded to nearest even (bitsandbytes' kernels).
+  __nv_bfloat16(float f);
+  __nv_bfloat16(double d) : __nv_bfloat16((float)d) {}
+  __nv_bfloat16(int i) : __nv_bfloat16((float)i) {}
   operator float() const { unsigned int w = (unsigned int)bits << 16; float f; std::memcpy(&f, &w, 4); return f; }
 };
 inline __nv_bfloat16 __float2bfloat16_rn(float f) {
@@ -15,6 +20,7 @@ inline __nv_bfloat16 __float2bfloat16_rn(float f) {
   r.bits = (unsigned short)(w >> 16);
   return r;
 }
+inline __nv_bfloat16::__nv_bfloat16(float f) { bits = __float2bfloat16_rn(f).bits; }
 typedef __nv_bfloat16 nv_bfloat16;
 struct __nv_bfloat162 { __nv_bfloat16 x, y; };
 typedef __nv_bfloat162 nv_bfloat162;

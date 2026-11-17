@@ -18,6 +18,13 @@ using namespace metal;
 // passes a presence flag after all of the kernel's parameters (a placeholder buffer when absent).
 #define QPEL_OPTIONAL_PARAM(type, name, binding, presence) type name [[buffer(binding)]], constant uint& qpel_present_##name [[buffer(presence)]]
 #define QPEL_PRESENT(name) (qpel_present_##name != 0u)
+// IR version 12: module-level constant tables, and the leading zero bits of an integer.
+#define QPEL_CONSTANT_ARRAY(T, name, length) constant T name[length]
+#define QPEL_CONSTANT(T, name) constant T name
+#define QPEL_CLZ_U32(x) clz((uint)(x))
+#define QPEL_CLZ_I32(x) clz((int)(x))
+#define QPEL_CLZ_U64(x) clz((ulong)(x))
+#define QPEL_CLZ_I64(x) clz((long)(x))
 #define QPEL_GRID_PARAM(name) , uint name [[thread_position_in_grid]]
 #define QPEL_GRID_LOCAL(name)
 #define QPEL_LOAD(address) atomic_load_explicit((address), memory_order_relaxed)

@@ -436,9 +436,39 @@ def mamba_selective_scan_fwd(plan, seed, shapes=None):
     return out
 
 
+def bnb_dequantize(fmt):
+    """bitsandbytes' kDequantizeBlockwise (fp32 output): random codes packed as bnb stores them (one
+    byte per value for 8-bit, two 4-bit codes per byte for FP4 and NF4, the first in the high
+    nibble), a 256-entry codebook for 8-bit, and a positive absmax per block of `blocksize` values
+    (bnb's block sizes 64 to 4096). The kernel takes blocksize / 2 for the 4-bit formats (bnb's
+    host does so). Lengths leave partial tiles and, for 4 bits, odd counts. Threads past the end of
+    a partial tile still read their block's absmax, so absmax covers whole tiles, as bnb's allocator
+    rounding would."""
+    def make(plan, seed, shapes=None):
+        rng = np.random.default_rng(seed)
+        out = []
+        for n, blocksize in ((1, 64), (300, 64), (512, 128), (1000, 256), (4097, 4096), (9999, 1024)):
+            four = fmt > 0
+            tile = 1024 if four else 512
+            grid = (n + tile - 1) // tile
+            nbytes = (n + 1) // 2 if four else n
+            kernel_block = blocksize // 2 if four else blocksize
+            blocks = (grid * 512 + kernel_block - 1) // kernel_block  # every thread of every tile has its absmax
+            inputs = {'code': np.sort(rng.uniform(-1, 1, 256)).astype(np.float32),
+                      'A': rng.integers(0, 256, nbytes, dtype=np.uint8),
+                      'absmax': rng.uniform(0.01, 4.0, blocks).astype(np.float32)}
+            shapes_ = {'size': (n, 1, 1), 'packed': (nbytes, 1, 1), 'blocks': (blocks, 1, 1), 'codebook': (256, 1, 1)}
+            values = {'blocksize': kernel_block, 'n': n}
+            out.append(Case(shapes_, inputs, values, f'n={n} blocksize={blocksize}'))
+        return out
+    return make
+
+
 SPECIAL = {'scale_offset': scale_offset, 'sam2_cc': sam2_cc, 'grid_stride': grid_stride,
            'mmcv_roi_align_forward': mmcv_roi_align, 'mmcv_nms': mmcv_nms, 'mmcv_roi_pool_forward': mmcv_roi_pool,
            'mamba_selective_scan_fwd': mamba_selective_scan_fwd,
+           'bnb_dequantize_8bit': bnb_dequantize(0), 'bnb_dequantize_fp4': bnb_dequantize(1),
+           'bnb_dequantize_nf4': bnb_dequantize(2),
            'pytorch_sparse_spmm_sum': sparse_spmm, 'pytorch_sparse_spmm_mean': sparse_spmm,
            'pytorch_sparse_spmm_max': sparse_spmm, 'pytorch_sparse_spmm_value_bw_mean': sparse_spmm_value_bw}
 PREFIXES = {'trellis2_hashmap_': hashmap_cases, 'trellis2_hash3d_': hash3d_cases}  # families of corpus programs

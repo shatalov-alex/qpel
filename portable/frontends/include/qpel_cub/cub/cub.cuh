@@ -631,6 +631,21 @@ class BlockScan {
   T* storage;
 };
 
+// Declared only (not in the subset yet): cub::WarpReduce, logical warps included; a source that calls it
+// imports with the call reported.
+template <typename T, int LOGICAL_WARP_THREADS = 32, int LEGACY_PTX_ARCH = 0>
+class WarpReduce {
+ public:
+  typedef T TempStorage[1];
+  __device__ __forceinline__ WarpReduce(TempStorage& storage) : storage(storage) {}
+  template <typename Op> __device__ T Reduce(T input, Op op) { qpel_detail::qpel_unsupported(); return input; }
+  template <typename Op> __device__ T Reduce(T input, Op op, int valid) { qpel_detail::qpel_unsupported(); return input; }
+  __device__ T Sum(T input) { qpel_detail::qpel_unsupported(); return input; }
+
+ private:
+  T* storage;
+};
+
 template <typename T, int BLOCK_DIM_X, BlockReduceAlgorithm ALGORITHM = BLOCK_REDUCE_WARP_REDUCTIONS, int BLOCK_DIM_Y = 1,
           int BLOCK_DIM_Z = 1, int LEGACY_PTX_ARCH = 0>
 class BlockReduce {

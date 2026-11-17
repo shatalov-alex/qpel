@@ -154,6 +154,9 @@ inline bool isfinite(float x) { return std::isfinite(x); }
 inline bool signbit(float x) { return std::signbit(x); }
 inline uint popcount(uint x) { return (uint)__builtin_popcount(x); }
 inline uint clz(uint x) { return x ? (uint)__builtin_clz(x) : 32u; }
+inline int clz(int x) { return (int)clz((uint)x); }
+inline ulong clz(ulong x) { return x ? (ulong)__builtin_clzll(x) : 64ul; }
+inline long clz(long x) { return (long)clz((ulong)x); }
 inline uint ctz(uint x) { return x ? (uint)__builtin_ctz(x) : 32u; }
 namespace precise { using metal::sqrt; using metal::exp; using metal::log; using metal::sin; using metal::cos;
                     using metal::tanh; using metal::pow; using metal::rsqrt; }
