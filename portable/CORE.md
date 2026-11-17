@@ -125,6 +125,15 @@ Arrays of matrices, as llama.cpp's `kernel_mul_mm` keeps its accumulators (`simd
 
 examples/matrix_blocks.qpel (each subgroup a 16 x 16 block of C from 2 x 2 accumulators, f32 and f16), tests/test_matrix_arrays.py: the CPU simulator bit for bit in k order, GPGPU-Sim (f32 bit for bit, f16 within the bound) and the Apple GPU (within the bound). A program with an array of matrices is version 14.
 
+## IR version 15
+
+Column-major matrix memory, as BLAS, NVIDIA's WMMA samples (B as `col_major`) and Metal's transposed `simdgroup_load` keep matrices.
+
+- **Operations.** `qpel.matrix_load_columns(base, offset, stride)` and `qpel.matrix_store_columns(m, base, offset, stride)` (`MatrixLoad` and `MatrixStore` with `columns: true`): element (r, c) is `base[offset + c stride + r]`, where `matrix_load` has `base[offset + r stride + c]`. The rules are those of IR version 13.
+- **Lowering.** Metal: `simdgroup_load` and `simdgroup_store` transposed (`ulong2(0), true`). CUDA: each lane's two elements, row `lane / 4` and columns `2 (lane % 4)` and the next, at `offset + 2 (lane % 4) stride + lane / 4` and one stride further.
+
+examples/matrix_columns.qpel (row-major A times column-major B into column-major C, f32 and f16), tests/test_matrix_columns.py: the CPU simulator bit for bit in k order, GPGPU-Sim (f32 bit for bit, f16 within the bound) and the Apple GPU (within the bound). A program with column-major matrix memory is version 15.
+
 ## Optimisation passes
 
 `qpel_opt.py` holds passes that read a validated program and tell the lowering how to emit it faster, with the same results; they never change the IR, whose meaning stays the portable one. Kept apart from the portability lowering (ROADMAP, Phase 6):

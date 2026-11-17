@@ -366,6 +366,15 @@ template <class M, class P> inline void qpel_matrix_store(M m, P base, uint offs
 #define QPEL_MATRIX_LOAD_F16(base, offset, stride) qpel_matrix_load<simdgroup_half8x8>((base), (offset), (stride))
 #define QPEL_MATRIX_STORE_F32(m, base, offset, stride) qpel_matrix_store((m), (base), (offset), (stride))
 #define QPEL_MATRIX_STORE_F16(m, base, offset, stride) qpel_matrix_store((m), (base), (offset), (stride))
+// IR version 15: column-major memory (Metal's transposed load and store)
+template <class M, class P> inline M qpel_matrix_load_columns(P base, uint offset, uint stride) {
+  M m; simdgroup_load(m, base + offset, (ulong)stride, ulong2(0), true); return m; }
+template <class M, class P> inline void qpel_matrix_store_columns(M m, P base, uint offset, uint stride) {
+  simdgroup_store(m, base + offset, (ulong)stride, ulong2(0), true); }
+#define QPEL_MATRIX_LOAD_COLUMNS_F32(base, offset, stride) qpel_matrix_load_columns<simdgroup_float8x8>((base), (offset), (stride))
+#define QPEL_MATRIX_LOAD_COLUMNS_F16(base, offset, stride) qpel_matrix_load_columns<simdgroup_half8x8>((base), (offset), (stride))
+#define QPEL_MATRIX_STORE_COLUMNS_F32(m, base, offset, stride) qpel_matrix_store_columns((m), (base), (offset), (stride))
+#define QPEL_MATRIX_STORE_COLUMNS_F16(m, base, offset, stride) qpel_matrix_store_columns((m), (base), (offset), (stride))
 inline simdgroup_float8x8 qpel_matrix_mma_f32(simdgroup_float8x8 a, simdgroup_float8x8 b, simdgroup_float8x8 c) {
   simdgroup_float8x8 d; simdgroup_multiply_accumulate(d, a, b, c); return d; }
 inline simdgroup_float8x8 qpel_matrix_mma_f16(simdgroup_half8x8 a, simdgroup_half8x8 b, simdgroup_float8x8 c) {

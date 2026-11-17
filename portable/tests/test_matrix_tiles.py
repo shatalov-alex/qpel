@@ -270,11 +270,23 @@ class MetalImport(unittest.TestCase):
             self.assertIn('qpel.matrix_load(a, (row * k) + i, k)', text)
             self.assertIn('qpel.matrix_store(sum, c, (row * n) + column, n)', text)
 
+    def test_transposed(self):
+        # a transposed load or store is column-major memory (IR version 15)
+        from frontends.c_import import import_source
+        with tempfile.TemporaryDirectory() as work:
+            path = Path(work)/'k.metal'
+            path.write_text(METAL.replace('simdgroup_load(right, b + i * n + column, n);',
+                                          'simdgroup_load(right, b + column * k + i, k, ulong2(0), true);'))
+            program, _ = import_source(path, kernels=['gemm_float'], module='gemm_float')
+            validate(program)
+            self.assertEqual(program['version'], 15)
+            self.assertIn('qpel.matrix_load_columns(b, (column * k) + i, k)', print_program(program))
+
     def test_not_in_qpel(self):
         from frontends.c_import import import_source
         for old, new, message in (
-                ('simdgroup_load(right, b + i * n + column, n);', 'simdgroup_load(right, b + i * n + column, n, ulong2(0), true);',
-                 'transposed'),
+                ('simdgroup_load(right, b + i * n + column, n);', 'simdgroup_load(right, b + i * n + column, n, ulong2(1, 0), false);',
+                 'origin'),
                 ('simdgroup_float8x8 sum = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);', 'simdgroup_float8x8 sum(1.0f);',
                  'diagonal')):
             with self.subTest(new), tempfile.TemporaryDirectory() as work:

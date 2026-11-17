@@ -213,7 +213,7 @@ MATRIX_CALLS = {'simdgroup_load', 'simdgroup_store', 'simdgroup_multiply_accumul
 
 QPEL_MATRIX_TYPE = re.compile(r'(?:const\s+)?qpel_matrix_(f32|f16)\s*&?')  # qpel's own CUDA (backends/cuda.h)
 QPEL_MATRIX_CALLS = {'qpel_matrix_fill_f32', 'qpel_matrix_fill_f16', 'qpel_matrix_load', 'qpel_matrix_store',
-                     'qpel_matrix_mma_f32', 'qpel_matrix_mma_f16'}
+                     'qpel_matrix_mma_f32', 'qpel_matrix_mma_f16', 'qpel_matrix_load_columns', 'qpel_matrix_store_columns'}
 
 
 # NVIDIA's WMMA (mma.h): a 16 x 16 fragment is a 2 x 2 array of qpel's 8 x 8 matrices (IR version 14), block
@@ -2268,8 +2268,6 @@ class Importer:
             raise Unsupported(decl, 'matrix', 'a half accumulator is not in qpel (it accumulates in f32)')
         if use != 'accumulator' and element != 'f16':
             raise Unsupported(decl, 'matrix', 'WMMA inputs of float (tf32) are not in qpel; its inputs are half')
-        if layout == 'col_major':
-            raise Unsupported(decl, 'matrix', f'a column-major {use} fragment is not in qpel yet (row_major is)')
         if 'init' in decl and not (decl['inner'][0]['kind'] == 'CXXConstructExpr' and not decl['inner'][0].get('inner')):
             raise Unsupported(decl, 'matrix', f'fragment {name} is set by fill_fragment or load_matrix_sync, not an initializer')
         mtype = f'matrix<{element}, 8, 8>'
@@ -2303,13 +2301,18 @@ class Importer:
         u32 = lambda a: self.expr(a) if scalar_of(a) == 'u32' else self.convert_types(self.expr(a), scalar_of(a), 'u32', n)
         plus = lambda l, r: r if l is None else add('Binary', {'operator': '+'}, {'left': l, 'right': r})
 
-        def layout_ok(arg):
+        def column_layout(arg):  # mem_row_major (0) or mem_col_major (1), as written or folded
             names = [x.get('referencedDecl', {}).get('name') for x in walk(arg) if x.get('kind') == 'DeclRefExpr']
             values = [x.get('value') for x in walk(arg) if x.get('kind') == 'IntegerLiteral']
-            if names != ['mem_row_major'] and not (not names and values == ['0']):  # (enum constants may arrive folded)
-                raise Unsupported(n, 'matrix', f'{callee} with a column-major layout is not in qpel yet (mem_row_major is)')
+            if names in (['mem_row_major'], ['mem_col_major']):
+                return names == ['mem_col_major']
+            if not names and values in (['0'], ['1']):
+                return values == ['1']
+            raise Unsupported(n, 'matrix', f'{callee} takes a constant memory layout (mem_row_major or mem_col_major)')
 
-        def place(address, ld, i, j):  # base and offset of block (i, j)
+        def place(address, ld, i, j, columns=False):  # base and offset of block (i, j); column-major: (j, i)
+            if columns:
+                i, j = j, i
             base, offset = self.matrix_address(address)
             core = ld
             while core['kind'] == 'ImplicitCastExpr' and core.get('castKind') == 'IntegralCast':
@@ -2327,23 +2330,25 @@ class Importer:
                 statements.append(add('Assign', children={'target': block(variable, b), 'value': add(
                     'MatrixFill', {'element': element}, {'value': value})}))
         elif callee == 'load_matrix_sync':
-            variable, (use, _, _, _) = self.fragment_arg(args[0])
+            variable, (use, _, _, layout) = self.fragment_arg(args[0])
             if use == 'accumulator':
                 if len(args) != 4:
                     raise Unsupported(n, 'matrix', 'an accumulator is loaded with a memory layout')
-                layout_ok(args[3])
+                columns = column_layout(args[3])
+            else:
+                columns = layout == 'col_major'
             for i in range(2):
                 for j in range(2):
-                    base, offset, stride = place(args[1], args[2], i, j)
+                    base, offset, stride = place(args[1], args[2], i, j, columns)
                     statements.append(add('Assign', children={'target': block(variable, 2 * i + j), 'value': add(
-                        'MatrixLoad', children={'base': base, 'offset': offset, 'stride': stride})}))
+                        'MatrixLoad', {'columns': True} if columns else {}, {'base': base, 'offset': offset, 'stride': stride})}))
         elif callee == 'store_matrix_sync':
             variable, _ = self.fragment_arg(args[1], 'accumulator')
-            layout_ok(args[3])
+            columns = column_layout(args[3])
             for i in range(2):
                 for j in range(2):
-                    base, offset, stride = place(args[0], args[2], i, j)
-                    statements.append(add('Evaluate', children={'value': add('MatrixStore', children={
+                    base, offset, stride = place(args[0], args[2], i, j, columns)
+                    statements.append(add('Evaluate', children={'value': add('MatrixStore', {'columns': True} if columns else {}, {
                         'matrix': block(variable, 2 * i + j), 'base': base, 'offset': offset, 'stride': stride})}))
         else:  # mma_sync(d, a, b, c): d_ij = c_ij + a_i0 b_0j + a_i1 b_1j, in that order
             if len(args) > 4 and not (peel(args[4]).get('kind') == 'CXXBoolLiteralExpr' and not peel(args[4]).get('value')):
@@ -2402,9 +2407,10 @@ class Importer:
         if callee.startswith('qpel_matrix_mma_'):
             return add('MatrixMma', children={'a': self.matrix_value(args[0]), 'b': self.matrix_value(args[1]),
                                                'c': self.matrix_value(args[2])})
-        if callee == 'qpel_matrix_load':
-            return add('MatrixLoad', children={'base': self.expr(args[0]), 'offset': u32(args[1]), 'stride': u32(args[2])})
-        return add('MatrixStore', children={'matrix': self.matrix_value(args[0]), 'base': self.expr(args[1]),
+        columns = {'columns': True} if callee.endswith('_columns') else {}  # IR version 15
+        if callee.startswith('qpel_matrix_load'):
+            return add('MatrixLoad', columns, {'base': self.expr(args[0]), 'offset': u32(args[1]), 'stride': u32(args[2])})
+        return add('MatrixStore', columns, {'matrix': self.matrix_value(args[0]), 'base': self.expr(args[1]),
                                              'offset': u32(args[2]), 'stride': u32(args[3])})
 
     def matrix_address(self, node):
@@ -2431,11 +2437,13 @@ class Importer:
         add = self.graph.add
         args = [a for a in n['inner'][1:] if a['kind'] != 'CXXDefaultArgExpr']
         if callee in ('simdgroup_load', 'simdgroup_store'):
-            if len(args) == 5 and self.zero_origin(args[3]) and peel(args[4]).get('kind') == 'CXXBoolLiteralExpr' \
-                    and not peel(args[4]).get('value'):
-                args = args[:3]  # simdgroup_load(m, p, stride, 0, false): the default origin, not transposed
+            columns = {}
+            if len(args) == 5 and self.zero_origin(args[3]) and peel(args[4]).get('kind') == 'CXXBoolLiteralExpr':
+                # simdgroup_load(m, p, stride, 0, transpose): the default origin; transposed is column-major memory
+                columns = {'columns': True} if peel(args[4]).get('value') else {}  # (IR version 15)
+                args = args[:3]
             if len(args) != 3:
-                raise Unsupported(n, 'matrix', f'{callee} with a matrix origin or transposed is not in qpel '
+                raise Unsupported(n, 'matrix', f'{callee} with a matrix origin is not in qpel '
                                                '(give the address of the first element and the row stride)')
             matrix, address, stride = args
             base, offset = self.matrix_address(address)
@@ -2446,8 +2454,8 @@ class Importer:
             stride = self.convert_types(self.expr(core), scalar_of(core), 'u32', n) if scalar_of(core) != 'u32' else self.expr(core)
             if callee == 'simdgroup_load':
                 return add('Assign', children={'target': self.lvalue(matrix), 'value': add(
-                    'MatrixLoad', children={'base': base, 'offset': offset, 'stride': stride})})
-            return add('Evaluate', children={'value': add('MatrixStore', children={
+                    'MatrixLoad', columns, {'base': base, 'offset': offset, 'stride': stride})})
+            return add('Evaluate', children={'value': add('MatrixStore', columns, {
                 'matrix': self.matrix_value(matrix), 'base': base, 'offset': offset, 'stride': stride})})
         target, *operands = args
         if matrix_of(target.get('type', {}).get('qualType', '')) != 'matrix<f32, 8, 8>':
@@ -2879,8 +2887,8 @@ class Importer:
             return self.wmma_statement(node, decl_name(node['inner'][0]))
         if kind == 'CallExpr' and self.callee(node) in MATRIX_CALLS - {'make_filled_simdgroup_matrix'}:
             return self.matrix_statement(node, self.callee(node))
-        if kind == 'CallExpr' and decl_name(node['inner'][0]) == 'qpel_matrix_store':  # qpel's own output
-            return add('Evaluate', children={'value': self.qpel_matrix_call(node, 'qpel_matrix_store')})
+        if kind == 'CallExpr' and decl_name(node['inner'][0]) in ('qpel_matrix_store', 'qpel_matrix_store_columns'):  # qpel's own output
+            return add('Evaluate', children={'value': self.qpel_matrix_call(node, decl_name(node['inner'][0]))})
         return add('Evaluate', children={'value': self.expr(node, statement=True)})
 
     def lvalue(self, node):

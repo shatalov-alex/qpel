@@ -174,6 +174,7 @@ class Printer:
             roles = {'MatrixLoad': ('base', 'offset', 'stride'), 'MatrixStore': ('matrix', 'base', 'offset', 'stride'),
                      'MatrixMma': ('a', 'b', 'c')}[k]
             name = {'MatrixLoad': 'matrix_load', 'MatrixStore': 'matrix_store', 'MatrixMma': 'matrix_mma'}[k]
+            name += '_columns' if a.get('columns') else ''  # IR version 15: column-major memory
             return f'qpel.{name}(' + ', '.join(self.expr(self.child(n, r)) for r in roles) + ')'
         if k == 'BufferPresent':
             return f'qpel.present({self.link(n, "parameter")["attributes"]["name"]})'
@@ -707,14 +708,15 @@ class Parser:
                 element = self.take(kind='name')
                 self.take('>')
                 return self.add('MatrixFill', {'element': element}, {'value': self.arguments()[0]})
-            if what in ('matrix_load', 'matrix_store', 'matrix_mma'):
-                kind = {'matrix_load': 'MatrixLoad', 'matrix_store': 'MatrixStore', 'matrix_mma': 'MatrixMma'}[what]
+            if what in ('matrix_load', 'matrix_store', 'matrix_mma', 'matrix_load_columns', 'matrix_store_columns'):
+                columns = what.endswith('_columns')  # IR version 15: element (r, c) at base[offset + c stride + r]
+                kind = {'matrix_load': 'MatrixLoad', 'matrix_store': 'MatrixStore', 'matrix_mma': 'MatrixMma'}[what.replace('_columns', '')]
                 roles = {'MatrixLoad': ('base', 'offset', 'stride'), 'MatrixStore': ('matrix', 'base', 'offset', 'stride'),
                          'MatrixMma': ('a', 'b', 'c')}[kind]
                 args = self.arguments()
                 if len(args) != len(roles):
                     self.fail(f'qpel.{what} takes {len(roles)} arguments')
-                return self.add(kind, children=dict(zip(roles, args)))
+                return self.add(kind, {'columns': True} if columns else {}, children=dict(zip(roles, args)))
             if what == 'clz':  # qpel.clz(x): the leading zero bits of an integer (IR version 12)
                 self.take('(')
                 operand = self.expr()

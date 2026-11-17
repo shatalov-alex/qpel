@@ -362,6 +362,17 @@ template <class M, class P> __device__ __forceinline__ void qpel_matrix_store(M 
 #define QPEL_MATRIX_LOAD_F16(base, offset, stride) qpel_matrix_load<qpel_matrix_f16>((base), (offset), (stride))
 #define QPEL_MATRIX_STORE_F32(m, base, offset, stride) qpel_matrix_store((m), (base), (offset), (stride))
 #define QPEL_MATRIX_STORE_F16(m, base, offset, stride) qpel_matrix_store((m), (base), (offset), (stride))
+// IR version 15: column-major memory, element (r, c) at base[offset + c stride + r]
+template <class M, class P> __device__ __forceinline__ M qpel_matrix_load_columns(P base, unsigned int offset, unsigned int stride) {
+  const unsigned int l = qpel_matrix_lane(), at = offset + (l & 3u) * 2u * stride + (l >> 2);
+  M m; m.v[0] = base[at]; m.v[1] = base[at + stride]; return m; }
+template <class M, class P> __device__ __forceinline__ void qpel_matrix_store_columns(M m, P base, unsigned int offset, unsigned int stride) {
+  const unsigned int l = qpel_matrix_lane(), at = offset + (l & 3u) * 2u * stride + (l >> 2);
+  base[at] = m.v[0]; base[at + stride] = m.v[1]; }
+#define QPEL_MATRIX_LOAD_COLUMNS_F32(base, offset, stride) qpel_matrix_load_columns<qpel_matrix_f32>((base), (offset), (stride))
+#define QPEL_MATRIX_LOAD_COLUMNS_F16(base, offset, stride) qpel_matrix_load_columns<qpel_matrix_f16>((base), (offset), (stride))
+#define QPEL_MATRIX_STORE_COLUMNS_F32(m, base, offset, stride) qpel_matrix_store_columns((m), (base), (offset), (stride))
+#define QPEL_MATRIX_STORE_COLUMNS_F16(m, base, offset, stride) qpel_matrix_store_columns((m), (base), (offset), (stride))
 // c[r][j] = fma(a[r][k], b[k][j], ...) for k = 0..7: a[r][k] is element k % 2 of lane 4 r + k / 2, and
 // b[k][j], j = 2 (l % 4) + i, element i of lane 4 k + l % 4.
 template <class M> __device__ __forceinline__ qpel_matrix_f32 qpel_matrix_mma_chain(M a, M b, qpel_matrix_f32 c) {

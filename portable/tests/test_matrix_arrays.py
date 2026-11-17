@@ -261,8 +261,6 @@ class MetalImport(unittest.TestCase):
     def test_not_in_qpel(self):
         from frontends.c_import import import_source
         for old, new, message in (
-                ('simdgroup_load(ma[i], lsma + 64 * i, 8, 0, false);', 'simdgroup_load(ma[i], lsma + 64 * i, 8, 0, true);',
-                 'transposed'),
                 ('simdgroup_load(ma[i], lsma + 64 * i, 8, 0, false);', 'simdgroup_load(ma[i], lsma + 64 * i, 8, ulong2(0, 1), false);',
                  'origin'),
                 ('mc[i] = make_filled', 'mc[tiitg % 4] = make_filled', 'SUBGROUP_UNIFORM')):

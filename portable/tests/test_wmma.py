@@ -40,6 +40,12 @@ __global__ void wmma_gemm(const half* a, const half* b, const float* c, float* d
   wmma::store_matrix_sync(d + row * n + column, acc, n, wmma::mem_row_major);
 }
 '''
+# B column-major (element (k, j) at b[j k + k], as NVIDIA's own WMMA sample keeps it) and D stored
+# column-major (element (r, j) at d[j m + r]): IR version 15's column-major matrix memory.
+COLUMNS = SOURCE.replace('wmma::matrix_b, 16, 16, 16, half, wmma::row_major', 'wmma::matrix_b, 16, 16, 16, half, wmma::col_major') \
+    .replace('wmma::load_matrix_sync(b_frag, b + i * n + column, n);', 'wmma::load_matrix_sync(b_frag, b + column * k + i, k);') \
+    .replace('wmma::store_matrix_sync(d + row * n + column, acc, n, wmma::mem_row_major);',
+             'wmma::store_matrix_sync(d + column * m + row, acc, m, wmma::mem_col_major);')
 GEOMETRY = {'groups': ['8', '1', '1'], 'block': [64, 1, 1]}  # 16 warps: enough for the largest case (12 tiles)
 SHAPES = ((16, 16, 16), (32, 48, 32), (64, 32, 48), (48, 64, 16))  # (n, m, k)
 
@@ -57,13 +63,24 @@ def cases():
     return out
 
 
-def oracle(case):
+def oracle(case, columns=False):
+    """(D, bound); with columns, B arrives column-major and D is returned column-major."""
+    import numpy as np
     n, m, k = case.values['n'], case.values['m'], case.values['k']
-    return gemm(case.inputs['a'], case.inputs['b'], case.inputs['c'], m, n, k)
+    b = case.inputs['b']
+    if columns:
+        b = np.ascontiguousarray(b[:n * k].reshape(n, k).T).reshape(-1)
+    want, bound = gemm(case.inputs['a'], b, case.inputs['c'], m, n, k)
+    if columns:
+        as_columns = lambda x: np.ascontiguousarray(x.reshape(m, n).T).reshape(-1)
+        want, bound = as_columns(want), as_columns(bound)
+    return want, bound
 
 
 @unittest.skipUnless(shutil.which('clang'), 'clang required')
 class Wmma(unittest.TestCase):
+    SOURCE, COLUMNS = SOURCE, False
+
     @classmethod
     def setUpClass(cls):
         from frontends.c_import import import_source
@@ -71,7 +88,7 @@ class Wmma(unittest.TestCase):
         cls.work = tempfile.TemporaryDirectory(prefix='qpel-wmma-')
         work = Path(cls.work.name)
         cls.source = work/'wmma.cu'
-        cls.source.write_text(SOURCE)
+        cls.source.write_text(cls.SOURCE)
         cls.program, cls.report = import_source(cls.source, kernels=['wmma_gemm'], module='wmma_gemm', geometry=GEOMETRY)
         (work/'p.json').write_text(json.dumps(cls.program))
         compile_program(work/'p.json', work/'build')
@@ -84,17 +101,21 @@ class Wmma(unittest.TestCase):
 
     def test_imported(self):
         validate(self.program)
-        self.assertEqual(self.program['version'], 14)
+        self.assertEqual(self.program['version'], 15 if self.COLUMNS else 14)
         text = print_program(self.program)
+        if self.COLUMNS:
+            self.assertIn('b_frag[1u] = qpel.matrix_load_columns(b, ((column * k) + i) + ((8u * k) + 0u), k);', text)
+            self.assertIn('qpel.matrix_store_columns(acc[1u], d, ((column * m) + row) + ((8u * m) + 0u), m);', text)
         self.assertIn('let a_frag: array<matrix<f16, 8, 8>, 4> = [qpel.matrix_fill<f16>(0.0f)', text)
         self.assertIn('let acc: array<matrix<f32, 8, 8>, 4> =', text)
         self.assertIn('acc[3u] = qpel.matrix_mma(a_frag[3u], b_frag[3u], qpel.matrix_mma(a_frag[2u], b_frag[1u], acc[3u]));', text)
 
     def test_not_in_qpel(self):
         from frontends.c_import import import_source
+        if self.COLUMNS:
+            self.skipTest('the row-major kernel covers these')
         for old, new, message in (
-                ('wmma::matrix_b, 16, 16, 16, half, wmma::row_major', 'wmma::matrix_b, 16, 16, 16, half, wmma::col_major', 'column-major'),
-                ('acc, n, wmma::mem_row_major);\n}', 'acc, n, wmma::mem_col_major);\n}', 'column-major'),
+                ('acc, n, wmma::mem_row_major);\n}', 'acc, n, (wmma::layout_t)(n & 1u));\n}', 'constant memory layout'),
                 ('wmma::accumulator, 16, 16, 16, float', 'wmma::accumulator, 16, 16, 16, half', 'half accumulator'),
                 ('wmma::fragment<wmma::matrix_a, 16, 16, 16, half', 'wmma::fragment<wmma::matrix_a, 32, 8, 16, half', '32x8x16')):
             with self.subTest(new), tempfile.TemporaryDirectory() as work:
@@ -121,7 +142,7 @@ class Wmma(unittest.TestCase):
         ours = Program(self.generated/'wmma_gemm.cu', self.plan, work/'q')
         for case in cases():
             n, m = case.values['n'], case.values['m']
-            want, _ = oracle(case)
+            want, _ = oracle(case, self.COLUMNS)
             for name, program in (('original', original), ('qpel', ours)):
                 got = program.run(case)['d'][:m * n]
                 np.testing.assert_array_equal(got.view(np.uint32), want.view(np.uint32), err_msg=f'{name} {case.label}')
@@ -138,7 +159,7 @@ class Wmma(unittest.TestCase):
         host = matrix.load_host(self.generated)
         for case in cases():
             n, m = case.values['n'], case.values['m']
-            want, bound = oracle(case)
+            want, bound = oracle(case, self.COLUMNS)
             got = np.asarray(metal.run_generated(host, self.plan, case)['d'])[:m * n]
             error = np.abs(got.astype(np.float64) - want)
             self.assertTrue(np.all(error <= bound), f'{case.label}: worst {np.max(error / np.maximum(bound, 1e-30)):.2f} of the bound')
@@ -165,11 +186,15 @@ class Wmma(unittest.TestCase):
                 got, error = program.outcome(folder, case)
                 self.assertIsNone(error, f'{name} {case.label}')
                 n, m = case.values['n'], case.values['m']
-                want, bound = oracle(case)
+                want, bound = oracle(case, self.COLUMNS)
                 error = np.abs(np.asarray(got['d'][:m * n], np.float64) - want)
                 self.assertTrue(np.all(error <= bound), f'{name} {case.label}: worst {np.max(error / np.maximum(bound, 1e-30)):.2f} of the bound')
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+
+class WmmaColumns(Wmma):
+    SOURCE, COLUMNS = COLUMNS, True
 
 
 if __name__ == '__main__':

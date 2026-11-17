@@ -116,6 +116,7 @@ ATTRIBUTES = {
     # IR version 4
     'ArrayType': {'element': str, 'length': int},
     'MatrixType': {'element': str}, 'MatrixFill': {'element': str},  # IR version 13
+    'MatrixLoad': {'columns': bool}, 'MatrixStore': {'columns': bool},  # IR version 15: column-major memory
     'VectorType': {'element': str, 'length': int}, 'VectorValue': {'element': str, 'length': int},
     'SharedType': {'element': str, 'length': int},
     'SharedViewType': {'element': str},
@@ -127,7 +128,8 @@ REDUCE_OPERATORS = ('add', 'min', 'max', 'and', 'or', 'xor')
 SUBGROUP_SIZE = 32  # lanes per subgroup on every backend qpel targets (NVIDIA warps, Apple SIMD-groups)
 MAX_SCALE = 4096  # elements per element of a buffer's extent: `in M * 4` for an [M, 4] tensor
 DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer', 'reference', 'optional'}, 'Resource': {'scale', 'length', 'optional'},
-             'Dispatch': {'blockHeight', 'blockDepth', 'groupsX', 'groupsY', 'groupsZ'}}
+             'Dispatch': {'blockHeight', 'blockDepth', 'groupsX', 'groupsY', 'groupsZ'}, 'MatrixLoad': {'columns'},
+             'MatrixStore': {'columns'}}
 # Every qpel name is emitted verbatim into both CUDA C++ and Metal Shading Language, so it
 # must avoid qpel keywords, C++ keywords, CUDA built-ins and Metal keywords and type names.
 QPEL_KEYWORDS = set('void bool uint int float return if while for true false kernel device min max'.split()) | \
