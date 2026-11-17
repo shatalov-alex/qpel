@@ -207,7 +207,8 @@ one store each) — a candidate is passing the count precomputed.
 `python3 -m differential.bench --cuda <program>` times qpel's Metal alone, and bitsandbytes'
 against the same dequantisation as PyTorch operations on MPS (written here, not bitsandbytes'
 code; the outputs are identical). On an M4 Pro: gsplat 9.8 ms for the frame above; bitsandbytes
-0.20 to 0.36 ms for 8M values, against 1.7 to 4.7 ms for PyTorch.
+0.20 to 0.36 ms for 8M values, against 1.7 to 4.7 ms for PyTorch; bitsandbytes' quantisation of 8M
+fp32 values in blocks of 256 (2026-11-18): 8-bit 0.58 ms, FP4 1.11 ms, NF4 0.98 ms.
 
 ## Validation
 

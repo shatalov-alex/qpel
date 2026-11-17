@@ -1,0 +1,134 @@
+{
+ "schema": 2,
+ "module": "bnb_quantize_fp4",
+ "resources": [
+  {
+   "name": "size",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "packed",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "blocks",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "codebook",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "randoms",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "code",
+   "kind": "input",
+   "type": "buffer<f32, write>",
+   "extent": "codebook"
+  },
+  {
+   "name": "A",
+   "kind": "input",
+   "type": "buffer<f32, write>",
+   "extent": "size"
+  },
+  {
+   "name": "absmax",
+   "kind": "output",
+   "type": "buffer<f32, write>",
+   "extent": "blocks"
+  },
+  {
+   "name": "out",
+   "kind": "output",
+   "type": "buffer<u8, write>",
+   "extent": "packed"
+  },
+  {
+   "name": "rand",
+   "kind": "input",
+   "type": "buffer<f32, write>",
+   "extent": "randoms"
+  },
+  {
+   "name": "rand_offset",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "n",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "kQuantizeBlockwise_f32_256_2_0_1",
+   "grid": "size",
+   "blockSize": 128,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "code",
+     "resource": "code"
+    },
+    {
+     "parameter": "A",
+     "resource": "A"
+    },
+    {
+     "parameter": "absmax",
+     "resource": "absmax"
+    },
+    {
+     "parameter": "out",
+     "resource": "out"
+    },
+    {
+     "parameter": "rand",
+     "resource": "rand"
+    },
+    {
+     "parameter": "rand_offset",
+     "resource": "rand_offset"
+    },
+    {
+     "parameter": "n",
+     "resource": "n"
+    }
+   ],
+   "domain": "groups",
+   "blockShape": [
+    128,
+    1,
+    1
+   ],
+   "groups": [
+    "(W + 255) / 256",
+    "1",
+    "1"
+   ]
+  }
+ ],
+ "features": [
+  "groups",
+  "int32",
+  "int64",
+  "scalar_arguments",
+  "typed_buffers"
+ ]
+}

@@ -464,6 +464,30 @@ def bnb_dequantize(fmt):
     return make
 
 
+def bnb_quantize(fmt):
+    """bitsandbytes' kQuantizeBlockwise (fp32 input, blocks of 256 values, 128 threads, not stochastic):
+    activations of mixed sign and magnitude (each block's absmax differs), a sorted 256-entry codebook in
+    [-1, 1] for 8-bit (bnb's dynamic map is one), and lengths with partial blocks and, for the 4-bit
+    formats, odd counts (two codes per byte, the first in the high nibble). Outputs: each block's absmax
+    and the codes."""
+    def make(plan, seed, shapes=None, sizes=(1, 255, 256, 300, 1000, 4097)):
+        rng = np.random.default_rng(seed)
+        out = []
+        for n in sizes:
+            blocks = (n + 255) // 256
+            nbytes = (n + 1) // 2 if fmt > 0 else n
+            scale = np.repeat(rng.uniform(0.01, 8.0, blocks), 256)[:n]
+            code = np.sort(rng.uniform(-1, 1, 256)).astype(np.float32)
+            code[0], code[-1] = -1.0, 1.0
+            inputs = {'code': code, 'A': (rng.standard_normal(n) * scale).astype(np.float32),
+                      'rand': rng.uniform(0, 1, 1024).astype(np.float32)}
+            shapes_ = {'size': (n, 1, 1), 'packed': (nbytes, 1, 1), 'blocks': (blocks, 1, 1), 'codebook': (256, 1, 1),
+                       'randoms': (1024, 1, 1)}
+            out.append(Case(shapes_, inputs, {'rand_offset': 0, 'n': n}, f'n={n}'))
+        return out
+    return make
+
+
 def gsplat_scene(rng, images, width, height, count, tile=16, opaque=False, away=False):
     """Inputs of gsplat's rasterize_to_pixels_3dgs_fwd for `images` images of `count` gaussians each:
     2D means in and around the image, conics (inverse 2D covariances) of ellipses 0.5 to 12 pixels
@@ -544,7 +568,8 @@ SPECIAL = {'scale_offset': scale_offset, 'sam2_cc': sam2_cc, 'grid_stride': grid
            'mmcv_roi_align_forward': mmcv_roi_align, 'mmcv_nms': mmcv_nms, 'mmcv_roi_pool_forward': mmcv_roi_pool,
            'mamba_selective_scan_fwd': mamba_selective_scan_fwd, 'gsplat_rasterize_fwd': gsplat_rasterize_fwd,
            'bnb_dequantize_8bit': bnb_dequantize(0), 'bnb_dequantize_fp4': bnb_dequantize(1),
-           'bnb_dequantize_nf4': bnb_dequantize(2),
+           'bnb_dequantize_nf4': bnb_dequantize(2), 'bnb_quantize_8bit': bnb_quantize(0), 'bnb_quantize_fp4': bnb_quantize(1),
+           'bnb_quantize_nf4': bnb_quantize(2),
            'pytorch_sparse_spmm_sum': sparse_spmm, 'pytorch_sparse_spmm_mean': sparse_spmm,
            'pytorch_sparse_spmm_max': sparse_spmm, 'pytorch_sparse_spmm_value_bw_mean': sparse_spmm_value_bw}
 PREFIXES = {'trellis2_hashmap_': hashmap_cases, 'trellis2_hash3d_': hash3d_cases}  # families of corpus programs
@@ -864,7 +889,13 @@ def bnb_bench(plan, seed, size):
     return bnb_dequantize(fmt)(plan, seed, sizes=((volume(size), 64),))[0]
 
 
-BENCH_FAMILIES = {'gsplat_rasterize_': gsplat_bench, 'bnb_dequantize_': bnb_bench, 'trellis2_hashmap_': lambda plan, seed, size: hashmap_bench(plan, seed, max(volume(size) // 8, 1)),
+def bnb_quantize_bench(plan, seed, size):
+    """bitsandbytes' blockwise quantisation of volume(size) fp32 values (8M at the default size) in blocks of 256."""
+    fmt = {'8bit': 0, 'fp4': 1, 'nf4': 2}[plan['module'].rsplit('_', 1)[1]]
+    return bnb_quantize(fmt)(plan, seed, sizes=(volume(size),))[0]
+
+
+BENCH_FAMILIES = {'gsplat_rasterize_': gsplat_bench, 'bnb_dequantize_': bnb_bench, 'bnb_quantize_': bnb_quantize_bench, 'trellis2_hashmap_': lambda plan, seed, size: hashmap_bench(plan, seed, max(volume(size) // 8, 1)),
                   'trellis2_hash3d_': lambda plan, seed, size: hash3d_bench(plan, seed, max(volume(size) // 8, 1)),
                   'trellis2_raster_': raster_bench}
 

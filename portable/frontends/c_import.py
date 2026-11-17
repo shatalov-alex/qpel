@@ -2046,6 +2046,16 @@ class Importer:
         if name.startswith('qpel_') and decl.get('storageClass') != 'auto' and ('init' not in decl or 'threadgroup' in decl['type']['qualType']):
             self.scope[decl['id']] = ('builtin', name)  # backend scratch for workgroup collectives
             return []
+        if decl.get('constexpr') and decl.get('inner') and '[' not in decl['type']['qualType'] \
+                and describe(view_spelling(decl))[0] == 'scalar' and describe(view_spelling(decl))[1] not in SCALAR_TERMS \
+                and not is_vector(describe(view_spelling(decl))[1]) and describe(view_spelling(decl))[1] not in self.records and all(
+                x.get('kind') in ('ConditionalOperator', 'ParenExpr', 'BinaryOperator', 'UnaryOperator', 'ImplicitCastExpr',
+                                  'ConstantExpr', 'IntegerLiteral', 'CXXBoolLiteralExpr', 'DeclRefExpr')
+                for x in walk(decl['inner'][0])):
+            # `static constexpr auto LOAD_ALGO = ... ? BLOCK_LOAD_WARP_TRANSPOSE : BLOCK_LOAD_DIRECT;` (bitsandbytes):
+            # a compile-time enum value naming a template argument, which clang has already resolved
+            self.scope[decl['id']] = ('untyped', name)
+            return []
         if fragment_of(decl['type']):
             return self.fragment_local(decl, name, fragment_of(decl['type']))
         if 'thread_block' in decl['type']['qualType']:
@@ -4245,12 +4255,34 @@ def written_buffers(body):
             target = node['inner'][0]
         elif node['kind'] == 'UnaryOperator' and node['opcode'] in ('++', '--'):
             target = node['inner'][0]
-        elif node['kind'] == 'CallExpr':
+        elif node['kind'] in ('CallExpr', 'CXXMemberCallExpr'):
             out.update(decl_name(a) for a in node['inner'][1:] if scalar_of(peel(a)) == 'pointer')
+            # (also through an address into the buffer: `&out[i]` or `out + i` handed to CUB's BlockStore)
+            out.update(pointer_base(a) for a in node['inner'][1:] if scalar_of(peel(a)) == 'pointer' and not const_pointee(a))
             out.update(atomic_address_base(a) for a in node['inner'][1:2])
         if target is not None and peel(target)['kind'] == 'ArraySubscriptExpr':
             out.add(decl_name(peel(target)['inner'][0]))
+    out.discard(None)
     return out
+
+
+def const_pointee(node):
+    """True when an argument reaches the callee as a pointer to const (`const T *`): the call only reads through it."""
+    spelling = node.get('type', {}).get('qualType', '')
+    return '*' in spelling and 'const' in spelling.split('*')[0].split()
+
+
+def pointer_base(node):
+    """The pointer an address is formed from: p for p, &p[i], &(p[i]) and p + i (else None)."""
+    core = peel(node)
+    while True:
+        if core.get('kind') == 'UnaryOperator' and core.get('opcode') == '&' and peel(core['inner'][0]).get('kind') == 'ArraySubscriptExpr':
+            core = peel(peel(core['inner'][0])['inner'][0])
+        elif core.get('kind') == 'BinaryOperator' and core.get('opcode') in ('+', '-') and scalar_of(peel(core['inner'][0])) == 'pointer':
+            core = peel(core['inner'][0])
+        else:
+            break
+    return core.get('referencedDecl', {}).get('name') if core.get('kind') == 'DeclRefExpr' else None
 
 
 def assigned_decls(body):
