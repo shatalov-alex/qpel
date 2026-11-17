@@ -1,0 +1,85 @@
+diff -ru pa/src/cuda-sim/cuda-sim.cc pb/src/cuda-sim/cuda-sim.cc
+--- a/src/cuda-sim/cuda-sim.cc	2026-11-17 05:41:06
++++ b/src/cuda-sim/cuda-sim.cc	2026-11-17 05:41:06
+@@ -1014,6 +1014,7 @@
+       op = SFU_OP;
+       break;
+     case MMA_OP:
++    case MMA_M16N8K8_F16_OP:
+       latency = tensor_latency;
+       initiation_interval = tensor_init;
+       op = TENSOR_CORE_OP;
+diff -ru pa/src/cuda-sim/instructions.cc pb/src/cuda-sim/instructions.cc
+--- a/src/cuda-sim/instructions.cc	2026-11-17 05:41:06
++++ b/src/cuda-sim/instructions.cc	2026-11-17 05:41:06
+@@ -5497,6 +5497,48 @@
+   ldmatrix(pI, core, inst, 4, true);
+ }
+ 
++// mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 (sm_75): D (16 x 8, f32) = A (16 x 8, f16, row
++// major) B (8 x 8, f16, column major) + C, across the warp. With g = lane / 4 and t = lane % 4, lane
++// l holds A[g][2t + j] in register 0 and A[g + 8][2t + j] in register 1 (element j in half j), B[2t +
++// j][g] in its register, and C[g][2t + j], C[g + 8][2t + j] in registers j and 2 + j. Products of
++// f16 values are exact in f32; they are added in k order. The other lanes' A and B registers are
++// read as shfl reads its sources (D and C are the lane's own), so lanes may run one after another.
++static float mma_half(const ptx_reg_t &r, unsigned j) {
++  half_float::detail::uint16 bits = (half_float::detail::uint16)((r.u32 >> (16 * j)) & 0xffff);
++  return half_float::detail::half2float<float>(bits);
++}
++void mma_m16n8k8_f16_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
++  int tid;
++  if (core->get_gpu()->is_functional_sim())
++    tid = inst.warp_id_func() * core->get_warp_size();
++  else
++    tid = inst.warp_id() * core->get_warp_size();
++  ptx_thread_info *first = core->get_thread_info()[tid];
++  int lane = first->m_warp_info->get_done_threads();
++  ptx_thread_info *thread = core->get_thread_info()[tid + lane];
++  const operand_info &dst = pI->dst();
++  const operand_info &a_op = pI->src1(), &b_op = pI->src2(), &c_op = pI->src3();
++  ptx_reg_t c[4], d[4];
++  thread->get_vector_operand_values(c_op, c, 4);
++  const unsigned g = lane / 4, t = lane % 4;
++  for (unsigned i = 0; i < 4; ++i) {
++    const unsigned row = g + (i >= 2 ? 8 : 0), col = 2 * t + (i & 1);
++    float sum = c[i].f32;
++    for (unsigned k = 0; k < 8; ++k) {
++      ptx_reg_t a[2], b[1];
++      core->get_thread_info()[tid + (row % 8) * 4 + k / 2]->get_vector_operand_values(a_op, a, 2);
++      core->get_thread_info()[tid + col * 4 + k / 2]->get_vector_operand_values(b_op, b, 1);
++      sum += mma_half(a[row >= 8 ? 1 : 0], k & 1) * mma_half(b[0], k & 1);
++    }
++    d[i].u64 = 0;
++    d[i].f32 = sum;
++  }
++  thread->set_vector_operand_values(dst, d[0], d[1], d[2], d[3]);
++  first->m_warp_info->inc_done_threads();
++  if (first->m_warp_info->get_done_threads() == inst.active_count())
++    first->m_warp_info->reset_done_threads();
++}
++
+ void shfl_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
+   unsigned i_type = pI->get_type();
+   int tid;
+diff -ru pa/src/cuda-sim/opcodes.def pb/src/cuda-sim/opcodes.def
+--- a/src/cuda-sim/opcodes.def	2026-11-17 05:41:06
++++ b/src/cuda-sim/opcodes.def	2026-11-17 05:41:06
+@@ -103,6 +103,7 @@
+ OP_DEF(SETP_OP,setp_impl,"setp",1,1)
+ OP_DEF(SET_OP,set_impl,"set",1,1)
+ OP_W_DEF(SHFL_OP,shfl_impl,"shfl",1,10)
++OP_W_DEF(MMA_M16N8K8_F16_OP,mma_m16n8k8_f16_impl,"mma.m16n8k8.f16",1,10)
+ OP_W_DEF(LDMATRIX_X1_OP,ldm_x1_impl,"ldmatrix.x1",1,10)
+ OP_W_DEF(LDMATRIX_X1_T_OP,ldm_x1t_impl,"ldmatrix.x1.trans",1,10)
+ OP_W_DEF(LDMATRIX_X2_OP,ldm_x2_impl,"ldmatrix.x2",1,10)
+diff -ru pa/src/cuda-sim/ptx.l pb/src/cuda-sim/ptx.l
+--- a/src/cuda-sim/ptx.l	2026-11-17 05:41:06
++++ b/src/cuda-sim/ptx.l	2026-11-17 05:41:06
+@@ -134,6 +134,7 @@
+ setp    TC; yylval->int_value = SETP_OP; return OPCODE;
+ set	TC; yylval->int_value = SET_OP; return OPCODE;
+ shfl	TC; yylval->int_value = SHFL_OP; return OPCODE;
++mma\.sync\.aligned\.m16n8k8\.row\.col\.f32\.f16\.f16	TC; yylval->int_value = MMA_M16N8K8_F16_OP; return OPCODE;
+ ldmatrix\.sync\.aligned\.m8n8\.x1	TC; yylval->int_value = LDMATRIX_X1_OP; return OPCODE;
+ ldmatrix\.sync\.aligned\.m8n8\.x1\.trans	TC; yylval->int_value = LDMATRIX_X1_T_OP; return OPCODE;
+ ldmatrix\.sync\.aligned\.m8n8\.x2	TC; yylval->int_value = LDMATRIX_X2_OP; return OPCODE;

@@ -2,6 +2,7 @@
 // integer and float conversions qpel's CUDA uses (device against host C semantics, in
 // ranges where C defines them). differential/gpgpusim.py runs it before any NVIDIA row.
 #include <cstdio>
+#include <cuda_fp16.h>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
@@ -115,8 +116,53 @@ __global__ void load_matrices(unsigned* out) {
   asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0, %1, %2, %3}, [%4];"
                : "=r"(o[5]), "=r"(o[6]), "=r"(o[7]), "=r"(o[8]) : "r"(addr));
 }
+// mma.sync m16n8k8 f16 -> f32 (qpel-mma.patch): small integers, so any order of the sums gives the
+// same bits. With g = lane / 4 and t = lane % 4, lane l holds A[g][2t + j] (register 0) and
+// A[g + 8][2t + j] (register 1), B[2t + j][g], and C, D[g][2t + j] (j) and [g + 8][2t + j] (2 + j).
+__device__ __host__ inline float mma_a(unsigned r, unsigned k) { return (float)((int)((r * 3u + k * 5u) % 7u) - 3); }
+__device__ __host__ inline float mma_b(unsigned k, unsigned c) { return (float)((int)((k * 5u + c * 2u) % 9u) - 4); }
+__device__ __host__ inline float mma_c(unsigned r, unsigned c) { return (float)((int)r - 2 * (int)c); }
+__device__ inline unsigned mma_pack(float lo, float hi) {
+  return (unsigned)__half_as_ushort(__float2half_rn(lo)) | ((unsigned)__half_as_ushort(__float2half_rn(hi)) << 16);
+}
+__global__ void multiply_matrices(float* out) {
+  unsigned lane = threadIdx.x, g = lane / 4u, t = lane % 4u;
+  unsigned a0 = mma_pack(mma_a(g, 2u * t), mma_a(g, 2u * t + 1u)), a1 = mma_pack(mma_a(g + 8u, 2u * t), mma_a(g + 8u, 2u * t + 1u));
+  unsigned b = mma_pack(mma_b(2u * t, g), mma_b(2u * t + 1u, g));
+  float c0 = mma_c(g, 2u * t), c1 = mma_c(g, 2u * t + 1u), c2 = mma_c(g + 8u, 2u * t), c3 = mma_c(g + 8u, 2u * t + 1u), d[4];
+  asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 {%0, %1, %2, %3}, {%4, %5}, {%6}, {%7, %8, %9, %10};"
+               : "=f"(d[0]), "=f"(d[1]), "=f"(d[2]), "=f"(d[3]) : "r"(a0), "r"(a1), "r"(b), "f"(c0), "f"(c1), "f"(c2), "f"(c3));
+  for (unsigned i = 0; i < 4u; ++i) out[lane * 4u + i] = d[i];
+}
+// A register declared in a nested { } block shadows the enclosing one (qpel-scopes.patch): the inner
+// t is 7, the outer keeps x.
+__global__ void nested_scopes(unsigned* out, unsigned x) {
+  unsigned y;
+  asm volatile("{ .reg .u32 t; mov.u32 t, %1; { .reg .u32 t; mov.u32 t, 7; } mov.u32 %0, t; }" : "=r"(y) : "r"(x));
+  out[threadIdx.x] = y;
+}
 int main() {
   int failures = 0;
+  { // nested register scopes
+    unsigned h[32], *d; cudaMalloc(&d, sizeof h);
+    nested_scopes<<<1, 32>>>(d, 41u); cudaDeviceSynchronize(); cudaMemcpy(h, d, sizeof h, cudaMemcpyDeviceToHost);
+    if (h[0] != 41u) { printf("SELFTEST FAIL nested .reg scopes: the outer register became %u, want 41\n", h[0]); ++failures; }
+  }
+  { // mma.sync m16n8k8: D = A B + C, laid out across the warp as the PTX ISA documents
+    static float h[32 * 4]; float* d; cudaMalloc(&d, sizeof h);
+    multiply_matrices<<<1, 32>>>(d); cudaDeviceSynchronize(); cudaMemcpy(h, d, sizeof h, cudaMemcpyDeviceToHost);
+    for (unsigned l = 0; l < 32u; ++l) {
+      for (unsigned i = 0; i < 4u; ++i) {
+        unsigned r = l / 4u + (i >= 2u ? 8u : 0u), c = 2u * (l % 4u) + (i & 1u);
+        float want = mma_c(r, c);
+        for (unsigned k = 0; k < 8u; ++k) want += mma_a(r, k) * mma_b(k, c);
+        if (h[l * 4u + i] != want) {
+          printf("SELFTEST FAIL mma.sync.m16n8k8: lane %u register %u gives %g, want %g\n", l, i, h[l * 4u + i], want);
+          ++failures; l = 32u; break;
+        }
+      }
+    }
+  }
   { // ldmatrix: lane l gets columns 2 (l % 4) and 2 (l % 4) + 1 of row l / 4 (.trans: rows of column l / 4)
     static unsigned h[32 * 9]; unsigned* d; cudaMalloc(&d, sizeof h);
     load_matrices<<<1, 32>>>(d); cudaDeviceSynchronize(); cudaMemcpy(h, d, sizeof h, cudaMemcpyDeviceToHost);

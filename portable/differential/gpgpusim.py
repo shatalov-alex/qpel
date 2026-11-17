@@ -38,13 +38,12 @@ from . import matrix  # noqa: E402
 from .simulate import Program  # noqa: E402
 from frontends import clang_ast  # noqa: E402
 
-IMAGE = 'qpel/gpgpu-sim:dev-4195dd4-qpel15'  # change the tag whenever gpgpusim/ changes
+IMAGE = 'qpel/gpgpu-sim:dev-4195dd4-qpel17'  # change the tag whenever gpgpusim/ changes
 DOCKERFILE = HERE/'gpgpusim'
-# Programs GPGPU-Sim cannot run correctly yet, for the original and qpel's CUDA alike, while
-# the CPU simulator and the Apple GPU agree (gpgpusim/README.md, Open). Real NVIDIA hardware
-# (differential/hardware.py) runs them.
-SIMULATOR_ISSUES = {'trellis2_raster_render': 'skipped: GPGPU-Sim finds no voxel for the original either '
-                                              '(gpgpusim/README.md, Open); it passes on a Tesla T4 (differential/hardware.py)'}
+# Programs GPGPU-Sim cannot run correctly yet, while the CPU simulator and the Apple GPU agree
+# (gpgpusim/README.md, Open). Real NVIDIA hardware (differential/hardware.py) runs them. (TRELLIS.2's
+# render was here until qpel-scopes.patch, 2026-11-17.)
+SIMULATOR_ISSUES = {}
 # bitsandbytes' kernels.cu: GPGPU-Sim's PTX parser rejects an immediate in a vector operand, `mov.b32 %f, {0, %rs};`
 # (cuda_bf16.hpp's bfloat16 to float, in its bf16 optimiser kernels), and then misses the kernels after it.
 # qpel's CUDA of these programs passes there (2026-11-17); a Tesla T4 runs the originals.

@@ -122,14 +122,111 @@ def bench_source(source, work, size):
             'ratio': round(qpel_ms / original_ms, 3), 'reps': reps}
 
 
+FP4 = [0.0, 0.005208333333, 0.66666667, 1.0, 0.33333333, 0.5, 0.16666667, 0.25]  # bitsandbytes' kernels.cu tables
+NF4 = [-1.0, -0.6961928009986877, -0.5250730514526367, -0.39491748809814453, -0.28444138169288635, -0.18477343022823334,
+       -0.09105003625154495, 0.0, 0.07958029955625534, 0.16093020141124725, 0.24611230194568634, 0.33791524171829224,
+       0.44070982933044434, 0.5626170039176941, 0.7229568362236023, 1.0]
+
+
+def torch_dequantize(name, case):
+    """bitsandbytes' blockwise dequantisation as PyTorch tensor operations on the Apple GPU (how a PyTorch
+    backend without bitsandbytes' kernels computes it; written here, not bitsandbytes' own code): a
+    baseline for qpel's Metal where no Metal original exists. Returns a function computing the output."""
+    import torch
+    device = torch.device('mps')
+    codes = torch.from_numpy(case.inputs['A'].astype(np.int64)).to(device)
+    absmax = torch.from_numpy(case.inputs['absmax']).to(device)
+    n, block = case.values['n'], case.values['blocksize']
+    if name.endswith('8bit'):
+        code = torch.from_numpy(case.inputs['code']).to(device)
+        index = torch.arange(n, device=device) // block
+        return lambda: code[codes[:n]] * absmax[index]
+    if name.endswith('nf4'):
+        table = torch.tensor(NF4, dtype=torch.float32, device=device)
+    else:
+        magnitude = torch.tensor(FP4, dtype=torch.float32, device=device)
+        table = torch.cat([magnitude, -magnitude])  # the sign is bit 3
+    index = torch.arange(n, device=device) // (2 * block)  # 4 bits: blocksize / 2 bytes per block of absmax
+    def run():
+        nibbles = torch.stack([codes >> 4, codes & 15], 1).reshape(-1)[:n]
+        return table[nibbles] * absmax[index]
+    return run
+
+
+def torch_time(run):
+    """Median milliseconds of run() on the Apple GPU (batches between synchronisations, as gpu_times)."""
+    import time
+    import torch
+    def batch(count):
+        torch.mps.synchronize()
+        start = time.perf_counter()
+        for _ in range(count):
+            run()
+        torch.mps.synchronize()
+        return (time.perf_counter() - start) * 1000 / count
+    once = max(batch(1), 1e-3)
+    batch(max(1, int(50 / once)))
+    inner = max(1, min(1000, int(5 / once)))
+    times, started = [], time.perf_counter()
+    while len(times) < MAX_REPS and (time.perf_counter() - started < MIN_SECONDS or len(times) < 5):
+        times.append(batch(inner))
+    return statistics.median(times)
+
+
+BASELINES = {'bnb_dequantize_': ('PyTorch on MPS', torch_dequantize)}
+
+
+def bench_translation(source, work, size):
+    """qpel's Metal for a CUDA original (a pilot: gsplat, bitsandbytes), alone: there is no Metal original
+    to time it against. Its outputs are checked against the original by the behaviour rows, at their
+    sizes; here only the dispatches are timed."""
+    name, path, dialect, plan, include, _, options = source
+    prepared = matrix.Prepared(name, path, dialect, plan, include, options, work)
+    case = large_case(prepared, size)
+    if case is None:
+        return {'program': name, 'skipped': 'inputs depend on the program\'s own sizes; not scaled'}
+    calls = []
+    host = matrix.load_host(prepared.generated)
+    with recording(host, '_library', calls):
+        ours = metal.run_generated(host, plan, case)
+    (qpel_ms,), reps = gpu_times(calls)
+    result = {'program': name, 'source': str(Path(path).relative_to(HERE)), 'case': case.label,
+              'dispatches': len(calls), 'qpel_ms': round(qpel_ms, 4), 'reps': reps}
+    for prefix, (label, make) in BASELINES.items():
+        if name.startswith(prefix):
+            run = make(name, case)
+            output = next(iter(r['name'] for r in plan['resources'] if r['kind'] == 'output'))
+            same = np.array_equal(run().cpu().numpy().view(np.uint32), np.asarray(ours[output])[:case.values['n']].view(np.uint32))
+            result.update(baseline=label, baseline_same=bool(same), baseline_ms=round(torch_time(run), 4))
+            result['ratio'] = round(qpel_ms / result['baseline_ms'], 3)
+    return result
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('names', nargs='*', help='program names (default: every Metal original)')
     parser.add_argument('--json', type=Path, help='write the results here')
     parser.add_argument('--size', type=int, nargs=3, default=SIZE, metavar=('W', 'H', 'N'))
+    parser.add_argument('--cuda', action='store_true',
+                        help='time qpel\'s Metal for the named CUDA originals, alone (pilots without a Metal original)')
     args = parser.parse_args(argv)
     if not metal.available():
         parser.exit(1, 'bench: needs PyTorch with an Apple GPU (MPS)\n')
+    if args.cuda:
+        results = []
+        with tempfile.TemporaryDirectory(prefix='qpel-bench-') as folder:
+            for i, source in enumerate(s for s in matrix.sources() if s[2] == 'cuda' and s[0] in args.names):
+                work = Path(folder)/f'{i}_{source[0]}'
+                work.mkdir()
+                result = bench_translation(source, work, tuple(args.size))
+                results.append(result)
+                print(f'{result["program"]:<40} ' + (f'SKIP {result["skipped"]}' if 'skipped' in result else
+                                                      f'qpel\'s Metal {result["qpel_ms"]:9.4f} ms   ({result["case"]})') +
+                      (f'   {result["baseline"]} {result["baseline_ms"]:9.4f} ms x{result["ratio"]:.2f}'
+                       f'{"" if result["baseline_same"] else " (outputs differ)"}' if 'baseline' in result else ''), flush=True)
+        if args.json:
+            args.json.write_text(json.dumps({'size': list(args.size), 'results': results}, indent=1) + '\n')
+        return
     sources = [s for s in matrix.sources() if s[2] == 'metal' and (not args.names or s[0] in args.names)]
     results = []
     with tempfile.TemporaryDirectory(prefix='qpel-bench-') as folder:

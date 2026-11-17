@@ -1,0 +1,61 @@
+diff -ru sa/src/cuda-sim/ptx_ir.cc sb/src/cuda-sim/ptx_ir.cc
+--- a/src/cuda-sim/ptx_ir.cc	2026-11-17 05:41:07
++++ b/src/cuda-sim/ptx_ir.cc	2026-11-17 06:21:40
+@@ -139,6 +139,11 @@
+   return NULL;
+ }
+ 
++symbol *symbol_table::lookup_here(const char *identifier) {
++  std::map<std::string, symbol *>::iterator i = m_symbols.find(std::string(identifier));
++  return i != m_symbols.end() ? i->second : NULL;
++}
++
+ symbol *symbol_table::lookup_by_addr(addr_t addr) {
+   for (auto it = m_symbols.begin(); it != m_symbols.end(); ++it) {
+     symbol *sym = it->second;
+@@ -199,6 +204,7 @@
+          m_inst_group_symtab.end());
+   symbol_table *sym_table =
+       new symbol_table(inst_group_name, 3 /*inst group*/, this, gpgpu_ctx);
++  sym_table->m_is_inst_group = true;
+ 
+   sym_table->m_global_next = m_global_next;
+   sym_table->m_shared_next = m_shared_next;
+diff -ru sa/src/cuda-sim/ptx_ir.h sb/src/cuda-sim/ptx_ir.h
+--- a/src/cuda-sim/ptx_ir.h	2026-11-17 05:41:07
++++ b/src/cuda-sim/ptx_ir.h	2026-11-17 06:21:40
+@@ -311,6 +311,9 @@
+   void set_ptx_version(float ver, unsigned ext);
+   void set_sm_target(const char *target, const char *ext, const char *ext2);
+   symbol *lookup(const char *identifier);
++  // only this scope, not its parents: a nested { } block may declare a name again (shadowing)
++  symbol *lookup_here(const char *identifier);
++  bool is_inst_group() const { return m_is_inst_group; }
+   symbol *lookup_by_addr(addr_t addr);
+   std::string get_scope_name() const { return m_scope_name; }
+   symbol *add_variable(const char *identifier, const type_info *type,
+@@ -377,6 +380,7 @@
+ 
+   // Jin: handle instruction group for cdp
+   unsigned m_inst_group_id;
++  bool m_is_inst_group = false;
+   std::map<std::string, symbol_table *> m_inst_group_symtab;
+ };
+ 
+diff -ru sa/src/cuda-sim/ptx_parser.cc sb/src/cuda-sim/ptx_parser.cc
+--- a/src/cuda-sim/ptx_parser.cc	2026-11-17 05:41:07
++++ b/src/cuda-sim/ptx_parser.cc	2026-11-17 06:21:40
+@@ -298,7 +298,12 @@
+ }
+ 
+ bool ptx_recognizer::check_for_duplicates(const char *identifier) {
+-  const symbol *s = g_current_symbol_table->lookup(identifier);
++  // In a nested { } block (an instruction group) a declaration shadows the enclosing scope's: nvcc
++  // writes __syncthreads_count as { .reg .pred %p1; setp ...; bar.red.popc ... %p1; } in functions
++  // whose own %p1 is live. Only a second declaration in the same block is a duplicate there.
++  const symbol *s = g_current_symbol_table->is_inst_group()
++                        ? g_current_symbol_table->lookup_here(identifier)
++                        : g_current_symbol_table->lookup(identifier);
+   return (s != NULL);
+ }
+ 

@@ -8,8 +8,8 @@ import struct
 
 from qpel_types import INTEGER_TERMS, INTEGERS_BITS, MATH, SCALAR_TERMS, array, buffer, is_valid, vector, shared, shared_view
 
-TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType StructType ArrayType VectorType SharedType SharedViewType'.split())
-EXPRESSIONS = set('ArrayValue VectorValue Barrier BarrierCount Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange AtomicMax AtomicAnd AtomicOr AtomicXor AtomicExchange Bitcast SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce BufferPresent'.split())
+TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType StructType ArrayType VectorType SharedType SharedViewType MatrixType'.split())
+EXPRESSIONS = set('ArrayValue VectorValue Barrier BarrierCount Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange AtomicMax AtomicAnd AtomicOr AtomicXor AtomicExchange Bitcast SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce BufferPresent MatrixFill MatrixLoad MatrixStore MatrixMma'.split())
 STATEMENTS = set('Block Variable Assign Evaluate If While DoWhile For Break Continue Return'.split())
 
 # Child role -> (allowed concepts, minimum count, maximum count or None).
@@ -82,6 +82,11 @@ CHILDREN['SubgroupShuffle'] = {'value': one(EXPRESSIONS), 'operand': one(EXPRESS
 CHILDREN['SubgroupReduce'] = {'value': one(EXPRESSIONS)}
 # IR version 6: the bits of a 32-bit value read as another 32-bit type (f32 <-> u32, i32)
 CHILDREN['Bitcast'] = {'operand': one(EXPRESSIONS)}
+# IR version 13: 8x8 matrices held by a subgroup (simdgroup_matrix, mma fragments)
+CHILDREN['MatrixFill'] = {'value': one(EXPRESSIONS)}
+CHILDREN['MatrixLoad'] = {role: one(EXPRESSIONS) for role in ('base', 'offset', 'stride')}
+CHILDREN['MatrixStore'] = {role: one(EXPRESSIONS) for role in ('matrix', 'base', 'offset', 'stride')}
+CHILDREN['MatrixMma'] = {role: one(EXPRESSIONS) for role in ('a', 'b', 'c')}
 
 # Links are required except Resource.extent (shape resources have no extent).
 LINKS = {
@@ -110,6 +115,7 @@ ATTRIBUTES = {
     'GroupIndex': {'axis': str}, 'LocalIndex': {'axis': str}, 'GroupSize': {'axis': str}, 'GroupCount': {'axis': str},
     # IR version 4
     'ArrayType': {'element': str, 'length': int},
+    'MatrixType': {'element': str}, 'MatrixFill': {'element': str},  # IR version 13
     'VectorType': {'element': str, 'length': int}, 'VectorValue': {'element': str, 'length': int},
     'SharedType': {'element': str, 'length': int},
     'SharedViewType': {'element': str},
@@ -281,6 +287,8 @@ def validate_structure(nodes):
             fail('Unknown scalar type ' + a['scalar'])
         if kind == 'BufferType' and not is_valid(buffer(a['element'], a['access'])):
             fail(f"Invalid buffer type buffer<{a['element']}, {a['access']}>")
+        if kind in ('MatrixType', 'MatrixFill') and a.get('element') not in ('f32', 'f16'):
+            fail(f"Invalid matrix element {a.get('element')}: f32 or f16")
         if kind == 'ArrayType' and not is_valid(array(a['element'], a['length'])):
             fail(f"Invalid array type array<{a['element']}, {a['length']}>: a scalar or vector element and 1 to 1024 of them")
         if kind == 'SharedType' and not is_valid(shared(a['element'], a['length'])):

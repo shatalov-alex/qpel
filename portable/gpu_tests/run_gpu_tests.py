@@ -671,7 +671,10 @@ def run_sort_bytes(name, host, plan):
 # --- IR version 6 atomics: max/and/or/xor/exchange, float32 and 64-bit ---
 
 def test_module(name):
-    spec = importlib.util.spec_from_file_location(name, Path(__file__).resolve().parents[1]/f'tests/{name}.py')
+    tests = Path(__file__).resolve().parents[1]/'tests'
+    if str(tests) not in sys.path:  # the test modules import qpel_test_support from there
+        sys.path.insert(0, str(tests))
+    spec = importlib.util.spec_from_file_location(name, tests/f'{name}.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -710,10 +713,32 @@ def run_bitcast(name, host, plan):
     return len(cases)
 
 
+def run_matrix_tiles(name, host, plan):
+    """8x8 subgroup matrices (IR version 13), a tiled GEMM (tests/test_matrix_tiles.py's oracle): f32 on
+    NVIDIA bit for bit in k order, everything else within the bound of a sum of products in any order
+    (Metal's simdgroup_multiply_accumulate, NVIDIA's tensor cores for f16)."""
+    module = test_module('test_matrix_tiles')
+    cases = module.cases()
+    for case in cases:
+        inputs = {k: torch.from_numpy(v.copy()).to(DEVICE) for k, v in case.inputs.items()}
+        result = host.run(inputs, case.shapes, case.values)
+        rows, columns = case.shapes['n'][1], case.shapes['n'][0]
+        for out in ('c', 'c16'):
+            want, bound = module.oracle(case, out)
+            got = result[out].cpu().numpy()[:rows * columns]
+            if out == 'c' and DEVICE == 'cuda':
+                np.testing.assert_array_equal(got.view(np.uint32), want.view(np.uint32), err_msg=f'{out} {case.label}')
+            else:
+                error = np.abs(got.astype(np.float64) - want)
+                assert np.all(error <= bound), f'{out} {case.label}: worst {np.max(error / np.maximum(bound, 1e-30)):.2f} of the bound'
+    return len(cases)
+
+
 TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fma32': run_fma32,
          'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components,
          'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset, 'box_sum': run_box_sum,
-         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride, 'math_ops': run_math_ops, 'math_v8': run_math_v8, 'optional_bias': run_optional_bias, 'array_refs': run_array_refs, 'sort_bytes': run_sort_bytes, 'atomics': run_atomics, 'bitcast': run_bitcast}
+         'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride, 'math_ops': run_math_ops, 'math_v8': run_math_v8, 'optional_bias': run_optional_bias, 'array_refs': run_array_refs, 'sort_bytes': run_sort_bytes, 'atomics': run_atomics, 'bitcast': run_bitcast,
+         'matrix_tiles': run_matrix_tiles}
 
 
 def main(argv=None):

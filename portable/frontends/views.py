@@ -28,7 +28,7 @@ from .statics import walk, _body, _peel, _spelling, CASTS
 
 ARRAY_REF = re.compile(r'(?:const\s+)?(.*?\S)\s*(?:\(&\))?\[([0-9]+)\]\s*&?')
 POINTER = re.compile(r'(?:const\s+)?(.*?\S)\s*\*\s*(?:__restrict__|__restrict)?')
-UNSIZED = re.compile(r'(?:const\s+)?(?:unsigned\s+)?char\s*\[\]')
+UNSIZED = re.compile(r'(?:const\s+)?(?:unsigned\s+)?(?:char|int|float|int32_t|uint32_t|unsigned int)\s*\[\]')
 
 
 def _attributes(decl):
@@ -68,16 +68,51 @@ def dead_parameters(unit):
 def _view_source(init, block):
     """The view's cast when init is `reinterpret_cast<X&>(block)`, `*reinterpret_cast<X*>(block + offset)`
     or `reinterpret_cast<X*>(block + offset)`; else None."""
+    found = _view_of(init)
+    return found[0] if found and found[1] == block else None
+
+
+def _view_of(init):
+    """(cast, source id, offset node or None) when init is a cast of a declaration, of one plus an
+    offset, or of `&source[offset]` (gsplat: `reinterpret_cast<vec3 *>(&id_batch[BATCH_SIZE])`)."""
     node = _peel(init)
     if node.get('kind') == 'UnaryOperator' and node.get('opcode') == '*' and node.get('inner'):
         node = _peel(node['inner'][0])
     if node.get('kind') not in CASTS or not node.get('inner'):
         return None
-    operand = _peel(node['inner'][0])
+    operand, offset = _peel(node['inner'][0]), None
     if operand.get('kind') == 'BinaryOperator' and operand.get('opcode') == '+':
-        operand = _peel(operand['inner'][0])
-    if operand.get('kind') == 'DeclRefExpr' and operand.get('referencedDecl', {}).get('id') == block:
-        return node
+        operand, offset = _peel(operand['inner'][0]), operand['inner'][1]
+    elif operand.get('kind') == 'UnaryOperator' and operand.get('opcode') == '&' and \
+            _peel(operand['inner'][0]).get('kind') == 'ArraySubscriptExpr':
+        operand, offset = _peel(_peel(operand['inner'][0])['inner'][0]), _peel(operand['inner'][0])['inner'][1]
+    if operand.get('kind') == 'DeclRefExpr':
+        return node, operand.get('referencedDecl', {}).get('id'), offset
+    return None
+
+
+def _constant(node, body):
+    """The value of an integer constant expression: literals, template arguments, constexpr locals of
+    such values, and + - * / of them; else None."""
+    node = _peel(node)
+    kind = node.get('kind')
+    if kind == 'IntegerLiteral':
+        return int(node['value'])
+    if kind in ('SubstNonTypeTemplateParmExpr', 'ConstantExpr') and node.get('inner'):
+        if node.get('value') is not None and kind == 'ConstantExpr':
+            return int(node['value'])
+        return _constant(node['inner'][-1], body)
+    if kind == 'DeclRefExpr':
+        target = node.get('referencedDecl', {}).get('id')
+        decl = next((d for d in walk(body) if d.get('kind') == 'VarDecl' and d.get('id') == target), None)
+        if decl is not None and decl.get('constexpr') and decl.get('inner'):
+            return _constant(decl['inner'][-1], body)
+        return None
+    if kind == 'BinaryOperator' and node.get('opcode') in ('+', '-', '*', '/'):
+        left, right = (_constant(x, body) for x in node['inner'])
+        if left is None or right is None or node['opcode'] == '/' and right == 0:
+            return None
+        return {'+': left + right, '-': left - right, '*': left * right, '/': left // right if right else 0}[node['opcode']]
     return None
 
 
@@ -99,17 +134,41 @@ def shared_views(unit):
                      and 'init' in d and _view_source(d['inner'][-1], block['id']) is not None]
             if len(views) != len(uses):
                 continue  # the block is used other than as the start of a view
+            # views of views: `T *b = reinterpret_cast<T *>(&a[N])` starts b where a's N elements end, so a
+            # holds N (gsplat's id_batch, xy_opacity_batch, conic_batch)
+            lengths, carving = {}, set()
+            while True:
+                known = {v['id'] for v in views}
+                more = []
+                for d in walk(body):
+                    if d.get('kind') != 'VarDecl' or d['id'] in known or not d.get('inner') or 'init' not in d:
+                        continue
+                    found = _view_of(d['inner'][-1])
+                    if found and found[1] in known and '*' in _spelling(d['type']):
+                        more.append(d)
+                        if found[1] in lengths:
+                            break  # two views start inside one: not a chain
+                        lengths[found[1]] = _constant(found[2], body) if found[2] is not None else 0
+                        carving.update(id(n) for n in walk(d['inner'][-1]) if n.get('kind') == 'DeclRefExpr'
+                                       and n.get('referencedDecl', {}).get('id') == found[1])
+                if not more:
+                    break
+                views.extend(more)
+            if any(v is None or v <= 0 for v in lengths.values()):
+                continue  # a view ends where nothing says: the kernel stays as it is
             plans = []  # (view, None when unused | (spelling, pointer?))
             for view in views:
                 spelled = _spelling(view['type']).replace('&', ' & ').strip()
                 referenced = any(n.get('kind') == 'DeclRefExpr' and n.get('referencedDecl', {}).get('id') == view['id']
-                                 for n in walk(body))
+                                 and id(n) not in carving for n in walk(body))
                 array = ARRAY_REF.fullmatch(spelled.replace(' & ', '').replace(' &', '').strip())
                 pointer = POINTER.fullmatch(spelled) if '*' in spelled and '&' not in spelled else None
                 if not referenced:
                     plans.append((view, None))
                 elif array:
                     plans.append((view, (f'{array.group(1)}[{array.group(2)}]', False)))
+                elif pointer and view['id'] in lengths:
+                    plans.append((view, (f'{pointer.group(1)}[{lengths[view["id"]]}]', False)))
                 elif pointer:
                     plans.append((view, (f'{pointer.group(1)}[]', True)))
                 else:
@@ -128,7 +187,8 @@ def shared_views(unit):
                     if pointer:
                         view['storageClass'] = 'extern'
                     for n in walk(body):
-                        if n.get('kind') == 'DeclRefExpr' and n.get('referencedDecl', {}).get('id') == view['id']:
+                        if n.get('kind') == 'DeclRefExpr' and n.get('referencedDecl', {}).get('id') == view['id'] \
+                                and id(n) not in carving:
                             n['type'] = dict(view['type'])
                             n['referencedDecl'] = dict(n['referencedDecl'], type=dict(view['type']))
                 for statement in walk(body):  # the block's declaration and the unused views' go

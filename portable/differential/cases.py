@@ -444,10 +444,10 @@ def bnb_dequantize(fmt):
     host does so). Lengths leave partial tiles and, for 4 bits, odd counts. Threads past the end of
     a partial tile still read their block's absmax, so absmax covers whole tiles, as bnb's allocator
     rounding would."""
-    def make(plan, seed, shapes=None):
+    def make(plan, seed, shapes=None, sizes=((1, 64), (300, 64), (512, 128), (1000, 256), (4097, 4096), (9999, 1024))):
         rng = np.random.default_rng(seed)
         out = []
-        for n, blocksize in ((1, 64), (300, 64), (512, 128), (1000, 256), (4097, 4096), (9999, 1024)):
+        for n, blocksize in sizes:
             four = fmt > 0
             tile = 1024 if four else 512
             grid = (n + tile - 1) // tile
@@ -464,9 +464,85 @@ def bnb_dequantize(fmt):
     return make
 
 
+def gsplat_scene(rng, images, width, height, count, tile=16, opaque=False, away=False):
+    """Inputs of gsplat's rasterize_to_pixels_3dgs_fwd for `images` images of `count` gaussians each:
+    2D means in and around the image, conics (inverse 2D covariances) of ellipses 0.5 to 12 pixels
+    across, colors, opacities, and the intersections gsplat's isect_tiles makes: per tile, the
+    gaussians whose 3-sigma box touches it, front to back (by a random depth), as offsets into one
+    list of global gaussian ids."""
+    tiles_x, tiles_y = (width + tile - 1) // tile, (height + tile - 1) // tile
+    total = images * count
+    means = np.stack([rng.uniform(-8, width + 8, total), rng.uniform(-8, height + 8, total)], 1)
+    if away:  # nothing on screen: no tile has an intersection
+        means += 1000.0
+    scale = rng.uniform(0.5, 12, (total, 2))
+    angle = rng.uniform(0, np.pi, total)
+    c, s = np.cos(angle), np.sin(angle)
+    rot = np.stack([np.stack([c, -s], 1), np.stack([s, c], 1)], 1)
+    cov = rot @ (np.eye(2)[None] * (scale ** 2)[:, None, :]) @ np.transpose(rot, (0, 2, 1))
+    inverse = np.linalg.inv(cov)
+    conics = np.stack([inverse[:, 0, 0], inverse[:, 0, 1], inverse[:, 1, 1]], 1)
+    radius = 3 * np.sqrt(np.linalg.eigvalsh(cov)[:, 1])
+    depth = rng.uniform(1, 10, total)
+    opacities = rng.uniform(0.6, 0.999, total) if opaque else rng.uniform(0.05, 0.99, total)
+    # each gaussian's tiles: tx with x + r >= 16 tx and x - r < 16 tx + 16 (the same for y), in its image
+    tx0 = np.clip(np.floor((means[:, 0] - radius) / tile), 0, tiles_x - 1).astype(np.int64)
+    tx1 = np.clip(np.floor((means[:, 0] + radius) / tile), -1, tiles_x - 1).astype(np.int64)
+    ty0 = np.clip(np.floor((means[:, 1] - radius) / tile), 0, tiles_y - 1).astype(np.int64)
+    ty1 = np.clip(np.floor((means[:, 1] + radius) / tile), -1, tiles_y - 1).astype(np.int64)
+    visible = (means[:, 0] + radius >= 0) & (means[:, 0] - radius < tiles_x * tile) & \
+        (means[:, 1] + radius >= 0) & (means[:, 1] - radius < tiles_y * tile)
+    wide, high = np.where(visible, tx1 - tx0 + 1, 0).clip(0), np.where(visible, ty1 - ty0 + 1, 0).clip(0)
+    per = wide * high
+    g = np.repeat(np.arange(total), per)
+    k = np.arange(per.sum()) - np.repeat(np.cumsum(per) - per, per)  # the pair's index among its gaussian's
+    tile_x = tx0[g] + k % np.maximum(wide[g], 1)
+    tile_y = ty0[g] + k // np.maximum(wide[g], 1)
+    image = g // count
+    tile_id = (image * tiles_y + tile_y) * tiles_x + tile_x
+    order = np.lexsort((g, depth[g], tile_id))  # by tile, then front to back (ties by id, as a stable sort)
+    ids = g[order]
+    tiles_total = tiles_x * tiles_y * images
+    offsets = np.searchsorted(tile_id[order], np.arange(tiles_total), 'left')
+    inputs = {'means2d': means.astype(np.float32).reshape(-1), 'conics': conics.astype(np.float32).reshape(-1),
+              'colors': rng.uniform(0, 1, total * 3).astype(np.float32), 'opacities': opacities.astype(np.float32),
+              'isect_offsets': offsets.astype(np.int64), 'flatten_ids': (ids if len(ids) else np.zeros(1)).astype(np.int32)}
+    values = {'N': count, 'n_isects': len(ids), 'packed': 0, 'image_width': width, 'image_height': height, 'I': images,
+              'tile_width': tiles_x, 'tile_height': tiles_y, 'block_offset': 0}
+    shapes = {'gaussians': (total, 1, 1), 'images': (images, 1, 1), 'tiles': (tiles_x, tiles_y, images),
+              'isects': (max(len(ids), 1), 1, 1), 'pixels': (width * height * images, 1, 1)}
+    return inputs, values, shapes, tiles_x * tiles_y * images
+
+
+def gsplat_rasterize_fwd(plan, seed, shapes=None):
+    """gsplat's forward rasterizer (3 channels, 16 x 16 tiles, 256 threads): one image or two, partial
+    tiles at the right and bottom edges, a tile with more gaussians than one batch of 256, an empty
+    scene (one gaussian off-screen), nearly opaque gaussians that end tiles early (the __syncthreads_count exit), and the
+    optional backgrounds and per-tile masks given or not."""
+    rng = np.random.default_rng(seed)
+    out = []
+    for images, width, height, count, opaque, background, masked in (
+            (1, 16, 16, 1, False, False, False), (1, 40, 24, 60, False, True, False), (2, 48, 32, 150, False, False, True),
+            (1, 16, 16, 700, False, True, True), (1, 33, 17, 0, False, True, False), (1, 64, 48, 400, True, False, False)):
+        inputs, values, shapes_, tiles = gsplat_scene(rng, images, width, height, max(count, 1), opaque=opaque, away=count == 0)
+        omit = []
+        if background:
+            inputs['backgrounds'] = rng.uniform(0, 1, images * 3).astype(np.float32)
+        else:
+            omit.append('backgrounds')
+        if masked:
+            inputs['masks'] = (rng.uniform(0, 1, tiles) < 0.8).astype(np.uint8)
+        else:
+            omit.append('masks')
+        label = (f'{images}x{width}x{height}, {count or "1 off-screen"} gaussians, {values["n_isects"]} intersections'
+                 f'{", opaque" if opaque else ""}{", background" if background else ""}{", masks" if masked else ""}')
+        out.append(Case(shapes_, inputs, values, label, omit=omit))
+    return out
+
+
 SPECIAL = {'scale_offset': scale_offset, 'sam2_cc': sam2_cc, 'grid_stride': grid_stride,
            'mmcv_roi_align_forward': mmcv_roi_align, 'mmcv_nms': mmcv_nms, 'mmcv_roi_pool_forward': mmcv_roi_pool,
-           'mamba_selective_scan_fwd': mamba_selective_scan_fwd,
+           'mamba_selective_scan_fwd': mamba_selective_scan_fwd, 'gsplat_rasterize_fwd': gsplat_rasterize_fwd,
            'bnb_dequantize_8bit': bnb_dequantize(0), 'bnb_dequantize_fp4': bnb_dequantize(1),
            'bnb_dequantize_nf4': bnb_dequantize(2),
            'pytorch_sparse_spmm_sum': sparse_spmm, 'pytorch_sparse_spmm_mean': sparse_spmm,
@@ -771,7 +847,24 @@ def raster_bench(plan, seed, size):
     return Case({'L': (count, 1, 1), 'tiles': (tiles, 1, 1)}, inputs, {}, f'{count} keys, {tiles} tiles')
 
 
-BENCH_FAMILIES = {'trellis2_hashmap_': lambda plan, seed, size: hashmap_bench(plan, seed, max(volume(size) // 8, 1)),
+def gsplat_bench(plan, seed, size):
+    """gsplat's forward rasterizer at one image of size[0] x size[1] with W H / 16 gaussians (without
+    masks or a background, as a training step renders)."""
+    rng = np.random.default_rng(seed)
+    w, h = size[0], size[1]
+    inputs, values, shapes_, _ = gsplat_scene(rng, 1, w, h, max(w * h // 16, 1))
+    return Case(shapes_, inputs, values, f'{w}x{h}, {values["N"]} gaussians, {values["n_isects"]} intersections',
+                omit=('backgrounds', 'masks'))
+
+
+def bnb_bench(plan, seed, size):
+    """bitsandbytes' dequantisation of volume(size) values (8M at the default size) in blocks of 64, as a
+    4-bit model's weights are stored."""
+    fmt = {'8bit': 0, 'fp4': 1, 'nf4': 2}[plan['module'].rsplit('_', 1)[1]]
+    return bnb_dequantize(fmt)(plan, seed, sizes=((volume(size), 64),))[0]
+
+
+BENCH_FAMILIES = {'gsplat_rasterize_': gsplat_bench, 'bnb_dequantize_': bnb_bench, 'trellis2_hashmap_': lambda plan, seed, size: hashmap_bench(plan, seed, max(volume(size) // 8, 1)),
                   'trellis2_hash3d_': lambda plan, seed, size: hash3d_bench(plan, seed, max(volume(size) // 8, 1)),
                   'trellis2_raster_': raster_bench}
 

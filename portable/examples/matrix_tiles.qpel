@@ -1,0 +1,48 @@
+// 8x8 matrices held by a subgroup (IR version 13): C = A B for row-major A (M x K) and B (K x N),
+// each subgroup computing one 8x8 tile of C, eight columns of A and rows of B at a time. The shape
+// is n = (N, M, K), each a multiple of 8. gemm_f32 keeps f32 throughout; gemm_f16 multiplies f16
+// matrices and accumulates in f32 (Metal's simdgroup_half8x8, NVIDIA's tensor cores).
+module matrix_tiles {
+  kernel gemm_f32(a: buffer<f32, read> @0, b: buffer<f32, read> @1, c: buffer<f32, write> @2, n: shape3 @3) groups {
+    let tile: u32 = (qpel.group.x * 2u) + qpel.subgroup_index;
+    let across: u32 = n.x / 8u;
+    if (tile < (across * (n.y / 8u))) {
+      let row: u32 = (tile / across) * 8u;
+      let column: u32 = (tile % across) * 8u;
+      let sum: matrix<f32, 8, 8> = qpel.matrix_fill<f32>(0.0f);
+      for (let k: u32 = 0u; k < n.z; k = k + 8u) {
+        let left: matrix<f32, 8, 8> = qpel.matrix_load(a, (row * n.z) + k, n.z);
+        let right: matrix<f32, 8, 8> = qpel.matrix_load(b, (k * n.x) + column, n.x);
+        sum = qpel.matrix_mma(left, right, sum);
+      }
+      qpel.matrix_store(sum, c, (row * n.x) + column, n.x);
+    }
+  }
+  kernel gemm_f16(a: buffer<f16, read> @0, b: buffer<f16, read> @1, bias: buffer<f32, read> @2, c: buffer<f32, write> @3, n: shape3 @4) groups {
+    let tile: u32 = (qpel.group.x * 2u) + qpel.subgroup_index;
+    let across: u32 = n.x / 8u;
+    if (tile < (across * (n.y / 8u))) {
+      let row: u32 = (tile / across) * 8u;
+      let column: u32 = (tile % across) * 8u;
+      let sum: matrix<f32, 8, 8> = qpel.matrix_load(bias, (row * n.x) + column, n.x);
+      for (let k: u32 = 0u; k < n.z; k = k + 8u) {
+        let left: matrix<f16, 8, 8> = qpel.matrix_load(a, (row * n.z) + k, n.z);
+        let right: matrix<f16, 8, 8> = qpel.matrix_load(b, (k * n.x) + column, n.x);
+        sum = qpel.matrix_mma(left, right, sum);
+      }
+      qpel.matrix_store(sum, c, (row * n.x) + column, n.x);
+    }
+  }
+}
+pipeline matrix_tiles_launch {
+  shape n;
+  input a: buffer<f32, read> in n;
+  input b: buffer<f32, read> in n;
+  input a16: buffer<f16, read> in n;
+  input b16: buffer<f16, read> in n;
+  input bias: buffer<f32, read> in n;
+  output c: buffer<f32, write> in n;
+  output c16: buffer<f32, write> in n;
+  dispatch gemm_f32 over n block (64, 1, 1) groups ("(W*H/64 + 1)/2", "1", "1") (a = a, b = b, c = c, n = n);
+  dispatch gemm_f16 over n block (64, 1, 1) groups ("(W*H/64 + 1)/2", "1", "1") (a = a16, b = b16, bias = bias, c = c16, n = n);
+}

@@ -56,6 +56,9 @@ MAX_SHARED_BYTES = 16384  # within Metal's 32 KiB and CUDA's 48 KiB, with room f
 # IR version 5: a thread's view into its group's shared memory (CUDA T*, Metal threadgroup T*): a
 # shared array or another view, offset by an integer. It is indexed like the array it points into.
 SHARED_VIEW = re.compile(r'shared<(\w+|vec<\w+, [234]>)>')
+# IR version 13: an 8x8 matrix held by a subgroup together (Metal's simdgroup_matrix, NVIDIA's mma
+# fragments), for matrix multiplication; its elements are f32 or f16 and are never indexed.
+MATRIX = re.compile(r'matrix<(f32|f16), 8, 8>')
 COMPARISONS = {'==', '!=', '<', '>', '<=', '>='}
 # Math functions on float32: name -> arity. EXACT ones give the same bits on every backend;
 # the others are within MATH_ULPS of the exact result (NUMERICS.md, math functions).
@@ -85,6 +88,8 @@ def term(t):
             return shared(t['attributes']['element'], t['attributes']['length'])
         if t['kind'] == 'SharedViewType':
             return shared_view(t['attributes']['element'])
+        if t['kind'] == 'MatrixType':
+            return matrix(t['attributes']['element'])
         return LEGACY.get(t['kind'], t['kind'])
     return LEGACY.get(t, t)
 
@@ -137,6 +142,18 @@ def vector_length(t):
     return int(VECTOR.fullmatch(term(t)).group(2))
 
 
+def matrix(element):
+    return f'matrix<{element}, 8, 8>'
+
+
+def is_matrix(t):
+    return MATRIX.fullmatch(term(t)) is not None
+
+
+def matrix_element(t):
+    return MATRIX.fullmatch(term(t)).group(1)
+
+
 def shared(element, length):
     return f'shared<{element}, {length}>'
 
@@ -179,7 +196,7 @@ def is_struct(t):
 
 def is_valid(t):
     t = term(t)
-    if t in SCALAR_TERMS | {'void', 'shape3'} or is_struct(t):
+    if t in SCALAR_TERMS | {'void', 'shape3'} or is_struct(t) or MATRIX.fullmatch(t):
         return True
     m = ARRAY.fullmatch(t)
     if m:
@@ -540,6 +557,29 @@ class TypeChecker:
             check(function['attributes'].get('isKernel', False) and self.domain(function) == 'Groups', 'GRID_CONTEXT',
                   k + ' requires a Groups kernel')
             return 'u32'
+        if k in ('MatrixFill', 'MatrixLoad', 'MatrixStore', 'MatrixMma'):  # IR version 13
+            check(function is not None and function['attributes'].get('isKernel', False) and self.domain(function) == 'Groups',
+                  'MATRIX_CONTEXT', 'Matrices are used by Groups kernels, whose subgroups hold them')
+            if k == 'MatrixFill':
+                check(a.get('element') in ('f32', 'f16') and e('value') == 'f32', 'MATRIX_TYPE',
+                      'A matrix of f32 or f16 is filled with an f32 value')
+                return matrix(a['element'])
+            if k == 'MatrixMma':
+                left, right, accumulator = e('a'), e('b'), e('c')
+                check(is_matrix(left) and left == right and accumulator == matrix('f32'), 'MATRIX_TYPE',
+                      'c + a b takes two matrices of one element type and an f32 accumulator')
+                return matrix('f32')
+            base = e('base')
+            element_type = (element(base) if is_buffer(base) else view_element(base)
+                            if is_shared(base) or is_shared_view(base) else None)
+            check(element_type in ('f32', 'f16'), 'MATRIX_MEMORY', 'Matrices load from and store to f32 or f16 buffers or shared memory')
+            check(e('offset') == 'u32' and e('stride') == 'u32', 'MATRIX_MEMORY', 'A matrix offset and row stride are u32')
+            if k == 'MatrixLoad':
+                return matrix(element_type)
+            stored = e('matrix')
+            check(stored == matrix(element_type), 'MATRIX_TYPE', f'A {stored} is stored to memory of {element_type}')
+            check(not is_buffer(base) or access(base) == 'write', 'READ_ONLY', 'A matrix is stored to a writable buffer')
+            return 'void'
         if k == 'SubgroupShuffle':
             value = e('value')
             check(value in ('u32', 'i32', 'f32'), 'SUBGROUP_TYPE', 'Shuffles move u32, i32 or f32 values')
@@ -614,15 +654,16 @@ class TypeChecker:
                 e('value')
             elif self.children(node, 'value'):
                 actual = e('value')
-                check((expected in SCALAR_TERMS or pointer or is_vector(expected) or is_shared_view(expected))
-                      and fits(expected, actual), 'VARIABLE_TYPE', f'Invalid initializer {expected} <- {actual}')
+                check((expected in SCALAR_TERMS or pointer or is_vector(expected) or is_shared_view(expected)
+                       or is_matrix(expected) and actual == expected)
+                      and (is_matrix(expected) or fits(expected, actual)), 'VARIABLE_TYPE', f'Invalid initializer {expected} <- {actual}')
             else:
                 check(pointer, 'VARIABLE_TYPE', 'Only buffer locals may start without a value')
             env.add(node['id'])
         elif k == 'Assign':
             target = self.child(node, 'target')
             expected, actual = e('target'), e('value')
-            writable = target['kind'] == 'Name' and (expected in SCALAR_TERMS or is_vector(expected) or
+            writable = target['kind'] == 'Name' and (expected in SCALAR_TERMS or is_vector(expected) or is_matrix(expected) or
                                                       (is_buffer(expected) or is_shared_view(expected))
                                                       and self.target(target, 'declaration')['kind'] == 'Variable')
             if target['kind'] == 'Name' and self.target(target, 'declaration')['kind'] == 'ConstantDecl':
@@ -801,6 +842,8 @@ def node_spec(t):
         return 'SharedViewType', {'element': view_element(t)}
     if is_array(t):
         return 'ArrayType', {'element': array_element(t), 'length': array_length(t)}
+    if is_matrix(t):
+        return 'MatrixType', {'element': matrix_element(t)}
     return 'ScalarType', {'scalar': t}
 
 

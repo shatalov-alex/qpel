@@ -68,6 +68,16 @@ template <class T> using qpel_shared_view = T*;
 #define QPEL_MAKE_VEC3_F32 make_float3
 #define QPEL_VEC4_F32 float4
 #define QPEL_MAKE_VEC4_F32 make_float4
+
+// Whole-vector loads (qpel_opt.vector_loads): vec<T, N>(b[N i], ..., b[N i + N - 1]) as one N-wide
+// load when b is aligned to the vector and N i + N - 1 does not wrap i's type; the element loads
+// otherwise. Both read the same elements.
+#define QPEL_VECTOR_ALIGNED(p, V) ((reinterpret_cast<unsigned long long>(p) & (sizeof(V) - 1)) == 0)
+#define QPEL_VECTOR_AT(V, p, i) (reinterpret_cast<const V*>(p)[(i)])
+template <int N> __device__ inline bool qpel_vector_fits(unsigned int i) { return i <= (0xffffffffu - (N - 1)) / N; }
+template <int N> __device__ inline bool qpel_vector_fits(int i) { return i >= 0 && i <= (0x7fffffff - (N - 1)) / N; }
+template <int N> __device__ inline bool qpel_vector_fits(unsigned long long i) { return i <= (~0ull - (N - 1)) / N; }
+template <int N> __device__ inline bool qpel_vector_fits(long long i) { return i >= 0 && i <= (0x7fffffffffffffffll - (N - 1)) / N; }
 #define QPEL_READ_F32 const float*
 #define QPEL_WRITE_F32 float*
 
@@ -320,4 +330,81 @@ template <class T> __device__ inline T qpel_combine_xor(T a, T b) { return a ^ b
     return v; }
 QPEL_SUBGROUP_REDUCE(add) QPEL_SUBGROUP_REDUCE(min) QPEL_SUBGROUP_REDUCE(max)
 QPEL_SUBGROUP_REDUCE(and) QPEL_SUBGROUP_REDUCE(or) QPEL_SUBGROUP_REDUCE(xor)
+#endif
+
+#ifdef QPEL_MATRIX_ENABLED
+// IR version 13: an 8x8 matrix held by a subgroup (NUMERICS.md, Matrices). Lane l holds row l / 4 at
+// columns 2 (l % 4) and 2 (l % 4) + 1, the layout of an mma.sync accumulator (and of its row-major A
+// fragment). f32: c + a b by shuffles and fmaf, k = 0 to 7 in order, keeping f32 precision (tensor
+// cores would round f32 to tf32). f16 on the GPU: mma.sync.m16n8k8 with rows 8 to 15 zero (tensor
+// cores; sm_75 and later), whose products are exact and whose sum order is the hardware's.
+struct qpel_matrix_f32 { float v[2]; };
+#define QPEL_MATRIX_F32 qpel_matrix_f32
+#ifdef QPEL_F16_ENABLED  // (f16 matrices load f16 memory, which needs f16 storage)
+struct qpel_matrix_f16 { __half v[2]; };
+#define QPEL_MATRIX_F16 qpel_matrix_f16
+#endif
+__device__ __forceinline__ unsigned int qpel_matrix_lane() { return qpel_subgroup_lane(); }
+__device__ __forceinline__ qpel_matrix_f32 qpel_matrix_fill_f32(float x) { qpel_matrix_f32 m; m.v[0] = x; m.v[1] = x; return m; }
+#define QPEL_MATRIX_FILL_F32(x) qpel_matrix_fill_f32((x))
+#ifdef QPEL_F16_ENABLED
+__device__ __forceinline__ qpel_matrix_f16 qpel_matrix_fill_f16(float x) {
+  qpel_matrix_f16 m; m.v[0] = __float2half_rn(x); m.v[1] = m.v[0]; return m; }
+#define QPEL_MATRIX_FILL_F16(x) qpel_matrix_fill_f16((x))
+#endif
+template <class M, class P> __device__ __forceinline__ M qpel_matrix_load(P base, unsigned int offset, unsigned int stride) {
+  const unsigned int l = qpel_matrix_lane(), at = offset + (l >> 2) * stride + (l & 3u) * 2u;
+  M m; m.v[0] = base[at]; m.v[1] = base[at + 1u]; return m; }
+template <class M, class P> __device__ __forceinline__ void qpel_matrix_store(M m, P base, unsigned int offset, unsigned int stride) {
+  const unsigned int l = qpel_matrix_lane(), at = offset + (l >> 2) * stride + (l & 3u) * 2u;
+  base[at] = m.v[0]; base[at + 1u] = m.v[1]; }
+#define QPEL_MATRIX_LOAD_F32(base, offset, stride) qpel_matrix_load<qpel_matrix_f32>((base), (offset), (stride))
+#define QPEL_MATRIX_LOAD_F16(base, offset, stride) qpel_matrix_load<qpel_matrix_f16>((base), (offset), (stride))
+#define QPEL_MATRIX_STORE_F32(m, base, offset, stride) qpel_matrix_store((m), (base), (offset), (stride))
+#define QPEL_MATRIX_STORE_F16(m, base, offset, stride) qpel_matrix_store((m), (base), (offset), (stride))
+// c[r][j] = fma(a[r][k], b[k][j], ...) for k = 0..7: a[r][k] is element k % 2 of lane 4 r + k / 2, and
+// b[k][j], j = 2 (l % 4) + i, element i of lane 4 k + l % 4.
+template <class M> __device__ __forceinline__ qpel_matrix_f32 qpel_matrix_mma_chain(M a, M b, qpel_matrix_f32 c) {
+  const unsigned int l = qpel_matrix_lane(), r = l >> 2, q = l & 3u;
+  float x0 = c.v[0], x1 = c.v[1];
+  for (unsigned int k = 0; k < 8u; ++k) {
+    const float ark = __shfl_sync(0xffffffffu, (float)a.v[k & 1u], (int)(r * 4u + (k >> 1)));
+    const float b0 = __shfl_sync(0xffffffffu, (float)b.v[0], (int)(k * 4u + q));
+    const float b1 = __shfl_sync(0xffffffffu, (float)b.v[1], (int)(k * 4u + q));
+    x0 = __fmaf_rn(ark, b0, x0);
+    x1 = __fmaf_rn(ark, b1, x1);
+  }
+  qpel_matrix_f32 d; d.v[0] = x0; d.v[1] = x1; return d;
+}
+__device__ __forceinline__ qpel_matrix_f32 qpel_matrix_mma_f32(qpel_matrix_f32 a, qpel_matrix_f32 b, qpel_matrix_f32 c) {
+  return qpel_matrix_mma_chain(a, b, c); }
+#ifdef QPEL_F16_ENABLED
+__device__ __forceinline__ qpel_matrix_f32 qpel_matrix_mma_f16(qpel_matrix_f16 a, qpel_matrix_f16 b, qpel_matrix_f32 c) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750
+  // B as mma's column fragment: lane l needs b[2 (l % 4) + i][l / 4], element (l / 4) % 2 of lane
+  // 4 (2 (l % 4) + i) + (l / 4) / 2.
+  const unsigned int l = qpel_matrix_lane(), g = l >> 2, q = l & 3u;
+  const unsigned short bits0 = __half_as_ushort(b.v[0]), bits1 = __half_as_ushort(b.v[1]);
+  unsigned int lo[2];
+  for (unsigned int i = 0; i < 2u; ++i) {
+    const int source = (int)(4u * (2u * q + i) + (g >> 1));
+    const unsigned short e0 = (unsigned short)__shfl_sync(0xffffffffu, (unsigned int)bits0, source);
+    const unsigned short e1 = (unsigned short)__shfl_sync(0xffffffffu, (unsigned int)bits1, source);
+    lo[i] = (g & 1u) ? e1 : e0;
+  }
+  const unsigned int b_frag = lo[0] | (lo[1] << 16);
+  const unsigned int a_frag = (unsigned int)__half_as_ushort(a.v[0]) | ((unsigned int)__half_as_ushort(a.v[1]) << 16);
+  float d0, d1, d2, d3;
+  asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 {%0, %1, %2, %3}, {%4, %5}, {%6}, {%7, %8, %9, %10};"
+               : "=f"(d0), "=f"(d1), "=f"(d2), "=f"(d3)
+               : "r"(a_frag), "r"(0u), "r"(b_frag), "f"(c.v[0]), "f"(c.v[1]), "f"(0.0f), "f"(0.0f));
+  (void)d2; (void)d3;
+  qpel_matrix_f32 d; d.v[0] = d0; d.v[1] = d1; return d;
+#else
+  return qpel_matrix_mma_chain(a, b, c);  // (f16 products are exact in f32)
+#endif
+}
+#endif
+#define QPEL_MATRIX_MMA_F32(a, b, c) qpel_matrix_mma_f32((a), (b), (c))
+#define QPEL_MATRIX_MMA_F16(a, b, c) qpel_matrix_mma_f16((a), (b), (c))
 #endif

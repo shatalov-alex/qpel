@@ -30,7 +30,7 @@ a barrier, and a kernel that reaches one through calls is a Groups kernel.
 from qpel_types import TypeChecker, is_shared, is_shared_view, term
 
 THREAD_OWN = {'GridIndex', 'ThreadIndex', 'LocalIndex', 'SubgroupLane'}
-SUBGROUP_OPS = {'SubgroupShuffle', 'SubgroupReduce'}
+SUBGROUP_OPS = {'SubgroupShuffle', 'SubgroupReduce', 'MatrixFill', 'MatrixLoad', 'MatrixStore', 'MatrixMma'}  # (matrices: IR version 13)
 SUBGROUP_WIDE = {'SubgroupIndex', 'SubgroupSize', 'SubgroupReduce'}
 LANE_ROWS = {'LocalIndex', 'ThreadIndex', 'GridIndex'}  # x / 32 is the same for the 32 lanes of a subgroup
 GROUP_WIDE = {'GroupIndex', 'GroupSize', 'GroupCount', 'BarrierCount', 'BufferPresent', 'Literal', 'I32Literal', 'Constant',

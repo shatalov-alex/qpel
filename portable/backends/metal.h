@@ -56,6 +56,16 @@ using namespace metal;
 #define QPEL_MAKE_VEC3_F32 float3
 #define QPEL_VEC4_F32 float4
 #define QPEL_MAKE_VEC4_F32 float4
+
+// Whole-vector loads (qpel_opt.vector_loads): vec<T, N>(b[N i], ..., b[N i + N - 1]) as one N-wide
+// load when b is aligned to the vector and N i + N - 1 does not wrap i's type; the element loads
+// otherwise. Both read the same elements.
+#define QPEL_VECTOR_ALIGNED(p, V) ((reinterpret_cast<ulong>(p) & (sizeof(V) - 1)) == 0)
+#define QPEL_VECTOR_AT(V, p, i) (reinterpret_cast<device const V*>(p)[(i)])
+template <int N> inline bool qpel_vector_fits(uint i) { return i <= (0xffffffffu - (N - 1)) / N; }
+template <int N> inline bool qpel_vector_fits(int i) { return i >= 0 && i <= (0x7fffffff - (N - 1)) / N; }
+template <int N> inline bool qpel_vector_fits(ulong i) { return i <= (~0ul - (N - 1)) / N; }
+template <int N> inline bool qpel_vector_fits(long i) { return i >= 0 && i <= (0x7fffffffffffffffl - (N - 1)) / N; }
 #define QPEL_READ_F32 device const float*
 #define QPEL_WRITE_F32 device float*
 
@@ -338,4 +348,28 @@ template <class T> inline T qpel_combine_xor(T a, T b) { return a ^ b; }
     return v; }
 QPEL_SUBGROUP_REDUCE(add) QPEL_SUBGROUP_REDUCE(min) QPEL_SUBGROUP_REDUCE(max)
 QPEL_SUBGROUP_REDUCE(and) QPEL_SUBGROUP_REDUCE(or) QPEL_SUBGROUP_REDUCE(xor)
+#endif
+
+#ifdef QPEL_MATRIX_ENABLED
+// IR version 13: an 8x8 matrix held by a simdgroup (NUMERICS.md, Matrices): Apple's simdgroup_matrix,
+// loaded and stored row by row (elements_per_row = the stride), c + a b by simdgroup_multiply_accumulate.
+#include <metal_simdgroup_matrix>
+#define QPEL_MATRIX_F32 simdgroup_float8x8
+#define QPEL_MATRIX_F16 simdgroup_half8x8
+#define QPEL_MATRIX_FILL_F32(x) make_filled_simdgroup_matrix<float, 8, 8>((x))
+#define QPEL_MATRIX_FILL_F16(x) make_filled_simdgroup_matrix<half, 8, 8>((half)(x))
+template <class M, class P> inline M qpel_matrix_load(P base, uint offset, uint stride) {
+  M m; simdgroup_load(m, base + offset, (ulong)stride); return m; }
+template <class M, class P> inline void qpel_matrix_store(M m, P base, uint offset, uint stride) {
+  simdgroup_store(m, base + offset, (ulong)stride); }
+#define QPEL_MATRIX_LOAD_F32(base, offset, stride) qpel_matrix_load<simdgroup_float8x8>((base), (offset), (stride))
+#define QPEL_MATRIX_LOAD_F16(base, offset, stride) qpel_matrix_load<simdgroup_half8x8>((base), (offset), (stride))
+#define QPEL_MATRIX_STORE_F32(m, base, offset, stride) qpel_matrix_store((m), (base), (offset), (stride))
+#define QPEL_MATRIX_STORE_F16(m, base, offset, stride) qpel_matrix_store((m), (base), (offset), (stride))
+inline simdgroup_float8x8 qpel_matrix_mma_f32(simdgroup_float8x8 a, simdgroup_float8x8 b, simdgroup_float8x8 c) {
+  simdgroup_float8x8 d; simdgroup_multiply_accumulate(d, a, b, c); return d; }
+inline simdgroup_float8x8 qpel_matrix_mma_f16(simdgroup_half8x8 a, simdgroup_half8x8 b, simdgroup_float8x8 c) {
+  simdgroup_float8x8 d; simdgroup_multiply_accumulate(d, a, b, c); return d; }
+#define QPEL_MATRIX_MMA_F32(a, b, c) qpel_matrix_mma_f32((a), (b), (c))
+#define QPEL_MATRIX_MMA_F16(a, b, c) qpel_matrix_mma_f16((a), (b), (c))
 #endif

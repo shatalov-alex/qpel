@@ -99,6 +99,29 @@ Module-level constants and `qpel.clz`, as bitsandbytes dequantises its 4-bit cod
 
 examples/lookup_tables.qpel, tests/test_lookup_tables.py. A program with either is version 12.
 
+## IR version 13
+
+Matrices for matrix multiplication, held by a subgroup together: Metal's `simdgroup_matrix`, NVIDIA's `mma.sync` fragments.
+
+- **Type.** `MatrixType {element}`, text `matrix<f32, 8, 8>` or `matrix<f16, 8, 8>`: an 8 by 8 matrix whose elements are spread over the 32 lanes of a subgroup. A matrix is a value of locals and expressions only (not a parameter, field, array element or buffer element), and its elements are never read or written one by one.
+- **Operations**, each an expression that every lane of the subgroup reaches together (the uniformity rules of shuffles and subgroup reductions, IR version 5), only in `groups` kernels:
+  - `qpel.matrix_fill<T>(x)` (`MatrixFill {element}`, an f32 `value`): every element `x`, rounded to f16 for `T = f16`.
+  - `qpel.matrix_load(base, offset, stride)` (`MatrixLoad`): element (r, c) is `base[offset + r stride + c]`, from a buffer or shared memory of f32 or f16 (its element type), `offset` and `stride` u32.
+  - `qpel.matrix_store(m, base, offset, stride)` (`MatrixStore`, void): the inverse, to a writable buffer or shared memory of the matrix's element type.
+  - `qpel.matrix_mma(a, b, c)` (`MatrixMma`): `c + a b`, an f32 matrix, for `a` and `b` of one element type and `c` f32.
+- **Numerics** (NUMERICS.md, Matrices): each element of `c + a b` is `c` plus 8 products. With f32 elements, qpel's CUDA adds them in k order by fmaf (the same bits on the CPU simulator), and Metal in its own order, within the bound of a sum of 8 products; with f16, the products are exact in f32 and the sum order is the hardware's on both.
+- **Lowering.** Metal: `simdgroup_float8x8`/`simdgroup_half8x8`, `simdgroup_load`/`simdgroup_store` with the stride as elements per row, `simdgroup_multiply_accumulate`, `make_filled_simdgroup_matrix`. CUDA: two elements per lane, row `lane / 4`, columns `2 (lane % 4)` and the next (an `mma.sync` accumulator's layout); f32 by shuffles and fmaf (tensor cores would round f32 inputs to tf32); f16 by `mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32` on sm_75 and later, with rows 8 to 15 of A zero and B rearranged into its column layout by two shuffles, and by the f32 path elsewhere.
+- **Feature** `matrix` (`QPEL_MATRIX_ENABLED`), which implies `subgroups`.
+
+examples/matrix_tiles.qpel (a tiled GEMM, f32 and f16 with f32 accumulation), tests/test_matrix_tiles.py. A program with a matrix is version 13.
+
+## Optimisation passes
+
+`qpel_opt.py` holds passes that read a validated program and tell the lowering how to emit it faster, with the same results; they never change the IR, whose meaning stays the portable one. Kept apart from the portability lowering (ROADMAP, Phase 6):
+
+- **Whole-vector loads.** A vector built from N consecutive elements of one kernel buffer, `vec<T, N>(b[N i], ..., b[N i + N - 1])` for N of 2 or 4 (how the CUDA importer reads an original's `reinterpret_cast<const uint2 *>(b)[i]`), is emitted as one N-wide load when b's address is aligned to the vector and N i + N - 1 does not wrap i's type, and as the N element loads otherwise (a buffer passed at an odd offset). Both read the same elements. TRELLIS.2's `render` reads its tile ranges with one 64-bit load again, as the original does.
+- Constant folding and common subexpressions are left to nvcc and Apple's Metal compiler, which do both: qpel's generated code for llama.cpp's `fill`, `clamp` and `float32` gives the same SASS as the originals (2026-11-16).
+
 ## Numeric revision
 
 New exports use `qpel-portable-core-v1` and the `u32-modulo-v1` numeric emitter. See NUMERICS.md for exact rules, migration limitations and CPU UBSan evidence. Earlier sections describing exact native source parity and incomplete numeric lowering refer to the preceding revision; only the compatibility rendering now has native token parity. Dynamic division-by-zero, pointer validity and GPU execution remain unchecked.

@@ -37,4 +37,23 @@ struct grid_group {
 inline thread_block this_thread_block() { return thread_block(); }
 inline grid_group this_grid() { return grid_group(); }
 inline void sync(const thread_block& block) { block.sync(); }
+// Declared only, so that library headers which define warp helpers with them compile (gsplat's
+// Utils.cuh): a program that runs one fails to link, rather than computing something else.
+template <unsigned int N, class Parent = void> struct thread_block_tile {
+  unsigned int thread_rank() const; unsigned int size() const; unsigned int meta_group_rank() const;
+  void sync() const;
+  template <class T> T shfl(T, int) const;
+  template <class T> T shfl_down(T, unsigned int) const;
+  template <class T> T shfl_up(T, unsigned int) const;
+  template <class T> T shfl_xor(T, unsigned int) const;
+  template <class P> thread_block_tile(const thread_block_tile<N, P>&);
+  thread_block_tile();
+};
+template <unsigned int N, class Parent> thread_block_tile<N, Parent> tiled_partition(const Parent&);
+template <class T = void> struct plus { T operator()(T a, T b) const { return a + b; } };
+template <class T = void> struct less { T operator()(T a, T b) const { return a < b ? a : b; } };
+template <class T = void> struct greater { T operator()(T a, T b) const { return a > b ? a : b; } };
+template <class Group, class T, class Op> T reduce(const Group&, T, Op);
+template <class Group, class T, class Op> T inclusive_scan(const Group&, T, Op);
+template <class Group, class T, class Op> T exclusive_scan(const Group&, T, Op);
 }  // namespace cooperative_groups

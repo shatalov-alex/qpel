@@ -6,18 +6,21 @@ importers, the text syntax, and the checks that run all of them. For an overview
 
 ## Current scope
 
-- **IR version 3** (`CORE.md`): typed programs with integer widths from 8 to 64 bits, `f16`/`bf16`
+- **IR version 13** (`CORE.md`): typed programs with integer widths from 8 to 64 bits, `f16`/`bf16`
   storage, float32 arithmetic (f32-strict-v1), exact and bounded math functions, structs, buffer
-  views, 1D/2D/3D and explicit-group launch geometry, and multi-stage launch plans.
+  views, vectors and local arrays, 1D/2D/3D and explicit-group launch geometry, shared memory and
+  barriers, subgroup shuffles and reductions, atomics, module constants, 8x8 matrices held by a
+  subgroup (Metal's `simdgroup_matrix`, NVIDIA's `mma.sync`), and multi-stage launch plans.
 - **Importers** (`IMPORT.md`): unmodified CUDA and Metal source through clang's JSON AST, with
-  per-construct diagnostics; templates, library-header device functions and Metal function
-  constants are supported.
+  per-construct diagnostics; templates, library-header device functions, Metal function
+  constants, a CUB subset and Metal's simdgroup matrices are supported. A Triton pilot reads
+  Triton's TTIR (`frontends/triton/README.md`).
 - **Backends:** CUDA (nvcc, sm_75–sm_90) and Metal (3.0/3.1), plus Python hosts
-  (PyTorch/Metal, CuPy/CUDA).
+  (PyTorch/Metal, CuPy/CUDA). Optimisation passes (`qpel_opt.py`) are kept apart from the
+  portable meaning: whole-vector loads where the original read vectors.
 - **Text syntax** (`TEXT.md`): `.qpel` files that print and parse back to the same IR.
-- **Not yet:** PyTorch extension headers and op hosts (Phase 3), general shared memory, barriers and
-  warp/simdgroup operations (Phase 5), matrix tiles (Phase 6), and host-API and library mapping
-  (Phase 7). See `ROADMAP.md`.
+- **Not yet:** Apple M5's matrix tiles, NVIDIA's WMMA fragments in the importers, and host-API and
+  library mapping (Phase 7). See `ROADMAP.md`.
 
 JetBrains MPS (`../languages/`) is an optional structured editor that exports the same IR. Its
 files are MPS persistence, not text to edit by hand.

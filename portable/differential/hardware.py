@@ -27,6 +27,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import uuid
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
@@ -55,6 +56,7 @@ cd "$(dirname "$0")" && B=$PWD
 export LD_LIBRARY_PATH=$B/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 nvidia-smi --query-gpu=name,driver_version,compute_cap,memory.total --format=csv > gpu.txt 2>&1
 touch .start
+cp bundle_id.txt ran_bundle_id.txt 2>/dev/null
 start=$(date +%s)
 ./selftest > selftest.log 2>&1; echo $? > selftest.status
 run() {
@@ -100,6 +102,7 @@ def bundle(root, out, cupy=True):
     # out/bundle.tar.gz: what the GPU machine needs, and nothing else.
     out.mkdir(parents=True, exist_ok=True)
     (root/'run.sh').write_text(RUN_SCRIPT)
+    (root/'bundle_id.txt').write_text(uuid.uuid4().hex + '\n')
     path = out/'bundle.tar.gz'
 
     def keep(info):
@@ -135,17 +138,25 @@ began = time.time()
 def mark(what):
     print(f'{time.time() - began:7.1f}s {what}', flush=True)
 mark('start')
-found = glob.glob('/kaggle/input/**/run.sh', recursive=True)
+# The bundle is uploaded as one file Kaggle does not unpack (bundle.qpelbundle, a .tar.gz): reading it
+# once and unpacking locally takes seconds, where copying Kaggle's unpacked tree took 10 to 30 minutes.
 work = '/tmp/qpel'
-if found:
-    shutil.copytree(os.path.dirname(found[0]), work)
-else:
-    archive = glob.glob('/kaggle/input/**/bundle.tar.gz', recursive=True)[0]
+archive = (glob.glob('/kaggle/input/**/bundle.qpelbundle', recursive=True) or
+           glob.glob('/kaggle/input/**/bundle.tar.gz', recursive=True))
+if archive:
     os.makedirs(work)
-    tarfile.open(archive).extractall(work)
+    tarfile.open(archive[0], 'r:gz').extractall(work)
+else:
+    shutil.copytree(os.path.dirname(glob.glob('/kaggle/input/**/run.sh', recursive=True)[0]), work)
+mark('bundle unpacked')
+expected = 'BUNDLE_ID'
+found_id = open(work + '/bundle_id.txt').read().strip() if os.path.exists(work + '/bundle_id.txt') else 'none'
+if found_id != expected:  # Kaggle attached an older version of the dataset: stop before using the GPU
+    open('/kaggle/working/stale_bundle.txt', 'w').write(f'{found_id} (expected {expected})\n')
+    mark(f'stale bundle {found_id}, expected {expected}')
+    sys.exit(0)
 for p in glob.glob(work + '/**/program', recursive=True) + [work + '/selftest']:
     os.chmod(p, 0o755)
-mark('bundle unpacked')
 env = dict(os.environ)
 try:
     import cupy  # noqa: F401
@@ -180,14 +191,21 @@ class Kaggle:
     def upload(self, path):
         """The bundle as a private dataset (a new version when it exists); waits until ready."""
         folder = Path(tempfile.mkdtemp(prefix='qpel-kaggle-dataset-'))
-        shutil.copy(path, folder/'bundle.tar.gz')
+        shutil.copy(path, folder/'bundle.qpelbundle')  # (a name Kaggle leaves packed; see KERNEL)
         ident = f'{self.user}/{self.slug}-bundle'
         (folder/'dataset-metadata.json').write_text(json.dumps(
             {'title': 'qpel nvidia bundle', 'id': ident, 'licenses': [{'name': 'other'}]}))
         exists = subprocess.run([self.cli, 'datasets', 'status', ident], capture_output=True, text=True)
         if exists.returncode == 0 and 'ready' in exists.stdout.lower():
             self.kaggle('datasets', 'version', '-p', str(folder), '-m', 'bundle', '-q')
-            time.sleep(10)
+            # status answers 'ready' for the previous version until the new one is processed: wait
+            # for it to leave 'ready' (or a few minutes), then for 'ready' again. The kernel also
+            # checks the bundle id, so a version attached too early stops it at once.
+            for _ in range(30):
+                time.sleep(10)
+                status = subprocess.run([self.cli, 'datasets', 'status', ident], capture_output=True, text=True)
+                if status.returncode or 'ready' not in status.stdout.lower():
+                    break
         else:
             self.kaggle('datasets', 'create', '-p', str(folder), '-q')
         for _ in range(120):  # a new dataset answers 403 for a while; keep asking
@@ -197,11 +215,11 @@ class Kaggle:
                 return ident
         raise RuntimeError(f'dataset {ident} did not become ready')
 
-    def run(self, dataset, out):
+    def run(self, dataset, out, bundle_id):
         """Push and run the kernel on one T4, wait, download its output into out/."""
         folder = Path(tempfile.mkdtemp(prefix='qpel-kaggle-kernel-'))
         ident = f'{self.user}/{self.slug}'
-        (folder/'run.py').write_text(KERNEL)
+        (folder/'run.py').write_text(KERNEL.replace('BUNDLE_ID', bundle_id))
         (folder/'kernel-metadata.json').write_text(json.dumps({
             'id': ident, 'title': self.slug, 'code_file': 'run.py', 'language': 'python', 'kernel_type': 'script',
             'is_private': True, 'enable_gpu': True, 'enable_internet': True, 'dataset_sources': [dataset],
@@ -220,6 +238,9 @@ class Kaggle:
                 raise RuntimeError(f'kernel {ident} still running after {self.timeout + 600}s: {status}')
         out.mkdir(parents=True, exist_ok=True)
         self.kaggle('kernels', 'output', ident, '-p', str(out), '-o', '-q')
+        if (out/'stale_bundle.txt').exists():
+            raise RuntimeError(f'Kaggle attached an older bundle: {(out/"stale_bundle.txt").read_text().strip()}; '
+                               'run again once the dataset version is ready')
         if 'complete' not in status:
             log = next(iter(out.glob('*.log')), None)
             raise RuntimeError(f'kernel {ident}: {status.strip()}\n' + (log.read_text()[-3000:] if log else ''))
@@ -258,8 +279,11 @@ def main(argv=None):
             raise SystemExit(0)
         dataset = remote.upload(path)
         print(f'uploaded {dataset}; running on Kaggle', flush=True)
-        results = remote.run(dataset, out/'kaggle')
+        results = remote.run(dataset, out/'kaggle', (root/'bundle_id.txt').read_text().strip())
         unpack_results(root, results)
+        ran = (root/'ran_bundle_id.txt').read_text().strip() if (root/'ran_bundle_id.txt').exists() else 'none'
+        if ran != (root/'bundle_id.txt').read_text().strip():
+            raise RuntimeError(f'the results are from bundle {ran}, not this one')
         for name in ('gpu.txt', 'timing.txt', 'selftest.log', 'selftest.status', 'cupy_host.log', 'cupy_host.status',
                      'bench.log', 'bench.status', 'bench_cuda.json'):
             for folder in (root, out/'kaggle'):

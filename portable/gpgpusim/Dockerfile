@@ -23,9 +23,15 @@ WORKDIR /opt/gpgpu-sim
 # add.s32 1 + (-1) setp.ne.b32 gave true, and Triton's matmul loop never ended.
 # qpel-ldmatrix.patch (2026-11-16, local so far): ldmatrix (sm_75), which Triton uses to convert a tile's
 # layout through shared memory (a transposed operand of tl.dot, a 2D block), was not parsed.
-COPY qpel-fixes.patch qpel-shfl.patch qpel-setp.patch qpel-ldmatrix.patch /tmp/
+# qpel-mma.patch (2026-11-17, local so far): mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 (sm_75
+# tensor cores), which qpel's CUDA uses for f16 matrices (IR version 13), was not parsed.
+# qpel-scopes.patch (2026-11-17, upstream as #159): a register declared in a nested { } block was taken for a
+# duplicate of the function's own and skipped, so the block wrote the function's register. nvcc writes
+# __syncthreads_count as { .reg .pred %p1; ... bar.red.popc ... %p1; }: gsplat's rasterizer lost a live
+# predicate and rendered wrong pixels.
+COPY qpel-fixes.patch qpel-shfl.patch qpel-setp.patch qpel-ldmatrix.patch qpel-mma.patch qpel-scopes.patch /tmp/
 RUN git apply /tmp/qpel-fixes.patch && git apply /tmp/qpel-shfl.patch && git apply /tmp/qpel-setp.patch \
-    && git apply /tmp/qpel-ldmatrix.patch
+    && git apply /tmp/qpel-ldmatrix.patch && git apply /tmp/qpel-mma.patch && git apply /tmp/qpel-scopes.patch
 RUN bash -c 'set -eo pipefail; export CUDA_INSTALL_PATH=/usr/local/cuda; source setup_environment release; \
       make -j"$(nproc)" > /tmp/make.log 2>&1 || { tail -60 /tmp/make.log; exit 1; }; \
       ls lib/*/*/release/libcudart.so*'

@@ -168,6 +168,13 @@ class Printer:
             return f'qpel.barrier_count({e("value")})'
         if k == 'GridIndex':
             return 'qpel.index'
+        if k == 'MatrixFill':
+            return f'qpel.matrix_fill<{a["element"]}>({self.expr(self.child(n, "value"))})'
+        if k in ('MatrixLoad', 'MatrixStore', 'MatrixMma'):
+            roles = {'MatrixLoad': ('base', 'offset', 'stride'), 'MatrixStore': ('matrix', 'base', 'offset', 'stride'),
+                     'MatrixMma': ('a', 'b', 'c')}[k]
+            name = {'MatrixLoad': 'matrix_load', 'MatrixStore': 'matrix_store', 'MatrixMma': 'matrix_mma'}[k]
+            return f'qpel.{name}(' + ', '.join(self.expr(self.child(n, r)) for r in roles) + ')'
         if k == 'BufferPresent':
             return f'qpel.present({self.link(n, "parameter")["attributes"]["name"]})'
         if k in SUBGROUP_BUILTINS:
@@ -376,6 +383,17 @@ class Parser:
             length = self.take(kind='number')
             self.take('>')
             return f'shared<{element}, {length}>'
+        if name == 'matrix':  # IR version 13: matrix<f32, 8, 8>
+            self.take('<')
+            element = self.take(kind='name')
+            self.take(',')
+            rows = self.take(kind='number')
+            self.take(',')
+            columns = self.take(kind='number')
+            self.take('>')
+            if (rows, columns) != ('8', '8'):
+                self.fail('a matrix is 8 by 8')
+            return f'matrix<{element}, 8, 8>'
         if name == 'vec':
             self.take('<')
             element = self.take(kind='name')
@@ -407,6 +425,8 @@ class Parser:
         if t.startswith('shared<'):
             element, length = t[len('shared<'):-1].rsplit(', ', 1)
             return self.add('SharedType', {'element': element, 'length': int(length)})
+        if t.startswith('matrix<'):
+            return self.add('MatrixType', {'element': t[len('matrix<'):].split(',')[0]})
         if t.startswith('vec<'):
             element, length = t[len('vec<'):-1].split(', ')
             if not length.isdigit():
@@ -682,6 +702,19 @@ class Parser:
                 return self.add('Barrier')
             if what == 'barrier_count':
                 return self.add('BarrierCount', children={'value': self.arguments()[0]})
+            if what == 'matrix_fill':  # IR version 13: qpel.matrix_fill<f16>(x)
+                self.take('<')
+                element = self.take(kind='name')
+                self.take('>')
+                return self.add('MatrixFill', {'element': element}, {'value': self.arguments()[0]})
+            if what in ('matrix_load', 'matrix_store', 'matrix_mma'):
+                kind = {'matrix_load': 'MatrixLoad', 'matrix_store': 'MatrixStore', 'matrix_mma': 'MatrixMma'}[what]
+                roles = {'MatrixLoad': ('base', 'offset', 'stride'), 'MatrixStore': ('matrix', 'base', 'offset', 'stride'),
+                         'MatrixMma': ('a', 'b', 'c')}[kind]
+                args = self.arguments()
+                if len(args) != len(roles):
+                    self.fail(f'qpel.{what} takes {len(roles)} arguments')
+                return self.add(kind, children=dict(zip(roles, args)))
             if what == 'clz':  # qpel.clz(x): the leading zero bits of an integer (IR version 12)
                 self.take('(')
                 operand = self.expr()

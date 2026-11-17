@@ -120,6 +120,23 @@ On 2^20 inputs on the Apple GPU (uniform on [−6, 6], magnitudes from 1e−8 to
   float `simd_sum` as `subgroup_add` and records an adaptation. qpel's own Metal output never
   calls `simd_sum`. Integer `simd_sum`, min and max are exact.
 
+## Matrices (IR version 13)
+- **Held by a subgroup.** A `matrix<T, 8, 8>` belongs to the 32 lanes of a subgroup together, and
+  every matrix operation is reached by all of them (the subgroup rules above). How its elements
+  are spread over the lanes is the backend's (Metal's is not documented); programs never see it.
+- **f32: `c + a b` in k order on CUDA.** Each element is `fmaf(a[r][7], b[7][c], ... fmaf(a[r][0],
+  b[0][c], c[r][c]))`, the same bits on the CPU simulator and on NVIDIA GPUs (shuffles and fmaf,
+  not tensor cores, which would round f32 inputs to tf32). Metal's `simdgroup_multiply_accumulate`
+  has no documented order. The contract is the bound of any order of a sum of 8 products,
+  |error| <= (8 + 2) 2^-24 (|c| + sum |a b|) per step of K / 8 products. On an M4 Pro, Metal gives
+  the k-order bits for every element tested (tests/test_matrix_tiles.py), which is observed, not
+  promised.
+- **f16: exact products, the hardware's sum.** An f16 product is exact in f32, so `c + a b` differs
+  only in the order and the precision of its additions: on NVIDIA tensor cores (`mma.sync`, sm_75
+  and later) the hardware's, on Metal Apple's, on the CPU simulator and older NVIDIA GPUs k order by
+  fmaf. The same bound holds. `matrix_fill<f16>(x)` and loads of f16 memory are exact; nothing
+  rounds an f32 matrix to f16 (a store of an f32 matrix to f16 memory is rejected).
+
 ## Atomics (IR version 6)
 Every atomic is relaxed at device scope, as before. Version 6 adds operations and two element types;
 each element has the operations both platforms give it:

@@ -13,7 +13,7 @@ python3 -m fuzz --nvidia                    # random programs, also on GPGPU-Sim
 python3 check_all.py --gpu --nvidia         # all of it, with the other checks
 ```
 
-The image (`qpel/gpgpu-sim:dev-4195dd4-qpel14`, from this folder's Dockerfile on the
+The image (`qpel/gpgpu-sim:dev-4195dd4-qpel17`, from this folder's Dockerfile on the
 CUDA 12.6 devel image `nvcc_check.py` uses) is built on first use and takes about a
 minute. It is built and tested natively on arm64 (Apple silicon, Docker Desktop). On
 x86-64 the upstream build flags are kept, but that build is untested. Change the tag in
@@ -86,13 +86,11 @@ Once the pull requests are merged, pin `GPGPUSIM_COMMIT` past them and drop the 
 
 **Open (2026-11-17):** GPGPU-Sim's PTX grammar takes only registers in a vector operand, so `mov.b32 %f12, {0,%rs306};` (cuda_bf16.hpp widening a bfloat16) is a syntax error, after which the functions that follow are missing and `add_ptxinfo` asserts. bitsandbytes' `kernels.cu` has such bf16 kernels, so its originals are skipped here (`SIMULATOR_ISSUES`); qpel's CUDA of the dequantisation programs passes.
 
-**Open (2026-11-13):** with the fixes, TRELLIS.2's `render` still finds no voxel on
-GPGPU-Sim, for the original and qpel's CUDA alike (the CPU simulator and the Apple GPU
-agree with each other). Tracing one pixel shows a bool (`inside`) changing between its
-definition and its use; the instructions involved (16-bit bool registers, predicates
-across scoped `bar.red` blocks) each behave correctly in isolation. On real NVIDIA hardware
-(Tesla T4, 2026-11-14) `render` passes all 24 cases for the original and for qpel's CUDA, so
-this is a simulator problem; the GPGPU-Sim row stays skipped. The same fuzzing run found one qpel bug, in the importer
+**Resolved (2026-11-17, `qpel-scopes.patch`):** TRELLIS.2's `render` found no voxel on
+GPGPU-Sim, for the original and qpel's CUDA alike, from 2026-11-13. Tracing one pixel had shown a
+bool (`inside`) changing between its definition and its use, across a scoped `bar.red` block: it
+was the predicate that block declared again, which GPGPU-Sim did not scope (see the fix above).
+With image `qpel17` both pass all cases, as they did on a Tesla T4 (2026-11-14). The same fuzzing run found one qpel bug, in the importer
 (`fuzz/regressions/unsigned_to_i32_literal.qpel`).
 
 **Fixed (2026-11-14), `qpel-shfl.patch`, upstream as [#156](https://github.com/accel-sim/gpgpu-sim_distribution/pull/156):** warp shuffles were wrong in two ways, so no
@@ -130,6 +128,25 @@ block's layout (Liger's 2D-block RMSNorm). A warp instruction like `shfl`: lanes
 row addresses of matrix i, each lane receives its pairs of 16-bit elements as the PTX ISA lays out
 the fragments (with `.trans`, of the transposed matrix). The self-test checks `.x1`, `.x4` and
 `.x4.trans` for every lane, in functional mode and the timing model.
+
+**Added (2026-11-17), `qpel-mma.patch`, image `qpel16` (local so far):**
+`mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32` (sm_75 tensor cores), which GPGPU-Sim did not
+parse (it has only `wmma`). qpel's CUDA multiplies f16 matrices with it (IR version 13). A warp
+instruction like `ldmatrix`: with g = lane / 4 and t = lane % 4, lane l holds A[g][2t + j] and
+A[g + 8][2t + j], B[2t + j][g] and C, D[g][2t + j] and [g + 8][2t + j], as the PTX ISA lays out the
+fragments; the products of f16 values are exact in f32 and are added in k order (the hardware's
+order is not documented, so qpel's tests compare f16 products within a bound). The opcode is
+counted as a tensor-core instruction in the timing model. The self-test multiplies small integers
+(exact in any order) and checks every lane's four results, here and on the T4.
+
+**Fixed (2026-11-17), `qpel-scopes.patch`, image `qpel17` (submitted upstream as accel-sim PR #159):** a
+register declared in a nested `{ }` block with the name of one in the enclosing scope was taken for
+a duplicate and skipped ("Warning %p1 was declared previous ... skipping new declaration"), so the
+block wrote the enclosing register. CUDA 12.6 writes `__syncthreads_count` as `{ .reg .pred %p1;
+setp ...; bar.red.popc ... %p1; }` inside functions with a `%p1` of their own: gsplat's unmodified
+rasterizer lost a live predicate and rendered wrong pixels on GPGPU-Sim (qpel's translation passed
+only because its `%p1` was not live there). A nested block's declarations are now checked against
+that block only. The self-test checks a shadowing `.reg` in inline assembly.
 
 Timing (performance) mode still aborts on shuffles, before and after the fixes
 (`bitset::test` out of range in `shader_core_ctx::execute`); qpel runs functional mode only.

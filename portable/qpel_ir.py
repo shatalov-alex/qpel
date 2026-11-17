@@ -5,7 +5,7 @@ and whole-resource pipeline effects, not numerical lowering, bounds or races.
 """
 import json
 from qpel_schema import validate_envelope, validate_structure
-from qpel_types import is_shared_view, view_element, V8_MATH
+from qpel_types import is_shared_view, view_element, V8_MATH, is_matrix, matrix_element
 from qpel_types import is_shared, shared_element, shared_length, is_vector, vector_element, vector_length, EXACT_MATH, validate_types, TypeChecker, LEGACY, term, is_buffer, element, access, is_signed, bits, unsigned_of, arithmetic, INTEGER_TERMS, is_array, array_element, array_length
 from qpel_pipeline import validate_pipeline
 from qpel_bounds import validate_static_bounds
@@ -16,11 +16,11 @@ LEGACY_MACROS={'void':'void','bool':'bool','u8':'QPEL_U8','u32':'QPEL_U32','i32'
        'buffer<u32, atomic>':'QPEL_ATOMIC_U32','buffer<i32, atomic>':'QPEL_ATOMIC_I32','buffer<i32, read>':'QPEL_READ_I32',
        'buffer<i32, write>':'QPEL_WRITE_I32','buffer<f32, read>':'QPEL_READ_F32','buffer<f32, write>':'QPEL_WRITE_F32',
        'buffer<f16, read>':'QPEL_READ_F16','buffer<f16, write>':'QPEL_WRITE_F16'}
-TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType','StructType','ArrayType','VectorType','SharedType','SharedViewType'}
-KINDS=TYPE_KINDS|set('ConstantDecl ArrayValue VectorValue Barrier BarrierCount View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange AtomicMax AtomicAnd AtomicOr AtomicXor AtomicExchange Bitcast SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce BufferPresent Pipeline Resource Dispatch Binding'.split())
-COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage','groups','math_exact','math_bounded','subgroups','atomics_f32','atomics_u64'}
+TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType','StructType','ArrayType','VectorType','SharedType','SharedViewType','MatrixType'}
+KINDS=TYPE_KINDS|set('MatrixFill MatrixLoad MatrixStore MatrixMma ConstantDecl ArrayValue VectorValue Barrier BarrierCount View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange AtomicMax AtomicAnd AtomicOr AtomicXor AtomicExchange Bitcast SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce BufferPresent Pipeline Resource Dispatch Binding'.split())
+COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage','groups','math_exact','math_bounded','subgroups','atomics_f32','atomics_u64','matrix'}
 PROFILES={'metal':COMMON_FEATURES,'cuda':COMMON_FEATURES}
-SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3',4:'qpel-portable-core-v4',5:'qpel-portable-core-v5',6:'qpel-portable-core-v6',7:'qpel-portable-core-v7',8:'qpel-portable-core-v8',9:'qpel-portable-core-v9',10:'qpel-portable-core-v10',11:'qpel-portable-core-v11',12:'qpel-portable-core-v12'}
+SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3',4:'qpel-portable-core-v4',5:'qpel-portable-core-v5',6:'qpel-portable-core-v6',7:'qpel-portable-core-v7',8:'qpel-portable-core-v8',9:'qpel-portable-core-v9',10:'qpel-portable-core-v10',11:'qpel-portable-core-v11',12:'qpel-portable-core-v12',13:'qpel-portable-core-v13'}
 # Version 2 adds else, for/do/break/continue, signed 32-bit integers and their atomics,
 # shifts, ~, conversion to u8, scalar arguments and 2D/3D kernels.
 V2_KINDS={'Grid3D','ThreadIndex','For','DoWhile','Break','Continue','I32Type','ReadOnlyI32BufferType','I32BufferType','AtomicI32BufferType','I32Literal','I32Cast','U32Cast','U8Cast'}
@@ -45,6 +45,7 @@ def type_macro(t):
     if is_buffer(t):return ('QPEL_READ(' if access(t)=='read' else 'QPEL_WRITE(')+type_macro(element(t))+')'
     if is_shared_view(t):return 'QPEL_SHARED_VIEW('+type_macro(view_element(t))+')'  # T* / threadgroup T*
     if is_vector(t):return f'QPEL_VEC{vector_length(t)}_{vector_element(t).upper()}'  # int4, float3, ... (backends/*.h)
+    if is_matrix(t):return 'QPEL_MATRIX_'+matrix_element(t).upper()  # IR version 13 (backends/*.h)
     return 'QPEL_'+t.upper()
 
 
@@ -99,7 +100,7 @@ def version_5_features(nodes):
 def version_6_features(nodes):
     used={n['kind'] for n in nodes if n['kind'] in V6_KINDS}
     for n in nodes:
-        if n['kind'] in TYPE_KINDS-{'ArrayType','VectorType','SharedType','SharedViewType','StructType'}:
+        if n['kind'] in TYPE_KINDS-{'ArrayType','VectorType','SharedType','SharedViewType','StructType','MatrixType'}:
             t=term(n)
             if is_buffer(t) and access(t)=='atomic' and element(t) in ('f32','u64'):used.add(t)
     return used
@@ -151,9 +152,14 @@ def version_12_features(nodes):
     return used
 
 
+def version_13_features(nodes):
+    """Version 13: 8x8 matrices held by a subgroup."""
+    return {'matrix' for n in nodes if n['kind'] in ('MatrixType','MatrixFill','MatrixLoad','MatrixStore','MatrixMma')}
+
+
 def minimum_version(program):
     nodes=program['nodes']
-    return 12 if version_12_features(nodes) else 11 if version_11_features(nodes) else 10 if version_10_features(nodes) else 9 if version_9_features(nodes) else 8 if version_8_features(nodes) else 7 if version_7_features(nodes) else 6 if version_6_features(nodes) else 5 if version_5_features(nodes) else 4 if version_4_features(nodes) else 3 if version_3_features(nodes) else 2 if version_2_features(nodes) else 1
+    return 13 if version_13_features(nodes) else 12 if version_12_features(nodes) else 11 if version_11_features(nodes) else 10 if version_10_features(nodes) else 9 if version_9_features(nodes) else 8 if version_8_features(nodes) else 7 if version_7_features(nodes) else 6 if version_6_features(nodes) else 5 if version_5_features(nodes) else 4 if version_4_features(nodes) else 3 if version_3_features(nodes) else 2 if version_2_features(nodes) else 1
 
 
 def validate(program, backend=None):
@@ -176,6 +182,8 @@ def validate(program, backend=None):
         raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_8_features(program['nodes'])))+'; declare version 8')
     if program['version']<10 and version_10_features(program['nodes']):
         raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_10_features(program['nodes'])))+'; declare version 10')
+    if program['version']<13 and version_13_features(program['nodes']):
+        raise ValueError(f"IR version {program['version']} cannot use: matrix; declare version 13")
     if program['version']<12 and version_12_features(program['nodes']):
         raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_12_features(program['nodes'])))+'; declare version 12')
     if program['version']<11 and version_11_features(program['nodes']):
@@ -198,6 +206,7 @@ def validate(program, backend=None):
         if n['kind']=='Grid3D':required.add('grid_3d')
         if n['kind']=='Groups':required.add('groups')
         if n['kind'] in V5_KINDS:required.add('subgroups')
+        if n['kind'] in ('MatrixFill','MatrixLoad','MatrixStore','MatrixMma'):required.update({'matrix','subgroups'})
         if n['kind']=='Math':required.add('math_exact' if n['attributes']['function'] in EXACT_MATH else 'math_bounded')
         if n['kind'] in TYPE_KINDS|{'Cast','Constant'}:
             used=term(n) if n['kind'] in TYPE_KINDS else n['attributes'].get('to') or n['attributes'].get('scalar')
@@ -243,6 +252,8 @@ class Lowering:
         validate(program);self.program=program;self.nodes={n['id']:n for n in program['nodes']}
         checker = TypeChecker(program);checker.validate()
         self.expression_types = checker.expression_types
+        import qpel_opt  # optimisation facts, apart from the portability lowering (qpel_opt.py)
+        self.vector_loads = qpel_opt.vector_loads(program, self.expression_types)
     def children(self,n,role):return [self.nodes[i] for i in n['children'].get(role,[])]
     def child(self,n,role):
         values=self.children(n,role)
@@ -368,11 +379,25 @@ class Lowering:
                     return '('+a['operator']+operand+')' if t == operand_type else '(('+type_macro(t)+')('+a['operator']+'('+type_macro(t)+')('+operand+')))'
                 return '('+a['operator']+'('+type_macro(t)+')('+operand+'))'
             return '('+a['operator']+operand+')'
+        if k=='MatrixFill':return 'QPEL_MATRIX_FILL_'+a['element'].upper()+'('+e('value')+')'  # IR version 13
+        if k in ('MatrixLoad','MatrixStore','MatrixMma'):
+            t=self.expression_types[self.child(n,'a' if k=='MatrixMma' else 'base')['id']]
+            item=matrix_element(t) if k=='MatrixMma' else element(t) if is_buffer(t) else view_element(t)
+            roles={'MatrixLoad':('base','offset','stride'),'MatrixStore':('matrix','base','offset','stride'),'MatrixMma':('a','b','c')}[k]
+            name={'MatrixLoad':'LOAD','MatrixStore':'STORE','MatrixMma':'MMA'}[k]
+            return 'QPEL_MATRIX_'+name+'_'+item.upper()+'('+', '.join(e(r) for r in roles)+')'
         if k=='Index':return e('base')+'['+e('index')+']'
         if k=='ArrayValue':return '{'+joined('elements',', ')+'}'
         if k=='Barrier':return 'QPEL_BARRIER()'
         if k=='BarrierCount':return 'QPEL_BARRIER_COUNT('+e('value')+')'
-        if k=='VectorValue':return f"QPEL_MAKE_VEC{a['length']}_{a['element'].upper()}("+joined('elements',', ')+')'
+        if k=='VectorValue':
+            built=f"QPEL_MAKE_VEC{a['length']}_{a['element'].upper()}("+joined('elements',', ')+')'
+            if n['id'] in self.vector_loads:  # one aligned N-wide load, the same elements (qpel_opt.vector_loads)
+                base,index=self.vector_loads[n['id']]
+                vector=f"QPEL_VEC{a['length']}_{a['element'].upper()}"
+                p,i=self.emit(base),self.emit(index)
+                return f"(QPEL_VECTOR_ALIGNED({p}, {vector}) && qpel_vector_fits<{a['length']}>({i}) ? QPEL_VECTOR_AT({vector}, {p}, {i}) : {built})"
+            return built
         if k=='Member':return e('base')+'.'+a['member']
         if k=='Call':return self.link(n,'function')['attributes']['name']+'('+joined('arguments',', ')+')'
         if k in ('Minimum','Maximum'):
@@ -475,6 +500,9 @@ class Lowering:
         if 'Bitcast' in kinds:found.add('bitcast')
         if kinds&(V6_KINDS-{'Bitcast'}) or any(is_buffer(t) and access(t)=='atomic' and element(t) not in ('u32','i32') for t in terms):found.add('atomics')
         if kinds&V5_KINDS:found.add('subgroups')
+        if kinds&{'MatrixFill','MatrixLoad','MatrixStore','MatrixMma'}:found.update({'matrix','subgroups'})
+        if any(n['kind'] in ('MatrixType','MatrixFill') and n['attributes'].get('element')=='f16' for n in self.program['nodes']):
+            found.add('float16_storage')  # an f16 matrix holds __half on CUDA (backends/cuda.h)
         for n in nodes:
             if n['kind']=='Parameter' and n['attributes'].get('isBuffer'):
                 t=term(self.child(n,'type'))

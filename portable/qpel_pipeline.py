@@ -73,6 +73,8 @@ class PipelineChecker(TypeChecker):
                 return
             if k == 'ReduceSumF32':
                 mark(self.child(node, 'buffer'), READ)
+            if k in ('MatrixLoad', 'MatrixStore'):  # IR version 13
+                mark(self.child(node, 'base'), READ if k == 'MatrixLoad' else WRITE)
             if k in {'Index', 'Member'}:
                 mark(node, READ)
             if k.startswith('Atomic'):

@@ -13,13 +13,14 @@ import struct
 from qpel_schema import METAL_FUNCTIONS, is_identifier
 from qpel_types import (SCALAR_TERMS, VALUE_TERMS, access, buffer as type_buffer, fits, is_buffer as type_is_buffer,
                         is_signed, node_spec, normalize_plan, term as type_term)
-from qpel_types import access as type_access, bits as type_bits, INTEGER_TERMS, MATH, is_struct, is_array
+from qpel_types import access as type_access, bits as type_bits, INTEGER_TERMS, MATH, is_struct, is_array, MATH_ULPS
 from qpel_types import arithmetic as type_arithmetic, element as element_of, is_vector, vector_element, vector_length, is_shared
 from qpel_types import is_shared_view, view_element, shared_bytes, BITCASTS, array_element, array_length
 from . import clang_ast
 from .clang_ast import position
 from .facades import inline_facades
 from .views import dead_parameters, shared_views
+from .records import scalarize_struct_values, glm_members, flatten_local_matrices, pointer_offsets
 from .functors import scalarize_functors
 from .demote import demote_unit
 from .statics import constant_values, desugar_aliases, flatten_argument_structs, instances_to_definitions, lift_statics, lower_switches, single_rows, read_enums, local_pointers_as_references
@@ -128,8 +129,49 @@ def words(text):
     return [w for w in text.split() if w not in QUALIFIERS]
 
 
+GLM_VECTOR = re.compile(r'(?:glm::)?vec<([234]), (float|int|unsigned int)(?:, (?:glm::)?\w+)?>')
+GLM_ELEMENTS = {'float': 'f32', 'int': 'i32', 'unsigned int': 'u32'}
+
+
+VECTOR_ALIASES = {}  # the unit's own names of glm vectors (gsplat: using vec3 = glm::vec<3, float>), set per import
+
+
+def glm_aliases(unit):
+    """{alias: vec<T, N>} for `using name = glm::vec<N, T>` and typedefs of them, outside system headers."""
+    found = {}
+    def visit(node):
+        if node.get('kind') in ('TypeAliasDecl', 'TypedefDecl') and node.get('name'):
+            t = node.get('type', {})
+            spelled = named(' '.join(words(t.get('desugaredQualType', t.get('qualType', '')))))
+            if is_vector(spelled):
+                found[node['name']] = spelled
+        if node.get('kind') in ('NamespaceDecl', 'TranslationUnitDecl', 'LinkageSpecDecl'):
+            for child in node.get('inner', ()):
+                visit(child)
+    visit(unit)
+    return found
+
+
+def named(base):
+    """The qpel term a C type name spells: SCALARS, or glm's vec<N, T> (gsplat's vec2, vec3) as vec<T, N>."""
+    if base in SCALARS:
+        return SCALARS[base]
+    if base in VECTOR_ALIASES:
+        return VECTOR_ALIASES[base]
+    if base.startswith('glm::') and base[5:] in VECTOR_ALIASES:
+        return VECTOR_ALIASES[base[5:]]
+    glm = GLM_VECTOR.fullmatch(base)
+    if glm and not (glm.group(1) == '3' and glm.group(2) == 'unsigned int'):
+        return f'vec<{GLM_ELEMENTS[glm.group(2)]}, {glm.group(1)}>'
+    return base
+
+
+GLM_QUALIFIER = re.compile(r',\s*\((?:glm::)?qualifier\)\d+U?')
+
+
 def describe(qual_type):
     """('pointer', const, scalar) | ('shape',) | ('scalar', scalar) | ('other', text)."""
+    qual_type = GLM_QUALIFIER.sub('', qual_type)  # glm's vec<3, float, (qualifier)0U> as vec<3, float>
     if '[' in qual_type or '(' in qual_type:
         return ('other', qual_type)
     if '*' in qual_type:
@@ -137,11 +179,11 @@ def describe(qual_type):
         if '*' in pointee or words(rest):
             return ('other', qual_type)
         base = ' '.join(words(pointee))
-        return ('pointer', 'const' in pointee.split(), SCALARS.get(base, base))
+        return ('pointer', 'const' in pointee.split(), named(base))
     base = ' '.join(words(qual_type))
     if base in SHAPES:
         return ('shape',)
-    return ('scalar', SCALARS.get(base, base))
+    return ('scalar', named(base))
 
 
 def scalar_of(node):
@@ -162,6 +204,28 @@ EXPLICIT_CASTS = {'CStyleCastExpr', 'CXXFunctionalCastExpr', 'CXXStaticCastExpr'
 VALUE_CASTS = {'NoOp', 'LValueToRValue', 'IntegralCast', 'IntegralToBoolean', 'FloatingCast', 'FloatingToIntegral',
                'IntegralToFloating', 'UserDefinedConversion', 'ArrayToPointerDecay',
                'FunctionToPointerDecay', 'BuiltinFnToFnPtr', 'ConstructorConversion'}
+
+
+MATRIX_TYPE = re.compile(r'(?:const\s+)?(?:metal::)?(?:simdgroup_(float|half)8x8|simdgroup_matrix<(float|half), 8(?:, 8)?>)\s*&?')
+MATRIX_CALLS = {'simdgroup_load', 'simdgroup_store', 'simdgroup_multiply_accumulate', 'simdgroup_multiply',
+                'make_filled_simdgroup_matrix'}
+
+
+QPEL_MATRIX_TYPE = re.compile(r'(?:const\s+)?qpel_matrix_(f32|f16)\s*&?')  # qpel's own CUDA (backends/cuda.h)
+QPEL_MATRIX_CALLS = {'qpel_matrix_fill_f32', 'qpel_matrix_fill_f16', 'qpel_matrix_load', 'qpel_matrix_store',
+                     'qpel_matrix_mma_f32', 'qpel_matrix_mma_f16'}
+
+
+def matrix_of(qual_type):
+    """matrix<f32|f16, 8, 8> for Metal's simdgroup_float8x8 and simdgroup_half8x8, and qpel's own CUDA
+    qpel_matrix_f32 and qpel_matrix_f16 (IR version 13), else None."""
+    own = QPEL_MATRIX_TYPE.fullmatch(qual_type.strip())
+    if own:
+        return f'matrix<{own.group(1)}, 8, 8>'
+    found = MATRIX_TYPE.fullmatch(qual_type.strip())
+    if not found:
+        return None
+    return 'matrix<' + ('f32' if (found.group(1) or found.group(2)) == 'float' else 'f16') + ', 8, 8>'
 
 
 def peel(node):
@@ -540,6 +604,10 @@ MATH_CALLS = {name: f for f in ('fabs', 'fmin', 'fmax', 'floor', 'ceil', 'trunc'
                                 'exp', 'exp2', 'log', 'log2', 'sin', 'cos', 'tanh', 'erf', 'expm1', 'log1p')
               for name in (f, f + 'f')}
 MATH_CALLS.update({'abs': 'fabs', '__fsqrt_rn': 'sqrt'})
+# CUDA's fast intrinsics, documented less accurate than qpel's bounded functions (__expf: 2 + |1.173 x|
+# ulp; __logf, __sinf, __cosf: absolute errors), read as those functions with an adaptation.
+FAST_MATH = {'__expf': 'exp', '__logf': 'log', '__sinf': 'sin', '__cosf': 'cos'}
+MATH_CALLS.update(FAST_MATH)
 MATH_CALLS.update({'qpel_' + f: f for f in ('erf', 'expm1', 'log1p')})  # qpel's own Metal versions (backends/metal.h)
 ROUNDED = {'__fadd_rn': '+', '__fsub_rn': '-', '__fmul_rn': '*', '__fdiv_rn': '/'}
 SATURATE = {f'qpel_f32_to_{t}': t for t in ('u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64')}
@@ -601,16 +669,22 @@ class Graph:
 class Importer:
     def __init__(self, unit, source, path, dialect, module, survey=False):
         self.dialect = DIALECT[dialect]
+        VECTOR_ALIASES.clear()
+        VECTOR_ALIASES.update(glm_aliases(unit))  # vec3: vec<f32, 3> (gsplat's glm vectors)
+        glm_members(unit)  # v.x through glm's anonymous unions: v.x (records.py)
         instances_to_definitions(unit)  # template <...> __global__ void k(...); in a header, defined here (statics.py)
         desugar_aliases(unit)  # typename Traits<...>::input_t *: float * (statics.py)
         lower_switches(unit)  # switch (DATA_TYPE): the case taken; switch (x): an if-else chain (statics.py)
         single_rows(unit)  # for (int r = 0; r < kNRows; ++r) with kNRows = 1, T a[1][N] (statics.py)
+        flatten_local_matrices(unit)  # float pix_out[P][C]: pix_out[P * C], read at [p * C + c] (records.py)
+        pointer_offsets(unit)  # isect_offsets += n: an offset local, isect_offsets[offset + i] (records.py)
         flatten_argument_structs(unit)  # SSMParamsBase params: params_u_ptr, params_seqlen, ... (statics.py)
         read_enums(unit)  # SUM, MEAN, ...: their values; enum-typed expressions: the underlying integer
         lift_statics(unit)  # Reducer<T, R>::update(...) -> Reducer_f32_0_update(...), __ldg(p) -> *p (statics.py)
         self.local_references = local_pointers_as_references(unit)  # update(&result, ...) of update(T *val, ...): T &val (statics.py)
         inline_facades(unit)  # cub::BlockScan(storage).InclusiveSum(...) -> the function it forwards to
         lifted = scalarize_functors(unit)  # SSMScanOp()(a, b), prefix_op(x): functions of the objects' fields (functors.py)
+        scalarize_struct_values(unit)  # GaussianWeight gw = eval(...): gw_vis, gw_alpha, gw_valid (records.py)
         removed = dead_parameters(unit)  # a TempStorage passed on and no longer read (views.py)
         view_notes = shared_views(unit)  # extern __shared__ char smem_[] carved into views: shared memory each (views.py)
         view_notes += [(i, f'unused parameter {r} (a TempStorage qpel\'s CUB subset does not read) was removed') for i, r in removed]
@@ -1949,6 +2023,8 @@ class Importer:
         unsized = re.fullmatch(r'(.+?)\s*\[\]', decl['type']['qualType'].strip())
         if unsized and 'CUDASharedAttr' in attributes(decl):
             return self.dynamic_shared_local(decl, name, describe(unsized.group(1)))
+        if matrix_of(decl['type']['qualType']):
+            return self.matrix_local(decl, name, matrix_of(decl['type']['qualType']))
         if t[0] == 'scalar' and is_vector(t[1]):
             return self.vector_local(decl, name, t[1])
         if t[0] == 'scalar' and t[1] in SCALAR_TERMS - {'bool'} and (
@@ -2094,6 +2170,103 @@ class Importer:
         self.scope[decl['id']] = ('local', ir, vtype)
         return [ir]
 
+    def matrix_local(self, decl, name, mtype):
+        """A simdgroup matrix local (IR version 13): simdgroup_float8x8 m = make_filled_simdgroup_matrix<...>(x)
+        or a copy; without an initializer it starts at zero (Metal leaves it undefined)."""
+        init = decl['inner'][0] if 'init' in decl else None
+        if init is not None and init['kind'] == 'CXXConstructExpr' and not init.get('inner'):
+            init = None
+        if init is None:
+            value = self.graph.add('MatrixFill', {'element': mtype[len('matrix<'):len('matrix<') + 3]},
+                                   {'value': self.graph.add('F32Literal', {'value': '0.0'})})
+        else:
+            value = self.matrix_value(init, mtype)
+        ir = self.graph.add('Variable', {'name': self.unique_name(name)}, {'type': self.type_node(mtype), 'value': value})
+        self.scope[decl['id']] = ('local', ir, mtype)
+        return [ir]
+
+    def matrix_value(self, node, mtype=None):
+        """A matrix expression: make_filled_simdgroup_matrix<T, 8, 8>(x) or a matrix local (through the copies
+        and const conversions clang writes around arguments)."""
+        while node['kind'] in LOOSE | {'ConstantExpr', 'ExprWithCleanups', 'MaterializeTemporaryExpr', 'CXXBindTemporaryExpr'} \
+                or node['kind'] == 'CXXConstructExpr' and len(node.get('inner', ())) == 1 \
+                and matrix_of(node['inner'][0].get('type', {}).get('qualType', '')):  # a copy, not simdgroup_matrix(x)
+            node = node['inner'][0]
+        found = matrix_of(node.get('type', {}).get('qualType', ''))
+        if mtype is not None and found is not None and found != mtype:
+            raise Unsupported(node, 'matrix', f'a {found} where a {mtype} is expected')
+        if node['kind'] == 'CallExpr' and decl_name(node['inner'][0]) in QPEL_MATRIX_CALLS:
+            return self.qpel_matrix_call(node, decl_name(node['inner'][0]))  # (the template's own name: instances are renamed)
+        if node['kind'] == 'CallExpr' and self.callee(node) == 'make_filled_simdgroup_matrix':
+            element = (found or mtype)[len('matrix<'):len('matrix<') + 3]
+            value = node['inner'][1]
+            return self.graph.add('MatrixFill', {'element': element},
+                                  {'value': self.convert_types(self.expr(value), scalar_of(value), 'f32', node)})
+        if node['kind'] == 'DeclRefExpr' and found is not None:
+            return self.expr(node)
+        if node['kind'] == 'CXXConstructExpr':
+            raise Unsupported(node, 'matrix', 'simdgroup_matrix(x) is a diagonal matrix, which qpel does not have; '
+                                              'use make_filled_simdgroup_matrix')
+        raise Unsupported(node, 'matrix', f'this matrix expression ({node["kind"]}) is not in qpel')
+
+    def qpel_matrix_call(self, n, callee):
+        """qpel's own matrix helpers (backends/cuda.h, metal.h), read back as the operations they lower."""
+        add = self.graph.add
+        args = [a for a in n['inner'][1:] if a['kind'] != 'CXXDefaultArgExpr']
+        u32 = lambda a: self.expr(a) if scalar_of(a) == 'u32' else self.convert_types(self.expr(a), scalar_of(a), 'u32', n)
+        if callee.startswith('qpel_matrix_fill_'):
+            return add('MatrixFill', {'element': callee[-3:]}, {'value': self.convert_types(self.expr(args[0]), scalar_of(args[0]), 'f32', n)})
+        if callee.startswith('qpel_matrix_mma_'):
+            return add('MatrixMma', children={'a': self.matrix_value(args[0]), 'b': self.matrix_value(args[1]),
+                                               'c': self.matrix_value(args[2])})
+        if callee == 'qpel_matrix_load':
+            return add('MatrixLoad', children={'base': self.expr(args[0]), 'offset': u32(args[1]), 'stride': u32(args[2])})
+        return add('MatrixStore', children={'matrix': self.matrix_value(args[0]), 'base': self.expr(args[1]),
+                                             'offset': u32(args[2]), 'stride': u32(args[3])})
+
+    def matrix_address(self, node):
+        """The base and u32 offset of a matrix load or store address: p + i + j, &tile[i] or p."""
+        core = peel(node)
+        if core['kind'] == 'BinaryOperator' and core['opcode'] == '+' and scalar_of(core) == 'pointer':
+            base, offset = self.matrix_address(core['inner'][0])
+            more = self.offset(core['inner'][1])
+            return base, more if offset is None else self.graph.add('Binary', {'operator': '+'}, {'left': offset, 'right': more})
+        if core['kind'] == 'UnaryOperator' and core['opcode'] == '&' and peel(core['inner'][0])['kind'] == 'ArraySubscriptExpr':
+            array, index = peel(core['inner'][0])['inner']
+            return self.expr(array), self.offset(index)
+        return self.expr(core), None
+
+    def matrix_statement(self, n, callee):
+        """simdgroup_load(m, p, stride), simdgroup_store(m, p, stride), simdgroup_multiply_accumulate(d, a, b, c)
+        and simdgroup_multiply(d, a, b) (IR version 13)."""
+        add = self.graph.add
+        args = [a for a in n['inner'][1:] if a['kind'] != 'CXXDefaultArgExpr']
+        if callee in ('simdgroup_load', 'simdgroup_store'):
+            if len(args) != 3:
+                raise Unsupported(n, 'matrix', f'{callee} with a matrix origin or transposed is not in qpel '
+                                               '(give the address of the first element and the row stride)')
+            matrix, address, stride = args
+            base, offset = self.matrix_address(address)
+            offset = offset if offset is not None else add('Literal', {'value': '0u'})
+            core = stride
+            while core['kind'] == 'ImplicitCastExpr' and core.get('castKind') == 'IntegralCast':
+                core = core['inner'][0]  # Metal takes elements_per_row as ulong; qpel's stride is u32
+            stride = self.convert_types(self.expr(core), scalar_of(core), 'u32', n) if scalar_of(core) != 'u32' else self.expr(core)
+            if callee == 'simdgroup_load':
+                return add('Assign', children={'target': self.lvalue(matrix), 'value': add(
+                    'MatrixLoad', children={'base': base, 'offset': offset, 'stride': stride})})
+            return add('Evaluate', children={'value': add('MatrixStore', children={
+                'matrix': self.matrix_value(matrix), 'base': base, 'offset': offset, 'stride': stride})})
+        target, *operands = args
+        if matrix_of(target.get('type', {}).get('qualType', '')) != 'matrix<f32, 8, 8>':
+            raise Unsupported(n, 'matrix', f'{callee} into a half matrix is not in qpel (it accumulates in f32)')
+        a, b = (self.matrix_value(x) for x in operands[:2])
+        if callee == 'simdgroup_multiply':
+            c = add('MatrixFill', {'element': 'f32'}, {'value': add('F32Literal', {'value': '0.0'})})
+        else:
+            c = self.matrix_value(operands[2], 'matrix<f32, 8, 8>')
+        return add('Assign', children={'target': self.lvalue(target), 'value': add('MatrixMma', children={'a': a, 'b': b, 'c': c})})
+
     def vector_value(self, node, vtype):
         """A vector expression: a list `{a, b, c}` (or make_float3, Metal float3(...)), a load from a
         buffer of its elements, or any other expression of the vector's type."""
@@ -2101,11 +2274,15 @@ class Importer:
             node = node['inner'][0]
         if node['kind'] == 'CXXConstructExpr' and len(node.get('inner', ())) == 1:
             return self.vector_value(node['inner'][0], vtype)  # a copy
+        if node['kind'] in ('CXXConstructExpr', 'CXXTemporaryObjectExpr') and \
+                len(node.get('inner', ())) == vector_length(vtype) and \
+                all(scalar_of(a) in SCALAR_TERMS for a in node['inner']):
+            return self.vector_elements(node, node['inner'], vtype)  # glm's vec3(x, y, z), {x, y, z}
         if node['kind'] in ('InitListExpr', 'MetalVectorInitExpr'):
             return self.vector_elements(node, node.get('inner', ()), vtype)
         if self.vector_load_base(node) is not None:
             return self.vector_load(node, vtype)
-        if node['kind'] == 'CXXConstructExpr':
+        if node['kind'] in ('CXXConstructExpr', 'CXXTemporaryObjectExpr'):  # (expr() reads constructors here)
             raise Unsupported(node, 'vector-init', f'this {vtype} constructor is not in qpel')
         if scalar_of(node) != vtype:
             raise Unsupported(node, 'vector-init', f'expected a {vtype}, got {scalar_of(node)}')
@@ -2488,7 +2665,12 @@ class Importer:
             result = self.convert_types(combined, computation, own, node)
             return add('Assign', children={'target': self.lvalue(target), 'value': result})
         if kind == 'CXXOperatorCallExpr' and decl_name(node['inner'][0]) == 'operator=':
-            return add('Assign', children={'target': self.lvalue(node['inner'][1]), 'value': self.expr(node['inner'][2])})
+            target, value = node['inner'][1], node['inner'][2]
+            if matrix_of(target.get('type', {}).get('qualType', '')):  # a matrix (Metal's class, qpel's CUDA struct)
+                return add('Assign', children={'target': self.lvalue(target), 'value': self.matrix_value(value)})
+            if is_vector(scalar_of(target)):  # glm's vec3 operator= into shared memory or a local
+                return add('Assign', children={'target': self.lvalue(target), 'value': self.vector_value(value, scalar_of(target))})
+            return add('Assign', children={'target': self.lvalue(target), 'value': self.expr(value)})
         if kind == 'UnaryOperator' and node['opcode'] in ('++', '--'):
             target = node['inner'][0]
             scalar = scalar_of(target)
@@ -2501,6 +2683,10 @@ class Importer:
             if scalar in ('u8', 'i8', 'u16', 'i16'):  # the sum is in 32 bits; C stores it back narrowed
                 step = add('Cast', {'to': scalar}, {'operand': step})
             return add('Assign', children={'target': self.lvalue(target), 'value': step})
+        if kind == 'CallExpr' and self.callee(node) in MATRIX_CALLS - {'make_filled_simdgroup_matrix'}:
+            return self.matrix_statement(node, self.callee(node))
+        if kind == 'CallExpr' and decl_name(node['inner'][0]) == 'qpel_matrix_store':  # qpel's own output
+            return add('Evaluate', children={'value': self.qpel_matrix_call(node, 'qpel_matrix_store')})
         return add('Evaluate', children={'value': self.expr(node, statement=True)})
 
     def lvalue(self, node):
@@ -2874,6 +3060,10 @@ class Importer:
                 raise Unsupported(n, 'conversion', f'conversion from {source} to {scalar_of(n)} is not in qpel')
             value = self.core(operand, False, False)
             return add('F32Cast' if scalar_of(n) == 'f32' else 'F16Cast', children={'operand': value})
+        if kind == 'ConditionalOperator' and any(
+                x.get('kind') == 'CallExpr' and x.get('inner') and decl_name(x['inner'][0]) == 'qpel_vector_fits'
+                for x in walk(n['inner'][0])):
+            return self.expr(n['inner'][2])  # qpel's whole-vector load (qpel_opt.py): its element loads are the meaning
         if kind == 'ConditionalOperator':
             c, yes, no = n['inner']
             return add('Select', children={'condition': self.expr(c), 'yes': self.expr(yes), 'no': self.expr(no)})
@@ -2918,6 +3108,8 @@ class Importer:
             raise Unsupported(n, 'member', 'only shape.x, shape.y and shape.z members are supported')
         if kind == 'CallExpr':
             return self.call(n, statement)
+        if kind in ('CXXConstructExpr', 'CXXTemporaryObjectExpr') and is_vector(scalar_of(n)):
+            return self.vector_value(n, scalar_of(n))  # glm's vectors are classes: built by constructors
         if kind == 'CXXConstructExpr' and len(n.get('inner', ())) == 1 and scalar_of(n) in ('f16', 'bf16', 'f32'):
             argument = n['inner'][0]  # __half(f), __nv_bfloat16(f): a conversion written as a constructor
             return self.convert_types(self.expr(argument), scalar_of(argument), scalar_of(n), n)
@@ -3067,6 +3259,14 @@ class Importer:
         folded = constexpr_call(n, self.function_decls)
         if folded is not None and scalar_of(n) in INTEGER_TERMS:
             return self.int_value(scalar_of(n), folded)  # ggml_cuda_get_physical_warp_size(): 32
+        if callee in ('__builtin_ctz', '__builtin_clz', '__builtin_popcount') and len(args) == 1:
+            value = integer_constant(args[0])  # constexpr uint32_t TILE_SHIFT = __builtin_ctz(TILE_SIZE): folded
+            if value is None or value % 2**32 == 0 and callee != '__builtin_popcount':
+                raise Unsupported(n, 'call', f'{callee} of a value known only at run time is not in qpel')
+            value %= 2**32
+            folded = {'__builtin_ctz': (value & -value).bit_length() - 1, '__builtin_clz': 32 - value.bit_length(),
+                      '__builtin_popcount': bin(value).count('1')}[callee]
+            return self.int_value(scalar_of(n) if scalar_of(n) in INTEGER_TERMS else 'i32', folded)
         if callee in ('__clz', '__clzll', 'clz') and len(args) == 1:  # leading zero bits (IR version 12)
             kind = scalar_of(args[0])
             if callee == '__clz':
@@ -3078,6 +3278,10 @@ class Importer:
             value = self.convert_types(self.expr(args[0]), scalar_of(args[0]), kind, n)
             result = add('Unary', {'operator': 'clz'}, {'operand': value})
             return self.convert_types(result, kind, scalar_of(n), n) if scalar_of(n) in INTEGER_TERMS else result
+        if callee == 'make_filled_simdgroup_matrix':  # IR version 13
+            return self.matrix_value(n)
+        if decl_name(n['inner'][0]) in QPEL_MATRIX_CALLS:  # qpel's own output, read back
+            return self.qpel_matrix_call(n, decl_name(n['inner'][0]))
         if callee in ('__syncthreads', 'threadgroup_barrier'):  # (Metal's flags: qpel's barrier orders both)
             return add('Barrier')
         if callee in ('__syncthreads_count', 'qpel_barrier_count'):
@@ -3153,6 +3357,11 @@ class Importer:
         if callee in MATH_CALLS and all(scalar_of(a) == 'f32' for a in args):
             function = MATH_CALLS[callee]
             need(MATH[function])
+            if callee in FAST_MATH:
+                message = (f'{callee}, CUDA\'s fast approximation, was read as qpel\'s {function} (within {MATH_ULPS} ulp '
+                           'on every backend): at least as accurate as the original, not the same bits')
+                if message not in self.adaptations:
+                    self.adaptations.append(message)
             return add('Math', {'function': function}, {'arguments': [self.expr(a) for a in args]})
         if callee in ROUNDED:  # CUDA's separately rounded float operations are qpel's float operators
             need(2)
