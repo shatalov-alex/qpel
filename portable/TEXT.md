@@ -47,6 +47,9 @@ may take one by reference (`ref items: array<f32, 4>`, IR version 10).
 Shared memory is `shared<T, N>` (`let tile: shared<f32, 64>;` at a Groups kernel's top), and a
 view into it is `shared<T>` (IR version 5): `let row: shared<f32> = tile + 32u;`, indexed as
 `row[i]`, and a helper parameter type (`fn f(row: shared<f32>)`, called as `f(tile)`).
+A matrix held by a subgroup is `matrix<f32, 8, 8>` or `matrix<f16, 8, 8>` (IR version 13), a local
+only; `array<matrix<f32, 8, 8>, 4>` is an array of them (IR version 14), indexed by a value the same
+for all 32 lanes.
 
 ## Statements
 
@@ -78,6 +81,8 @@ Literals: `7u` (u32), `7` (i32), `7_i64` (any integer type; negative ones
 | `qpel.subgroup_add(v)`, `qpel.subgroup_min(v)`, `qpel.subgroup_max(v)`, `qpel.subgroup_and(v)`, `qpel.subgroup_or(v)`, `qpel.subgroup_xor(v)` | SubgroupReduce |
 | `atomic.load(p)`, `atomic.store(p, v)`, `atomic.add(p, v)`, `atomic.min(p, v)`, `atomic.cas(p, expected, v)` | atomics on `buffer + offset`; `cas` returns the value found (IR version 4) |
 | `atomic.max(p, v)`, `atomic.and(p, v)`, `atomic.or(p, v)`, `atomic.xor(p, v)`, `atomic.exchange(p, v)` | IR version 6, also `buffer<f32, atomic>` and `buffer<u64, atomic>` (NUMERICS.md, Atomics) |
+| `qpel.matrix_fill<T>(x)`, `qpel.matrix_load(b, offset, stride)`, `qpel.matrix_store(m, b, offset, stride)`, `qpel.matrix_mma(a, b, c)` | MatrixFill, MatrixLoad, MatrixStore, MatrixMma (IR version 13; CORE.md) |
+| `qpel.matrix_load_columns(b, offset, stride)`, `qpel.matrix_store_columns(m, b, offset, stride)` | MatrixLoad and MatrixStore of column-major memory (IR version 15) |
 | `b[i]`, `s.field`, `f(args)` | Index, Member, Call |
 
 `let fn module pipeline dispatch cast bitcast view math atomic qpel optional` are reserved names.
