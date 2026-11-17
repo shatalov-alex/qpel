@@ -175,14 +175,38 @@ qpel's), so the claim is no added cost, not a speedup.
 
 **CUDA.** `differential/hardware.py --kaggle` also times every CUDA original against qpel's CUDA
 on the T4 (`differential/bench_cuda.py`). Each is timed at 8M threads; TRELLIS.2's hash tables and
-rasteriser get about 1M keys or voxels in a 2048 x 1024 image. The inputs are generated on the
+rasteriser get about 1M keys or voxels in a 2048 x 1024 image, gsplat's rasteriser a 2048 x 1024
+frame of 131k gaussians, bitsandbytes 8M values in blocks of 64. The inputs are generated on the
 GPU machine, the launches are timed between CUDA events (median of up to 200 repetitions), and
-both sides' outputs are compared. On 2026-11-14, all 65 gave the same outputs; qpel/original was
-x1.00 as a geometric mean and median, ranging from x0.78 to x1.97, in one run. Most are within a
-few percent. Slower: TRELLIS.2 `render` x1.97, `sam2_cc` x1.47, llama.cpp `clamp` f16 x1.42,
-`float32` x1.20 and `fill` f16 x1.13, `preprocess` x1.12. The render kernel's generated code has
-the original's structure (the same shared arrays and barriers), so the cause needs profiling.
-That is Phase 6 work.
+both sides' outputs are compared. Harness v1, 2026-11-17 (Kaggle run 4): 80 programs timed,
+qpel/original x0.99 as a geometric mean, median x1.00, range x0.78 to x1.35; every NVIDIA row
+passed on the T4. The pilots: gsplat x0.86, bitsandbytes 8-bit x0.99, FP4 x0.97, NF4 x0.97,
+mamba's selective scan x1.00, TRELLIS.2 `render` x1.00 (x1.94 before: `__fdiv_rn` and atomic
+loads read as read-modify-writes; Phase 6), `sam2_cc` x1.07.
+
+| Program | Original | qpel | Ratio |
+| --- | --- | --- | --- |
+| gsplat `rasterize_to_pixels_3dgs_fwd` (2048 x 1024, 131k gaussians) | 9.36 ms | 8.04 ms | x0.86 |
+| bitsandbytes dequantise 8-bit (8M values) | 0.209 ms | 0.207 ms | x0.99 |
+| bitsandbytes dequantise FP4 | 0.193 ms | 0.186 ms | x0.97 |
+| bitsandbytes dequantise NF4 | 0.193 ms | 0.187 ms | x0.97 |
+| TRELLIS.2 `render` | 0.535 ms | 0.536 ms | x1.00 |
+
+bitsandbytes was x1.6 to x3.5 in run 3: qpel's CUB subset stored a warp-transposing `BlockStore`
+directly, so neighbouring threads wrote 64 bytes apart. It now goes through shared memory as CUB
+does (LIBRARIES.md). gsplat's outputs differ at this size (2.5M elements, at most 1168 ulp, in
+low-magnitude colours and alphas): the original's `__expf` is read as qpel's bounded `exp`, more
+accurate than the original, and the difference compounds over the blended layers; the behaviour
+cases agree within their tolerance. Slower, and open: llama.cpp `arange` x1.35 and `fill` x1.14,
+TRELLIS.2 `preprocess` x1.13. Their SASS matches the originals' but for computing the element
+count from qpel's shape (three uniform-datapath instructions per warp, in kernels whose warps make
+one store each) — a candidate is passing the count precomputed.
+
+**Pilots on the Apple GPU.** A CUDA original has no Metal side to time against;
+`python3 -m differential.bench --cuda <program>` times qpel's Metal alone, and bitsandbytes'
+against the same dequantisation as PyTorch operations on MPS (written here, not bitsandbytes'
+code; the outputs are identical). On an M4 Pro: gsplat 9.8 ms for the frame above; bitsandbytes
+0.20 to 0.36 ms for 8M values, against 1.7 to 4.7 ms for PyTorch.
 
 ## Validation
 

@@ -108,8 +108,10 @@ def bundle(root, out, cupy=True):
     def keep(info):
         parts = Path(info.name).parts
         if parts[0] == 'portable':
-            if parts[1:] == ('corpus',) or parts[1:] == ('corpus', 'corpus.json'):
-                return info  # the corpus index only: the fixture tests skip corpus programs by it
+            if parts[1:] in (('corpus',), ('corpus', 'corpus.json')) or \
+                    len(parts) in (3, 4) and parts[1] == 'corpus' and (len(parts) == 3 and (Path(HERE)/'corpus'/parts[2]/'kernels.json').exists()
+                                                                     or parts[3:] == ('kernels.json',)):
+                return info  # the corpus indexes only (corpus.json, */kernels.json): the fixture tests skip corpus programs by them
             return None if PORTABLE_SKIP & set(parts) else info
         if len(parts) >= 2 and parts[1] == 'sim_original':
             return None

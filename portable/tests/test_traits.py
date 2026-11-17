@@ -60,7 +60,7 @@ class Import(unittest.TestCase):
         for line in ('let kNItems: i32 = 4;', 'let kIsFloat: bool = true;', 'let vals: array<f32, 4>',
                      'let smem_scan: shared<f32, 2>;', 'let smem_carry: shared<f32, 1>;'):
             self.assertIn(line, text)
-        self.assertNotIn('smem_load', text)  # unused once the facades are inlined
+        self.assertIn('smem_load: shared<f32>', text)  # the warp-transposing load's storage: a view of shared memory
         adaptations = '\n'.join(self.report['adaptations'])
         self.assertIn('the views of smem_ became shared memory of their own', adaptations)
         self.assertEqual(self.report['shared'], {'smem_': 1028})  # what the original runs with

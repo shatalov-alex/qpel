@@ -135,7 +135,8 @@ On 2^20 inputs on the Apple GPU (uniform on [−6, 6], magnitudes from 1e−8 to
   only in the order and the precision of its additions: on NVIDIA tensor cores (`mma.sync`, sm_75
   and later) the hardware's, on Metal Apple's, on the CPU simulator and older NVIDIA GPUs k order by
   fmaf. The same bound holds. `matrix_fill<f16>(x)` and loads of f16 memory are exact; nothing
-  rounds an f32 matrix to f16 (a store of an f32 matrix to f16 memory is rejected).
+  rounds an f32 matrix to f16 (a store of an f32 matrix to f16 memory is rejected). On a Tesla T4
+  (2026-11-17) the f32 GEMM matches k order bit for bit and the f16 one is within the bound.
 
 ## Atomics (IR version 6)
 Every atomic is relaxed at device scope, as before. Version 6 adds operations and two element types;

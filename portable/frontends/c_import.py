@@ -1058,6 +1058,10 @@ class Importer:
 
         def base_of(arg):
             node = peel(arg)
+            while node.get('kind') in ('CXXReinterpretCastExpr', 'UnaryOperator') and node.get('inner') and \
+                    (node['kind'] != 'UnaryOperator' or node.get('opcode') == '*') and \
+                    peel(node['inner'][0]).get('kind') != 'ArraySubscriptExpr':
+                node = peel(node['inner'][0])  # reinterpret_cast<TempStorage &>(storage), *reinterpret_cast<T *>(p)
             while node.get('kind') == 'BinaryOperator' and node.get('opcode') in ('+', '-'):
                 left, right = node['inner']
                 node = peel(left if 'pointer' in (scalar_of(left), describe(left['type']['qualType'])[0]) else right)
@@ -1066,10 +1070,7 @@ class Importer:
                 while node.get('kind') == 'ArraySubscriptExpr':
                     node = peel(node['inner'][0])
             return node.get('referencedDecl', {}).get('id') if node.get('kind') == 'DeclRefExpr' else None
-        changed = True
-        while changed:  # shared through helpers that pass their own parameters on
-            changed = False
-            shared_ids = shared_decls | {params[s] for s in shared if s in params}
+        def calls():
             for decl in self.decls:
                 for node in walk(body_of(decl)):
                     if node['kind'] != 'CallExpr':
@@ -1078,13 +1079,19 @@ class Importer:
                     if callee not in self.functions or self.functions[callee][2]:
                         continue
                     for j, arg in enumerate(node['inner'][1:]):
-                        if describe(arg.get('type', {}).get('qualType', ''))[0] != 'pointer':
-                            continue
-                        slot = (callee, j)
-                        space = shared if base(arg) in shared_ids else device
-                        if slot not in space:
-                            space.add(slot)
-                            changed = True
+                        yield (callee, j), arg
+        changed = True
+        while changed:  # shared through helpers that pass their own parameters on: to a fixed point first,
+            changed = False  # since a parameter is known to be shared only once its callers are
+            shared_ids = shared_decls | {params[s] for s in shared if s in params}
+            for slot, arg in calls():
+                if slot not in shared and base(arg) in shared_ids:
+                    shared.add(slot)
+                    changed = True
+        shared_ids = shared_decls | {params[s] for s in shared if s in params}
+        for slot, arg in calls():  # then the slots also given other memory
+            if describe(arg.get('type', {}).get('qualType', ''))[0] == 'pointer' and base(arg) not in shared_ids:
+                device.add(slot)
         return shared, device
 
     def parameter_type(self, decl, i, p, find, atomic_groups):
@@ -1140,6 +1147,13 @@ class Importer:
         if t[0] == 'scalar' and t[1] in self.records:
             return self.struct_type(t[1], p)
         array = array_reference(p['type'].get('desugaredQualType', p['type']['qualType'])) or array_reference(p['type']['qualType'])
+        if not array and slot in getattr(self, 'shared_slots', ()):  # `float[132] &`, a typedef'd TempStorage desugared
+            found = re.fullmatch(r'(?:const\s+)?(.+?)\s*\[(\d+)\]\s*&', p['type'].get('desugaredQualType', '').strip())
+            array = (found.group(1), int(found.group(2))) if found else None
+        if array and not self.dialect.is_kernel(decl) and slot in getattr(self, 'shared_slots', ()):
+            element = describe(array[0])  # T (&storage)[N] given shared memory (a CUB TempStorage): a shared view
+            if element[0] == 'scalar' and (element[1] in SCALAR_TERMS - {'bool'} or is_vector(element[1])):
+                return f'shared<{element[1]}>'
         if array and not self.dialect.is_kernel(decl):  # T (&items)[N]: the caller's array (IR version 10)
             element = describe(array[0])
             if element[0] == 'scalar' and (element[1] in SCALAR_TERMS - {'bool'} or is_vector(element[1])):
@@ -1377,7 +1391,7 @@ class Importer:
                 self.struct_fields.add(attrs['name'])  # (statics.flatten_argument_structs)
             if is_array(kind):
                 attrs['reference'] = True  # an array by reference (IR version 10), const or not
-            elif is_reference(p['type']['qualType']):
+            elif is_reference(p['type']['qualType']) and not str(kind).startswith('shared<'):  # (a TempStorage &: a view)
                 if kernel:
                     self.attempt(lambda: self.reject(Unsupported(p, 'reference', 'kernel arguments cannot be references')))
                 attrs['reference'] = True  # the caller's variable, written in place (IR version 4)

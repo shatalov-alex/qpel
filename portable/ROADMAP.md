@@ -187,6 +187,42 @@ Pilot: Microsoft TRELLIS.2's `o-voxel` extension (13 kernels: Z-order and Hilber
 - Benchmark harness v1: against the native originals on both platforms, published per pilot.
 - **Pilots:** gsplat rasterisation, bitsandbytes dequantisation.
 
+**Progress (2026-11-17):**
+- **Matrix tiles: IR version 13** (CORE.md, NUMERICS.md Matrices). `matrix<f32|f16, 8, 8>` held by a subgroup; `qpel.matrix_fill`, `matrix_load`, `matrix_store`, `matrix_mma` (c + a b, f32 accumulation), in groups kernels under the subgroup uniformity rules.
+  - Metal: `simdgroup_matrix`.
+  - CUDA: the `mma.sync` accumulator layout. f32 is shuffles and fmaf in k order. f16 is `mma.sync.m16n8k8` tensor cores on sm_75 and later.
+  - Results:
+    - `examples/matrix_tiles.qpel` (a tiled GEMM, f32 and f16) runs on the CPU simulator, bit for bit in k order.
+    - On the Apple GPU it is within the bound of any order; on an M4 Pro, Apple's order gave the k-order bits for every element tested.
+    - On GPGPU-Sim, f32 is bit for bit and f16 within the bound.
+    - On a Tesla T4 (Kaggle run 5, through the generated CuPy host): f32 bit for bit, f16 through `mma.sync` tensor cores within the bound; the self-test's lane-by-lane check of the fragment layout passes there too.
+  - GPGPU-Sim had no `mma.sync`. It was added in `qpel-mma.patch` (image `qpel16`), with a self-test of the PTX ISA fragment layout, which also runs on the T4.
+  - The Metal importer reads simdgroup matrices: a Metal GEMM imports, and qpel's Metal agrees with it bit for bit (qpel's CUDA in k order).
+  - Open:
+    - arrays of matrices (llama.cpp's `kernel_mul_mm`);
+    - NVIDIA's WMMA fragments in the importer;
+    - Apple M5's matrix tiles (no M5 to test on).
+- **Vectorised loads** (`qpel_opt.py`, CORE.md Optimisation passes). A vector of N consecutive buffer elements is one aligned N-wide load, with the element loads as the fallback; TRELLIS.2's `render` reads its tile ranges with one 64-bit load again. Constant folding and CSE stay with nvcc and Metal, which already do them.
+- **gsplat rasterisation pilot.** gsplat's unmodified `rasterize_to_pixels_3dgs_fwd_kernel` (3 channels, 16 x 16 tiles, 256 threads) passes against the original:
+  - on the CPU simulator, the Apple GPU and GPGPU-Sim, 6 of 6 cases each: one image or two, partial tiles, several batches, early termination, optional backgrounds and masks;
+  - on a Tesla T4, 6 of 6 cases.
+  - What the importer needed (frontends/records.py; IMPORT.md):
+    - glm's vectors;
+    - plain structs taken apart into their fields (`GaussianWeight`);
+    - 2D local arrays;
+    - pointer parameters moved by `+=`;
+    - views chained through dynamic shared memory;
+    - `__builtin_ctz` of constants;
+    - `__expf` read as qpel's bounded exp.
+  - On GPGPU-Sim the original rendered wrong pixels. A nested `{ .reg .pred %p1; }` block (CUDA's `__syncthreads_count`) clobbered the function's own `%p1`. This was the same bug behind TRELLIS.2's `render` finding no voxel since 2026-11-13. Fixed in `qpel-scopes.patch` (image `qpel17`, self-test check) and submitted upstream as accel-sim PR #159. Both originals now pass on GPGPU-Sim.
+- **Benchmark harness v1, per pilot** (README, Benchmarks).
+  - NVIDIA: every CUDA original against qpel's CUDA on the T4, including the pilots at 2048 x 1024 with 131k gaussians and 8M bitsandbytes values: 80 programs, qpel/original x0.99 geometric mean, median x1.00, range x0.78 to x1.35 (Kaggle run 4). Pilots: gsplat x0.86, bitsandbytes x0.97 to x0.99, TRELLIS.2 `render` x1.00 (was x1.94). bitsandbytes was x1.6 to x3.5 until qpel's CUB subset moved warp-transposing loads and stores through shared memory as CUB does (LIBRARIES.md). Open: llama.cpp `arange` x1.35, `fill` x1.14, TRELLIS.2 `preprocess` x1.13 (README, Benchmarks).
+  - Apple: a pilot without a Metal original has its Metal timed alone (`differential/bench.py --cuda`), against a PyTorch baseline where one exists.
+    - gsplat: 9.8 ms for the 2048 x 1024 frame.
+    - bitsandbytes: 0.20 to 0.30 ms for 8M values, against 1.7 to 4.7 ms for the same dequantisation as PyTorch operations on MPS. That baseline is written here, not bitsandbytes' own code; the outputs are identical.
+- **Kaggle (5 runs):** run 1 attached the previous bundle (the dataset's new version was not ready yet) and checked the wrong programs. Bundles now carry an id that the notebook checks before using the GPU and that the results must match. Run 2 timed out copying Kaggle's unpacked bundle; the bundle is now one file Kaggle leaves packed. Runs 3 and 4 passed every NVIDIA row; run 5 (the self-test and the CuPy fixture tests only) passed 25 of 27 fixtures, the other two (`atomics`, `optional_bias`) failing in the test wrapper (an `inout` buffer's type, an omitted optional output), which is fixed but not yet run on hardware.
+
+
 ### Phase 7: libraries and other frontends (later; re-evaluated when reached)
 - A host-API IR and a library-mapping table: cuBLAS GEMM → MPSMatrixMultiplication/MPSGraph; CUB/Thrust reductions and scans → qpel library kernels; cuDNN convolution → MPSGraph. Unmappable calls are reported, not dropped.
 - Triton: first as an input to `qpel verify`; a Triton frontend only if Triton's own Apple backend does not land.

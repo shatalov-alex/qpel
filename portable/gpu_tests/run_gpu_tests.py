@@ -55,12 +55,12 @@ class CupyHost:
         import cupy
         self.host, self.cp = host, cupy
         self.types = {r['name']: element(r['type']) for r in normalize_plan(plan)['resources']
-                      if r['kind'] in ('input', 'output') and is_buffer(r['type'])}
+                      if r['kind'] in ('input', 'output', 'inout') and is_buffer(r['type'])}
 
     def _library(self):
         return self.host._library(0)
 
-    def run(self, inputs, shapes, values=None):
+    def run(self, inputs, shapes, values=None, omit=()):
         cp = self.cp
         arrays = {}
         for name, tensor in inputs.items():
@@ -69,7 +69,7 @@ class CupyHost:
             array = cp.asarray(tensor)
             wanted = cp.dtype(self.host_dtype(name))
             arrays[name] = array.view(wanted) if array.dtype.itemsize == wanted.itemsize else array
-        results = self.host.run(arrays, shapes, values)
+        results = self.host.run(arrays, shapes, values, omit=omit)
         out = {}
         for name, array in results.items():
             if self.types.get(name) == 'bf16':

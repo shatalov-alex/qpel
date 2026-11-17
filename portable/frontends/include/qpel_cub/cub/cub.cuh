@@ -340,8 +340,8 @@ __device__ __forceinline__ void block_scan_items_exclusive(qpel_shared_view<T> s
 // BlockLoad and BlockStore: every algorithm but the striped ones gives (takes) the blocked
 // arrangement, thread t's items being elements t * ITEMS to t * ITEMS + ITEMS - 1 of the tile; the
 // striped ones element t + k * THREADS as item k. The transposing algorithms reach the same
-// arrangement through shared memory; qpel reads and writes it directly (their TempStorage is
-// unused). Elements from `valid` on are not read (left as they were, or set to the default when
+// arrangement through shared memory, as qpel does too (block_load_transposed below, for coalesced
+// global memory). Elements from `valid` on are not read (left as they were, or set to the default when
 // one is given) and not written. (Without a default, CUB's transposing loads leave other threads'
 // unset values there: a program must not read them.)
 template <typename T, int THREADS, int ITEMS, bool STRIPED, bool FILL, typename Input>
@@ -365,6 +365,79 @@ __device__ __forceinline__ void block_store(Output output, T (&items)[ITEMS], in
     if (index < valid) {
       output[index] = items[k];
     }
+  }
+}
+
+// The transposing algorithms (BLOCK_LOAD/STORE_TRANSPOSE and _WARP_TRANSPOSE): the same arrangement,
+// moved through shared memory so that global memory is read and written in consecutive runs, as CUB
+// does. Each group of G threads (a warp, or the whole block for TRANSPOSE) owns G * ITEMS consecutive
+// elements; element e of the tile sits at storage[e + e / 32] (padding against bank conflicts).
+template <int THREADS, int ITEMS>
+struct transposed {
+  static constexpr int SIZE = THREADS * ITEMS + (THREADS * ITEMS) / 32;
+  static __device__ __forceinline__ int at(int e) { return e + e / 32; }
+};
+
+template <typename T, int THREADS, int ITEMS, int G, bool FILL, typename Input>
+__device__ __forceinline__ void block_load_transposed(qpel_shared_view<T> storage, Input input, T (&items)[ITEMS],
+                                                      int valid, T fill) {
+  const int tid = (int)threadIdx.x;
+  const int base = (tid / G) * G * ITEMS, lane = tid % G;
+  for (int k = 0; k < ITEMS; ++k) {
+    const int index = base + lane + k * G;  // consecutive in the group: coalesced
+    if (index < valid) {
+      storage[index + index / 32] = input[index];
+    }
+  }
+  __syncthreads();
+  for (int k = 0; k < ITEMS; ++k) {
+    const int index = base + lane * ITEMS + k;  // this thread's blocked items
+    if (index < valid) {
+      items[k] = storage[index + index / 32];
+    } else if (FILL) {
+      items[k] = fill;
+    }
+  }
+  __syncthreads();  // (the storage is free again)
+}
+
+template <typename T, int THREADS, int ITEMS, int G, typename Output>
+__device__ __forceinline__ void block_store_transposed(qpel_shared_view<T> storage, Output output, T (&items)[ITEMS],
+                                                       int valid) {
+  const int tid = (int)threadIdx.x;
+  const int base = (tid / G) * G * ITEMS, lane = tid % G;
+  for (int k = 0; k < ITEMS; ++k) {
+    const int index = base + lane * ITEMS + k;
+    storage[index + index / 32] = items[k];
+  }
+  __syncthreads();
+  for (int k = 0; k < ITEMS; ++k) {
+    const int index = base + lane + k * G;
+    if (index < valid) {
+      output[index] = storage[index + index / 32];
+    }
+  }
+  __syncthreads();
+}
+
+// One entry per direction for the facades below: transposing algorithms through shared memory, the
+// others directly (their storage unused).
+template <typename T, int THREADS, int ITEMS, bool TRANSPOSED, bool STRIPED, int G, bool FILL>
+__device__ __forceinline__ void block_load_any(qpel_shared_view<T> storage, const T* input, T (&items)[ITEMS], int valid,
+                                               T fill) {  // (a load only reads its input)
+  if constexpr (TRANSPOSED) {
+    block_load_transposed<T, THREADS, ITEMS, G, FILL>(storage, input, items, valid, fill);
+  } else {
+    block_load<T, THREADS, ITEMS, STRIPED, FILL>(input, items, valid, fill);
+  }
+}
+
+template <typename T, int THREADS, int ITEMS, bool TRANSPOSED, bool STRIPED, int G, typename Output>
+__device__ __forceinline__ void block_store_any(qpel_shared_view<T> storage, Output output, T (&items)[ITEMS], int valid) {
+  if constexpr (TRANSPOSED) {
+    block_store_transposed<T, THREADS, ITEMS, G>(storage, output, items, valid);
+  } else {
+    block_store<T, THREADS, ITEMS, STRIPED>(output, items, valid);
   }
 }
 
@@ -706,25 +779,30 @@ template <typename T, int BLOCK_DIM_X, int ITEMS_PER_THREAD, BlockLoadAlgorithm 
 class BlockLoad {
   static_assert(BLOCK_DIM_Y == 1 && BLOCK_DIM_Z == 1, "qpel's CUB subset: 1D blocks");
   static_assert(ALGORITHM != BLOCK_LOAD_WARP_TRANSPOSE_TIMESLICED, "qpel's CUB subset: not the timesliced load");
+  static_assert(ALGORITHM != BLOCK_LOAD_WARP_TRANSPOSE || BLOCK_DIM_X % 32 == 0, "warp transpose: whole warps");
   static constexpr bool STRIPED = ALGORITHM == BLOCK_LOAD_STRIPED;
+  static constexpr bool TRANSPOSED = ALGORITHM == BLOCK_LOAD_TRANSPOSE || ALGORITHM == BLOCK_LOAD_WARP_TRANSPOSE;
+  static constexpr int GROUP = ALGORITHM == BLOCK_LOAD_WARP_TRANSPOSE ? 32 : BLOCK_DIM_X;
 
  public:
-  typedef T TempStorage[1];
+  typedef T TempStorage[TRANSPOSED ? qpel_detail::transposed<BLOCK_DIM_X, ITEMS_PER_THREAD>::SIZE : 1];
 
   __device__ __forceinline__ BlockLoad(TempStorage& storage) : storage(storage) {}
 
   template <typename Input>
   __device__ __forceinline__ void Load(Input input, T (&items)[ITEMS_PER_THREAD]) {
-    qpel_detail::block_load<T, BLOCK_DIM_X, ITEMS_PER_THREAD, STRIPED, false>(input, items, BLOCK_DIM_X * ITEMS_PER_THREAD,
-                                                                             T());
+    qpel_detail::block_load_any<T, BLOCK_DIM_X, ITEMS_PER_THREAD, TRANSPOSED, STRIPED, GROUP, false>(storage, input, items,
+                                                                                                    BLOCK_DIM_X * ITEMS_PER_THREAD, T());
   }
   template <typename Input>
   __device__ __forceinline__ void Load(Input input, T (&items)[ITEMS_PER_THREAD], int valid) {
-    qpel_detail::block_load<T, BLOCK_DIM_X, ITEMS_PER_THREAD, STRIPED, false>(input, items, valid, T());
+    qpel_detail::block_load_any<T, BLOCK_DIM_X, ITEMS_PER_THREAD, TRANSPOSED, STRIPED, GROUP, false>(storage, input, items,
+                                                                                                    valid, T());
   }
   template <typename Input, typename Default>
   __device__ __forceinline__ void Load(Input input, T (&items)[ITEMS_PER_THREAD], int valid, Default fill) {
-    qpel_detail::block_load<T, BLOCK_DIM_X, ITEMS_PER_THREAD, STRIPED, true>(input, items, valid, (T)fill);
+    qpel_detail::block_load_any<T, BLOCK_DIM_X, ITEMS_PER_THREAD, TRANSPOSED, STRIPED, GROUP, true>(storage, input, items,
+                                                                                                   valid, (T)fill);
   }
 
  private:
@@ -736,20 +814,25 @@ template <typename T, int BLOCK_DIM_X, int ITEMS_PER_THREAD, BlockStoreAlgorithm
 class BlockStore {
   static_assert(BLOCK_DIM_Y == 1 && BLOCK_DIM_Z == 1, "qpel's CUB subset: 1D blocks");
   static_assert(ALGORITHM != BLOCK_STORE_WARP_TRANSPOSE_TIMESLICED, "qpel's CUB subset: not the timesliced store");
+  static_assert(ALGORITHM != BLOCK_STORE_WARP_TRANSPOSE || BLOCK_DIM_X % 32 == 0, "warp transpose: whole warps");
   static constexpr bool STRIPED = ALGORITHM == BLOCK_STORE_STRIPED;
+  static constexpr bool TRANSPOSED = ALGORITHM == BLOCK_STORE_TRANSPOSE || ALGORITHM == BLOCK_STORE_WARP_TRANSPOSE;
+  static constexpr int GROUP = ALGORITHM == BLOCK_STORE_WARP_TRANSPOSE ? 32 : BLOCK_DIM_X;
 
  public:
-  typedef T TempStorage[1];
+  typedef T TempStorage[TRANSPOSED ? qpel_detail::transposed<BLOCK_DIM_X, ITEMS_PER_THREAD>::SIZE : 1];
 
   __device__ __forceinline__ BlockStore(TempStorage& storage) : storage(storage) {}
 
   template <typename Output>
   __device__ __forceinline__ void Store(Output output, T (&items)[ITEMS_PER_THREAD]) {
-    qpel_detail::block_store<T, BLOCK_DIM_X, ITEMS_PER_THREAD, STRIPED>(output, items, BLOCK_DIM_X * ITEMS_PER_THREAD);
+    qpel_detail::block_store_any<T, BLOCK_DIM_X, ITEMS_PER_THREAD, TRANSPOSED, STRIPED, GROUP>(storage, output, items,
+                                                                                              BLOCK_DIM_X * ITEMS_PER_THREAD);
   }
   template <typename Output>
   __device__ __forceinline__ void Store(Output output, T (&items)[ITEMS_PER_THREAD], int valid) {
-    qpel_detail::block_store<T, BLOCK_DIM_X, ITEMS_PER_THREAD, STRIPED>(output, items, valid);
+    qpel_detail::block_store_any<T, BLOCK_DIM_X, ITEMS_PER_THREAD, TRANSPOSED, STRIPED, GROUP>(storage, output, items,
+                                                                                              valid);
   }
 
  private:
