@@ -216,6 +216,23 @@ QPEL_MATRIX_CALLS = {'qpel_matrix_fill_f32', 'qpel_matrix_fill_f16', 'qpel_matri
                      'qpel_matrix_mma_f32', 'qpel_matrix_mma_f16'}
 
 
+# NVIDIA's WMMA (mma.h): a 16 x 16 fragment is a 2 x 2 array of qpel's 8 x 8 matrices (IR version 14), block
+# (i, j) at element 2 i + j; its operations are those of the four blocks (IMPORT.md, WMMA).
+FRAGMENT = re.compile(r'(?:const\s+)?(?:struct\s+)?fragment<(matrix_a|matrix_b|accumulator), (\d+), (\d+), (\d+), '
+                      r'(__half|half|float)(?:, (row_major|col_major|void))?>\s*&?')
+WMMA_CALLS = {'fill_fragment', 'load_matrix_sync', 'store_matrix_sync', 'mma_sync'}
+
+
+def fragment_of(decl_type):
+    """(use, element, layout) for a WMMA fragment type, else None."""
+    for spelling in (decl_type.get('desugaredQualType', ''), decl_type.get('qualType', '')):
+        found = FRAGMENT.fullmatch(spelling.replace('nvcuda::', '').replace('wmma::', '').strip())
+        if found:
+            use, m, n, k, element, layout = found.groups()
+            return use, (int(m), int(n), int(k)), 'f32' if element == 'float' else 'f16', layout
+    return None
+
+
 def matrix_of(qual_type):
     """matrix<f32|f16, 8, 8> for Metal's simdgroup_float8x8 and simdgroup_half8x8, and qpel's own CUDA
     qpel_matrix_f32 and qpel_matrix_f16 (IR version 13), else None."""
@@ -1810,7 +1827,7 @@ class Importer:
             if node.get('kind') != 'CallExpr' or not node.get('inner'):
                 continue
             name = decl_name(node['inner'][0])
-            if name in SUBGROUP_CALLS:
+            if name in SUBGROUP_CALLS or name in WMMA_CALLS:
                 return True
             if name in self.functions and name not in seen:
                 seen.add(name)
@@ -1912,7 +1929,7 @@ class Importer:
                 return self.read_statement(node['inner'][1])
             return self.read_statement(node['inner'][-1]) if node.get('hasElse') else []
         if kind == 'CallExpr' and self.callee(node) == 'simdgroup_barrier' and len(node['inner']) == 2 and \
-                [decl_name(x) for x in walk(node['inner'][1]) if x.get('kind') == 'DeclRefExpr'] == ['mem_none']:
+                [x.get('referencedDecl', {}).get('name') for x in walk(node['inner'][1]) if x.get('kind') == 'DeclRefExpr'] == ['mem_none']:
             # waits for the simdgroup's lanes and orders no memory: qpel's matrix operations already take all
             # 32 lanes together, and it makes no write visible, so it changes no result
             message = f'{self.current}: simdgroup_barrier(mem_none), which orders no memory, was left out'
@@ -2029,6 +2046,8 @@ class Importer:
         if name.startswith('qpel_') and decl.get('storageClass') != 'auto' and ('init' not in decl or 'threadgroup' in decl['type']['qualType']):
             self.scope[decl['id']] = ('builtin', name)  # backend scratch for workgroup collectives
             return []
+        if fragment_of(decl['type']):
+            return self.fragment_local(decl, name, fragment_of(decl['type']))
         if 'thread_block' in decl['type']['qualType']:
             self.scope[decl['id']] = ('cg-block',)  # cg::this_thread_block(): the group, read through its methods
             return []
@@ -2238,6 +2257,107 @@ class Importer:
         ir = self.graph.add('Variable', {'name': self.unique_name(name)}, {'type': self.type_node(mtype), 'value': value})
         self.scope[decl['id']] = ('local', ir, mtype)
         return [ir]
+
+    def fragment_local(self, decl, name, fragment):
+        """A WMMA fragment local (`wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a;`): an
+        array<matrix<T, 8, 8>, 4> of its 2 x 2 blocks, starting at zero (NVIDIA leaves it undefined)."""
+        use, shape, element, layout = fragment
+        if shape != (16, 16, 16):
+            raise Unsupported(decl, 'matrix', f'WMMA fragments of shape {shape[0]}x{shape[1]}x{shape[2]} are not in qpel (16x16x16 is)')
+        if use == 'accumulator' and element != 'f32':
+            raise Unsupported(decl, 'matrix', 'a half accumulator is not in qpel (it accumulates in f32)')
+        if use != 'accumulator' and element != 'f16':
+            raise Unsupported(decl, 'matrix', 'WMMA inputs of float (tf32) are not in qpel; its inputs are half')
+        if layout == 'col_major':
+            raise Unsupported(decl, 'matrix', f'a column-major {use} fragment is not in qpel yet (row_major is)')
+        if 'init' in decl and not (decl['inner'][0]['kind'] == 'CXXConstructExpr' and not decl['inner'][0].get('inner')):
+            raise Unsupported(decl, 'matrix', f'fragment {name} is set by fill_fragment or load_matrix_sync, not an initializer')
+        mtype = f'matrix<{element}, 8, 8>'
+        blocks = [self.graph.add('MatrixFill', {'element': element}, {'value': self.graph.add('F32Literal', {'value': '0.0'})})
+                  for _ in range(4)]
+        ir = self.graph.add('Variable', {'name': self.unique_name(name)},
+                            {'type': self.graph.add('ArrayType', {'element': mtype, 'length': 4}),
+                             'value': self.graph.add('ArrayValue', children={'elements': blocks})})
+        self.scope[decl['id']] = ('local', ir, f'array<{mtype}, 4>')
+        self.fragments = getattr(self, 'fragments', {})
+        self.fragments[decl['id']] = fragment
+        return [ir]
+
+    def fragment_arg(self, node, *uses):
+        """(Variable, (use, shape, element, layout)) of a fragment local passed to a WMMA call."""
+        core = peel(node)
+        ref = core.get('referencedDecl', {}) if core.get('kind') == 'DeclRefExpr' else {}
+        fragment = getattr(self, 'fragments', {}).get(ref.get('id'))
+        if fragment is None:
+            raise Unsupported(node, 'matrix', 'a WMMA fragment here is a local of the kernel or function that uses it')
+        if uses and fragment[0] not in uses:
+            raise Unsupported(node, 'matrix', f'a {fragment[0]} fragment where {" or ".join(uses)} is expected')
+        return self.scope[ref['id']][1], fragment
+
+    def wmma_statement(self, n, callee):
+        """fill_fragment, load_matrix_sync, store_matrix_sync and mma_sync on 16 x 16 fragments: the same on
+        each of their four 8 x 8 blocks (block (i, j) of a matrix at row stride ld starts 8 i ld + 8 j further)."""
+        add = self.graph.add
+        args = [a for a in n['inner'][1:] if a['kind'] != 'CXXDefaultArgExpr']
+        block = lambda variable, b: add('Index', children={'base': self.name(variable), 'index': add('Literal', {'value': f'{b}u'})})
+        u32 = lambda a: self.expr(a) if scalar_of(a) == 'u32' else self.convert_types(self.expr(a), scalar_of(a), 'u32', n)
+        plus = lambda l, r: r if l is None else add('Binary', {'operator': '+'}, {'left': l, 'right': r})
+
+        def layout_ok(arg):
+            names = [x.get('referencedDecl', {}).get('name') for x in walk(arg) if x.get('kind') == 'DeclRefExpr']
+            values = [x.get('value') for x in walk(arg) if x.get('kind') == 'IntegerLiteral']
+            if names != ['mem_row_major'] and not (not names and values == ['0']):  # (enum constants may arrive folded)
+                raise Unsupported(n, 'matrix', f'{callee} with a column-major layout is not in qpel yet (mem_row_major is)')
+
+        def place(address, ld, i, j):  # base and offset of block (i, j)
+            base, offset = self.matrix_address(address)
+            core = ld
+            while core['kind'] == 'ImplicitCastExpr' and core.get('castKind') == 'IntegralCast':
+                core = core['inner'][0]
+            step = add('Binary', {'operator': '+'}, {
+                'left': add('Binary', {'operator': '*'}, {'left': add('Literal', {'value': f'{8 * i}u'}), 'right': u32(core)}),
+                'right': add('Literal', {'value': f'{8 * j}u'})})
+            return base, plus(offset, step), u32(core)
+
+        statements = []
+        if callee == 'fill_fragment':
+            variable, (_, _, element, _) = self.fragment_arg(args[0])
+            for b in range(4):
+                value = self.convert_types(self.expr(args[1]), scalar_of(args[1]), 'f32', n)
+                statements.append(add('Assign', children={'target': block(variable, b), 'value': add(
+                    'MatrixFill', {'element': element}, {'value': value})}))
+        elif callee == 'load_matrix_sync':
+            variable, (use, _, _, _) = self.fragment_arg(args[0])
+            if use == 'accumulator':
+                if len(args) != 4:
+                    raise Unsupported(n, 'matrix', 'an accumulator is loaded with a memory layout')
+                layout_ok(args[3])
+            for i in range(2):
+                for j in range(2):
+                    base, offset, stride = place(args[1], args[2], i, j)
+                    statements.append(add('Assign', children={'target': block(variable, 2 * i + j), 'value': add(
+                        'MatrixLoad', children={'base': base, 'offset': offset, 'stride': stride})}))
+        elif callee == 'store_matrix_sync':
+            variable, _ = self.fragment_arg(args[1], 'accumulator')
+            layout_ok(args[3])
+            for i in range(2):
+                for j in range(2):
+                    base, offset, stride = place(args[0], args[2], i, j)
+                    statements.append(add('Evaluate', children={'value': add('MatrixStore', children={
+                        'matrix': block(variable, 2 * i + j), 'base': base, 'offset': offset, 'stride': stride})}))
+        else:  # mma_sync(d, a, b, c): d_ij = c_ij + a_i0 b_0j + a_i1 b_1j, in that order
+            if len(args) > 4 and not (peel(args[4]).get('kind') == 'CXXBoolLiteralExpr' and not peel(args[4]).get('value')):
+                raise Unsupported(n, 'matrix', 'mma_sync with saturation is not in qpel')
+            d, _ = self.fragment_arg(args[0], 'accumulator')
+            a, _ = self.fragment_arg(args[1], 'matrix_a')
+            b, _ = self.fragment_arg(args[2], 'matrix_b')
+            c, _ = self.fragment_arg(args[3], 'accumulator')
+            for i in range(2):
+                for j in range(2):
+                    first = add('MatrixMma', children={'a': block(a, 2 * i), 'b': block(b, j), 'c': block(c, 2 * i + j)})
+                    total = add('MatrixMma', children={'a': block(a, 2 * i + 1), 'b': block(b, 2 + j), 'c': first})
+                    statements.append(add('Assign', children={'target': block(d, 2 * i + j), 'value': total}))
+        return add('Block', children={'statements': statements})
 
     def matrix_value(self, node, mtype=None):
         """A matrix expression: make_filled_simdgroup_matrix<T, 8, 8>(x) or a matrix local (through the copies
@@ -2755,6 +2875,8 @@ class Importer:
             if scalar in ('u8', 'i8', 'u16', 'i16'):  # the sum is in 32 bits; C stores it back narrowed
                 step = add('Cast', {'to': scalar}, {'operand': step})
             return add('Assign', children={'target': self.lvalue(target), 'value': step})
+        if kind == 'CallExpr' and decl_name(node['inner'][0]) in WMMA_CALLS:  # IR version 14
+            return self.wmma_statement(node, decl_name(node['inner'][0]))
         if kind == 'CallExpr' and self.callee(node) in MATRIX_CALLS - {'make_filled_simdgroup_matrix'}:
             return self.matrix_statement(node, self.callee(node))
         if kind == 'CallExpr' and decl_name(node['inner'][0]) == 'qpel_matrix_store':  # qpel's own output

@@ -19,7 +19,7 @@ importers, the text syntax, and the checks that run all of them. For an overview
   (PyTorch/Metal, CuPy/CUDA). Optimisation passes (`qpel_opt.py`) are kept apart from the
   portable meaning: whole-vector loads where the original read vectors.
 - **Text syntax** (`TEXT.md`): `.qpel` files that print and parse back to the same IR.
-- **Not yet:** Apple M5's matrix tiles, NVIDIA's WMMA fragments in the importers, and host-API and
+- **Not yet:** Apple M5's matrix tiles, column-major WMMA fragments, and host-API and
   library mapping (Phase 7). See `ROADMAP.md`.
 
 JetBrains MPS (`../languages/`) is an optional structured editor that exports the same IR. Its

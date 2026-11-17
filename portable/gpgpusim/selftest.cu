@@ -3,6 +3,7 @@
 // ranges where C defines them). differential/gpgpusim.py runs it before any NVIDIA row.
 #include <cstdio>
 #include <cuda_fp16.h>
+#include <mma.h>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
@@ -134,6 +135,19 @@ __global__ void multiply_matrices(float* out) {
                : "=f"(d[0]), "=f"(d[1]), "=f"(d[2]), "=f"(d[3]) : "r"(a0), "r"(a1), "r"(b), "f"(c0), "f"(c1), "f"(c2), "f"(c3));
   for (unsigned i = 0; i < 4u; ++i) out[lane * 4u + i] = d[i];
 }
+// WMMA m16n16k16, f16 inputs and f32 accumulators (qpel-wmma.patch): D = A B + C through memory, from the
+// small integers above (exact in any order).
+__global__ void wmma_matrices(const __half* a, const __half* b, const float* c, float* d) {
+  using namespace nvcuda;
+  wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> fa;
+  wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::row_major> fb;
+  wmma::fragment<wmma::accumulator, 16, 16, 16, float> fc;
+  wmma::load_matrix_sync(fa, a, 16);
+  wmma::load_matrix_sync(fb, b, 16);
+  wmma::load_matrix_sync(fc, c, 16, wmma::mem_row_major);
+  wmma::mma_sync(fc, fa, fb, fc);
+  wmma::store_matrix_sync(d, fc, 16, wmma::mem_row_major);
+}
 // A register declared in a nested { } block shadows the enclosing one (qpel-scopes.patch): the inner
 // t is 7, the outer keeps x.
 __global__ void nested_scopes(unsigned* out, unsigned x) {
@@ -147,6 +161,40 @@ int main() {
     unsigned h[32], *d; cudaMalloc(&d, sizeof h);
     nested_scopes<<<1, 32>>>(d, 41u); cudaDeviceSynchronize(); cudaMemcpy(h, d, sizeof h, cudaMemcpyDeviceToHost);
     if (h[0] != 41u) { printf("SELFTEST FAIL nested .reg scopes: the outer register became %u, want 41\n", h[0]); ++failures; }
+  }
+  { // WMMA m16n16k16: D = A B + C
+    static __half ha[256], hb[256]; static float hc[256], hd[256];
+    for (unsigned r = 0; r < 16u; ++r)
+      for (unsigned j = 0; j < 16u; ++j) {
+        ha[r * 16u + j] = __float2half_rn(mma_a(r, j)); hb[r * 16u + j] = __float2half_rn(mma_b(r, j)); hc[r * 16u + j] = mma_c(r, j);
+      }
+    __half *da, *db; float *dc, *dd;
+    cudaMalloc(&da, sizeof ha); cudaMalloc(&db, sizeof hb); cudaMalloc(&dc, sizeof hc); cudaMalloc(&dd, sizeof hd);
+    cudaMemcpy(da, ha, sizeof ha, cudaMemcpyHostToDevice); cudaMemcpy(db, hb, sizeof hb, cudaMemcpyHostToDevice);
+    cudaMemcpy(dc, hc, sizeof hc, cudaMemcpyHostToDevice);
+    wmma_matrices<<<1, 32>>>(da, db, dc, dd); cudaDeviceSynchronize(); cudaMemcpy(hd, dd, sizeof hd, cudaMemcpyDeviceToHost);
+    for (unsigned r = 0; r < 16u; ++r)
+      for (unsigned j = 0; j < 16u; ++j) {
+        float want = mma_c(r, j);
+        for (unsigned k = 0; k < 16u; ++k) want += mma_a(r, k) * mma_b(k, j);
+        if (hd[r * 16u + j] != want) {
+          printf("SELFTEST FAIL wmma m16n16k16: D[%u][%u] is %g, want %g\n", r, j, hd[r * 16u + j], want);
+          ++failures; r = 16u; break;
+        }
+      }
+  }
+  { // WMMA adds its products in f32: 1 + 15 x 2^-12 (in f16 each 2^-12 would be lost against 1)
+    static __half ha[256], hb[256]; static float hc[256], hd[256];
+    for (unsigned i = 0; i < 256u; ++i) {
+      ha[i] = __float2half_rn(1.0f); hb[i] = __float2half_rn(i < 16u ? 1.0f : 0.000244140625f); hc[i] = 0.0f;
+    }
+    __half *da, *db; float *dc, *dd;
+    cudaMalloc(&da, sizeof ha); cudaMalloc(&db, sizeof hb); cudaMalloc(&dc, sizeof hc); cudaMalloc(&dd, sizeof hd);
+    cudaMemcpy(da, ha, sizeof ha, cudaMemcpyHostToDevice); cudaMemcpy(db, hb, sizeof hb, cudaMemcpyHostToDevice);
+    cudaMemcpy(dc, hc, sizeof hc, cudaMemcpyHostToDevice);
+    wmma_matrices<<<1, 32>>>(da, db, dc, dd); cudaDeviceSynchronize(); cudaMemcpy(hd, dd, sizeof hd, cudaMemcpyDeviceToHost);
+    const float want = 1.0f + 15.0f * 0.000244140625f;
+    if (hd[0] != want) { printf("SELFTEST FAIL wmma f32 accumulation: %.9g, want %.9g\n", hd[0], want); ++failures; }
   }
   { // mma.sync m16n8k8: D = A B + C, laid out across the warp as the PTX ISA documents
     static float h[32 * 4]; float* d; cudaMalloc(&d, sizeof h);

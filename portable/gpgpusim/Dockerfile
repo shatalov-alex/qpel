@@ -29,9 +29,14 @@ WORKDIR /opt/gpgpu-sim
 # duplicate of the function's own and skipped, so the block wrote the function's register. nvcc writes
 # __syncthreads_count as { .reg .pred %p1; ... bar.red.popc ... %p1; }: gsplat's rasterizer lost a live
 # predicate and rendered wrong pixels.
-COPY qpel-fixes.patch qpel-shfl.patch qpel-setp.patch qpel-ldmatrix.patch qpel-mma.patch qpel-scopes.patch /tmp/
+# qpel-wmma.patch (2026-11-18, local so far): WMMA's wmma.mma with f16 inputs read each input's 16 bits as an
+# address (*(reinterpret_cast<half *>(hex_val))), so every f16 WMMA crashed the simulator (SIGSEGV in mma_impl);
+# and it summed the products in f16, rounding each product and partial sum, where tensor cores add exact
+# products in f32: D = C + the products in k order, in f32.
+COPY qpel-fixes.patch qpel-shfl.patch qpel-setp.patch qpel-ldmatrix.patch qpel-mma.patch qpel-scopes.patch qpel-wmma.patch /tmp/
 RUN git apply /tmp/qpel-fixes.patch && git apply /tmp/qpel-shfl.patch && git apply /tmp/qpel-setp.patch \
-    && git apply /tmp/qpel-ldmatrix.patch && git apply /tmp/qpel-mma.patch && git apply /tmp/qpel-scopes.patch
+    && git apply /tmp/qpel-ldmatrix.patch && git apply /tmp/qpel-mma.patch && git apply /tmp/qpel-scopes.patch \
+    && git apply /tmp/qpel-wmma.patch
 RUN bash -c 'set -eo pipefail; export CUDA_INSTALL_PATH=/usr/local/cuda; source setup_environment release; \
       make -j"$(nproc)" > /tmp/make.log 2>&1 || { tail -60 /tmp/make.log; exit 1; }; \
       ls lib/*/*/release/libcudart.so*'

@@ -301,7 +301,9 @@ class MetalImport(unittest.TestCase):
                 columns, rows, depth = case.values['n'], case.values['m'], case.values['k']
                 original = np.asarray(metal.run_original(self.source, plan, report, case, whole_groups=True)['c'])
                 ours = np.asarray(metal.run_generated(host, plan, case)['c'])
-                np.testing.assert_array_equal(ours.view(np.uint32), original.view(np.uint32), err_msg=case.label)
+                # (only the m x n result: the rest of each buffer is memory neither kernel writes)
+                np.testing.assert_array_equal(ours[:rows * columns].view(np.uint32), original[:rows * columns].view(np.uint32),
+                                              err_msg=case.label)
                 start = case.inputs.get('c', np.zeros(rows * columns, np.float32))
                 want, bound = gemm(case.inputs['a'], case.inputs['b'], start, rows, columns, depth)
                 cuda = simulated.run(case)['c'][:rows * columns]
