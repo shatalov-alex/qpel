@@ -220,6 +220,7 @@ QPEL_MATRIX_CALLS = {'qpel_matrix_fill_f32', 'qpel_matrix_fill_f16', 'qpel_matri
 # (i, j) at element 2 i + j; its operations are those of the four blocks (IMPORT.md, WMMA).
 FRAGMENT = re.compile(r'(?:const\s+)?(?:struct\s+)?fragment<(matrix_a|matrix_b|accumulator), (\d+), (\d+), (\d+), '
                       r'(__half|half|float)(?:, (row_major|col_major|void))?>\s*&?')
+ASSERT_CALLS = {'__assert_rtn', '__assert_fail', '__assertfail', '_wassert', '__assert'}  # assert() on macOS, glibc, CUDA, MSVC
 WMMA_CALLS = {'fill_fragment', 'load_matrix_sync', 'store_matrix_sync', 'mma_sync'}
 
 
@@ -980,7 +981,7 @@ class Importer:
             if self.header:
                 node = dict(node, _header=True)
             return [node]
-        if kind in ('StaticAssertDecl', 'UsingDirectiveDecl', 'UsingDecl', 'NamespaceAliasDecl', 'TypedefDecl') or \
+        if kind in ('StaticAssertDecl', 'UsingDirectiveDecl', 'UsingDecl', 'NamespaceAliasDecl', 'TypedefDecl', 'EmptyDecl') or \
                 (kind == 'CXXRecordDecl' and node.get('name') == 'QpelShape'):
             return []
         if self.header:
@@ -1938,6 +1939,22 @@ class Importer:
             # waits for the simdgroup's lanes and orders no memory: qpel's matrix operations already take all
             # 32 lanes together, and it makes no write visible, so it changes no result
             message = f'{self.current}: simdgroup_barrier(mem_none), which orders no memory, was left out'
+            if message not in self.adaptations:
+                self.adaptations.append(message)
+            return []
+        assertion = node
+        while assertion.get('kind') in ('ParenExpr', 'CStyleCastExpr', 'ImplicitCastExpr') and assertion.get('inner'):
+            assertion = assertion['inner'][0]
+        if assertion.get('kind') == 'ConditionalOperator' and len(assertion.get('inner', ())) == 3 and \
+                peel(assertion['inner'][1]).get('kind') == 'CallExpr' and \
+                decl_name(peel(assertion['inner'][1])['inner'][0]) in ASSERT_CALLS and not any(
+                    x.get('kind') in ('CompoundAssignOperator',) or x.get('kind') == 'UnaryOperator' and x.get('opcode') in ('++', '--')
+                    or x.get('kind') == 'BinaryOperator' and x.get('opcode') == '='
+                    or x.get('kind') == 'CallExpr' and decl_name(x['inner'][0]) != '__builtin_expect'
+                    for x in walk(assertion['inner'][0])):
+            # assert(e), as the C library spells it (`e ? (void)0 : __assert_rtn(...)`): qpel has no trap, so a
+            # kernel whose assertion holds runs the same without it
+            message = f'{self.current}: an assert was left out (qpel kernels cannot stop the device)'
             if message not in self.adaptations:
                 self.adaptations.append(message)
             return []
@@ -3573,6 +3590,8 @@ class Importer:
                 and same_expression(peel(args[0])['inner'][1], args[1]):
             # qpel's Metal spelling of round, which keeps the sign of a zero result
             return add('Math', {'function': 'round'}, {'arguments': [self.expr(args[1])]})
+        if callee == '__builtin_expect' and len(args) == 2:  # a branch-weight hint: its value is the first argument
+            return self.convert_types(self.expr(args[0]), scalar_of(args[0]), scalar_of(n), n)
         if callee == 'sign' and self.dialect.name == 'metal' and len(args) == 1 and scalar_of(args[0]) == 'f32' \
                 and not has_effects(args[0]):
             # Metal's sign as Apple GPUs compute it: 1 for x > 0, -1 for x < 0, else +0 (+-0, NaN, and subnormals, which
@@ -4209,6 +4228,13 @@ SIZEOF = {'char': 1, 'signed char': 1, 'unsigned char': 1, 'bool': 1, 'short': 2
           'int': 4, 'unsigned int': 4, 'long': 8, 'unsigned long': 8, 'long long': 8, 'long long int': 8,
           'unsigned long long': 8, 'unsigned long long int': 8, 'float': 4, 'double': 8, '__half': 2,
           'half': 2}  # sizeof on both platforms (LP64)
+# CUDA's vector types (vector_types.h): N elements, aligned to their size (int3 and float3 are not padded)
+SIZEOF.update({f'{prefix}{n}': size * n for prefix, size in (('char', 1), ('uchar', 1), ('short', 2), ('ushort', 2),
+                                                              ('int', 4), ('uint', 4), ('float', 4), ('long', 8),
+                                                              ('ulong', 8), ('longlong', 8), ('ulonglong', 8),
+                                                              ('double', 8)) for n in (1, 2, 3, 4)})
+SIZEOF.update({'__half2': 4, 'half2': 4, '__nv_bfloat162': 4})
+SIZEOF.update({'struct ' + k: v for k, v in list(SIZEOF.items()) if not k.startswith(('unsigned', 'signed', 'long long', 'char', 'short', 'int', 'long', 'float', 'double', 'bool', 'half', '__half')) or k[-1].isdigit()})
 
 
 def integer_constant(node):
