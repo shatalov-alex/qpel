@@ -1152,6 +1152,11 @@ class Importer:
             if t[2] == 'u8' and not t[1] and p['name'] not in written_buffers(body_of(decl)):
                 self.adaptations.append(f'{decl["name"]}: {p["name"]} is never written, so it became read-only')
                 return 'buffer<u8, read>'
+            if t[1] and self.dialect.is_kernel(decl) and p['name'] in written_through_casts(body_of(decl)):
+                # llama.cpp's kernel_tri: `device const char * dst`, written as `(device T *) ((device char *) dst + o)`
+                self.adaptations.append(f'{decl["name"]}: {p["name"]} is declared const but written through a cast, '
+                                        'so it became writable')
+                return type_buffer(t[2], 'write')
             return type_buffer(t[2], 'read' if t[1] else 'write')
         if t[0] == 'shape':
             return 'shape3'
@@ -3055,6 +3060,8 @@ class Importer:
             one, zero = (('I32Literal', '1'), ('I32Literal', '0')) if target == 'i32' else (('Literal', '1u'), ('Literal', '0u'))
             return add('Select', children={'condition': value, 'yes': add(one[0], {'value': one[1]}),
                                            'no': add(zero[0], {'value': zero[1]})})
+        if source == 'bool' and target in ('f16', 'bf16'):  # 1 or 0, exact in either
+            return self.convert_types(self.convert_types(value, 'bool', 'f32', outer), 'f32', target, outer)
         if source == 'bool' and target in INTEGER_TERMS | {'f32'}:  # C converts true to 1 and false to 0
             if target == 'f32':
                 one, zero = add('F32Literal', {'value': '1'}), add('F32Literal', {'value': '0'})
@@ -3566,6 +3573,16 @@ class Importer:
                 and same_expression(peel(args[0])['inner'][1], args[1]):
             # qpel's Metal spelling of round, which keeps the sign of a zero result
             return add('Math', {'function': 'round'}, {'arguments': [self.expr(args[1])]})
+        if callee == 'sign' and self.dialect.name == 'metal' and len(args) == 1 and scalar_of(args[0]) == 'f32' \
+                and not has_effects(args[0]):
+            # Metal's sign as Apple GPUs compute it: 1 for x > 0, -1 for x < 0, else +0 (+-0, NaN, and subnormals, which
+            # they flush); the specification's -0 for -0 is not what they return under Metal's default fast math
+            x = lambda: self.expr(args[0])
+            f32 = lambda v: add('F32Literal', {'value': v})
+            compare = lambda op, left, right: add('Binary', {'operator': op}, {'left': left, 'right': right})
+            minus_one = add('Unary', {'operator': '-'}, {'operand': f32('1')})
+            negative = add('Select', children={'condition': compare('<', x(), f32('0')), 'yes': minus_one, 'no': f32('0')})
+            return add('Select', children={'condition': compare('>', x(), f32('0')), 'yes': f32('1'), 'no': negative})
         if callee == 'clamp' and len(args) == 3 and all(scalar_of(a) == 'f32' for a in args):
             # Metal's clamp(x, lo, hi) is min(max(x, lo), hi)
             low = add('Math', {'function': 'fmax'}, {'arguments': [self.expr(args[0]), self.expr(args[1])]})
@@ -4263,6 +4280,31 @@ def written_buffers(body):
         if target is not None and peel(target)['kind'] == 'ArraySubscriptExpr':
             out.add(decl_name(peel(target)['inner'][0]))
     out.discard(None)
+    return out
+
+
+def written_through_casts(body):
+    """Names of pointers a local of non-const pointee is made from, through casts and offsets, where that
+    local is written: `device T * row = (device T *) ((device char *) dst + o); row[i] = x;` writes dst."""
+    written = written_buffers(body)
+    out = set()
+    for node in walk(body):
+        if node.get('kind') != 'VarDecl' or node.get('name') not in written or not node.get('inner'):
+            continue
+        spelling = node.get('type', {}).get('qualType', '')
+        if '*' not in spelling or 'const' in spelling.split('*')[0].split():
+            continue
+        core = node['inner'][0]
+        while True:
+            if core.get('kind') in ('ParenExpr', 'ImplicitCastExpr', 'CStyleCastExpr', 'CXXStaticCastExpr',
+                                    'CXXReinterpretCastExpr', 'CXXConstCastExpr') and core.get('inner'):
+                core = core['inner'][0]
+            elif core.get('kind') == 'BinaryOperator' and core.get('opcode') in ('+', '-'):
+                core = core['inner'][0]
+            else:
+                break
+        if core.get('kind') == 'DeclRefExpr':
+            out.add(core.get('referencedDecl', {}).get('name'))
     return out
 
 
