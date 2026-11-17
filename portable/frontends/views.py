@@ -42,7 +42,7 @@ def _callee_id(call):
 
 def dead_parameters(unit):
     """Remove the unused reference parameters (a TempStorage passed on to a facade that no longer
-    reads it) of device functions, and their arguments at every call. Returns the removed names."""
+    reads it) of device functions, and their arguments at every call. Returns (function id, `name(parameter)`)."""
     removed = []
     functions = [n for n in walk(unit) if n.get('kind') == 'FunctionDecl' and _body(n) is not None
                  and 'CUDAGlobalAttr' not in _attributes(n)]
@@ -61,7 +61,7 @@ def dead_parameters(unit):
             call['inner'] = [call['inner'][0]] + [a for i, a in enumerate(call['inner'][1:]) if i not in dead]
         drop = {params[i]['id'] for i in dead}
         function['inner'] = [c for c in function['inner'] if c.get('id') not in drop]
-        removed.extend(f'{function.get("name")}({params[i]["name"]})' for i in dead)
+        removed.extend((function['id'], f'{function.get("name")}({params[i]["name"]})') for i in dead)
     return removed
 
 
@@ -83,7 +83,7 @@ def _view_source(init, block):
 
 def shared_views(unit):
     """Give each view of a kernel's `extern __shared__ char` block shared memory of its own (see the
-    module's description). Returns the adaptations made, one line per kernel."""
+    module's description). Returns the adaptations made: (kernel id, line), one per kernel."""
     notes = []
     for function in walk(unit):
         if function.get('kind') != 'FunctionDecl' or 'CUDAGlobalAttr' not in _attributes(function):
@@ -137,6 +137,7 @@ def shared_views(unit):
                         if not statement['inner']:
                             statement.clear()
                             statement['kind'] = 'NullStmt'
-                notes.append(f'{function.get("name")}: the views of {block["name"]} became shared memory of their own'
-                             + (f' ({"; ".join(made)})' if made else ''))
+                unit.setdefault('_qpel_carved', {})[block['name']] = [view['name'] for view, plan in plans if plan]
+                notes.append((function['id'], f'{function.get("name")}: the views of {block["name"]} became shared memory '
+                                               f'of their own' + (f' ({"; ".join(made)})' if made else '')))
     return notes

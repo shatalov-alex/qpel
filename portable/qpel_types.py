@@ -40,8 +40,9 @@ LEGACY = {'VoidType': 'void', 'BoolType': 'bool', 'U8Type': 'u8', 'U32Type': 'u3
           'ReadOnlyF32BufferType': 'buffer<f32, read>', 'F32BufferType': 'buffer<f32, write>',
           'ReadOnlyF16BufferType': 'buffer<f16, read>', 'F16BufferType': 'buffer<f16, write>'}
 BUFFER = re.compile(r'buffer<(\w+), (read|write|atomic)>')
-# IR version 4: a fixed-size array of scalars, for thread-private local variables only.
-ARRAY = re.compile(r'array<(\w+), ([1-9][0-9]{0,3})>')
+# IR version 4: a fixed-size array of scalars, for thread-private local variables only; IR version 11:
+# of vectors too (`array<vec<f32, 2>, 4>`, CUB items of a pair type, mamba's scan).
+ARRAY = re.compile(r'array<(\w+|vec<\w+, [234]>), ([1-9][0-9]{0,3})>')
 MAX_ARRAY = 1024
 # IR version 4: a small vector value (CUDA's int4, uint2, float3; Metal's vectors), copied whole,
 # passed to and returned from functions; its elements are read and written as .x .y .z .w.
@@ -182,7 +183,8 @@ def is_valid(t):
         return True
     m = ARRAY.fullmatch(t)
     if m:
-        return m.group(1) in SCALAR_TERMS and 1 <= int(m.group(2)) <= MAX_ARRAY
+        return (m.group(1) in SCALAR_TERMS or is_valid(m.group(1)) and is_vector(m.group(1))) and \
+            1 <= int(m.group(2)) <= MAX_ARRAY  # (vectors: IR version 11)
     m = VECTOR.fullmatch(t)
     if m:
         return m.group(1) in VECTOR_ELEMENTS

@@ -15,11 +15,12 @@ from qpel_types import (SCALAR_TERMS, VALUE_TERMS, access, buffer as type_buffer
                         is_signed, node_spec, normalize_plan, term as type_term)
 from qpel_types import access as type_access, bits as type_bits, INTEGER_TERMS, MATH, is_struct, is_array
 from qpel_types import arithmetic as type_arithmetic, element as element_of, is_vector, vector_element, vector_length, is_shared
-from qpel_types import is_shared_view, view_element, shared_bytes, BITCASTS
+from qpel_types import is_shared_view, view_element, shared_bytes, BITCASTS, array_element, array_length
 from . import clang_ast
 from .clang_ast import position
 from .facades import inline_facades
 from .views import dead_parameters, shared_views
+from .functors import scalarize_functors
 from .demote import demote_unit
 from .statics import constant_values, desugar_aliases, flatten_argument_structs, lift_statics, single_rows, read_enums, local_pointers_as_references
 
@@ -607,9 +608,12 @@ class Importer:
         lift_statics(unit)  # Reducer<T, R>::update(...) -> Reducer_f32_0_update(...), __ldg(p) -> *p (statics.py)
         self.local_references = local_pointers_as_references(unit)  # update(&result, ...) of update(T *val, ...): T &val (statics.py)
         inline_facades(unit)  # cub::BlockScan(storage).InclusiveSum(...) -> the function it forwards to
+        lifted = scalarize_functors(unit)  # SSMScanOp()(a, b), prefix_op(x): functions of the objects' fields (functors.py)
         removed = dead_parameters(unit)  # a TempStorage passed on and no longer read (views.py)
         view_notes = shared_views(unit)  # extern __shared__ char smem_[] carved into views: shared memory each (views.py)
-        view_notes += [f'unused parameter {r} (a TempStorage qpel\'s CUB subset does not read) was removed' for r in removed]
+        view_notes += [(i, f'unused parameter {r} (a TempStorage qpel\'s CUB subset does not read) was removed') for i, r in removed]
+        self.view_notes = view_notes  # (function id, adaptation): reported for the functions imported (run)
+        self.lifted = lifted
         demote_unit(unit)  # T hy = 1. - ly; and the like: float arithmetic in double's clothes (demote.py)
         self.unit = unit
         self.sites = None  # launch sites of the original's host code, read when first needed
@@ -645,7 +649,6 @@ class Importer:
         self.domains = {}  # kernel name -> 'grid1d' | 'grid3d'
         self.grid3d = False
         self.adaptations = []
-        self.adaptations.extend(view_notes)
         self.instances = {}  # clang id of a template instantiation -> its qpel function name
         self.bool_params = set()  # clang ids of bool kernel arguments, passed as u32
         self.records = records(unit)  # struct name -> its clang record, for argument structs
@@ -656,6 +659,7 @@ class Importer:
         self.taken = {}  # function name -> clang id of the declaration that has it
         self.constants = {}  # name -> value, set by import_source(constants=...)
         self.shared_lengths = {}  # threadgroup parameter -> elements, set by import_source(shared=...)
+        self.struct_fields = set()  # kernel parameters that are fields of a flattened struct argument
         self.files = {}  # path -> text, for reading attributes clang's JSON leaves out
         self.function_decls = {d['id']: d for d in walk(unit) if d.get('kind') == 'FunctionDecl' and body_of(d)}
         main = list(clang_ast.main_file_decls(unit, path))
@@ -1059,8 +1063,8 @@ class Importer:
         array = array_reference(p['type'].get('desugaredQualType', p['type']['qualType'])) or array_reference(p['type']['qualType'])
         if array and not self.dialect.is_kernel(decl):  # T (&items)[N]: the caller's array (IR version 10)
             element = describe(array[0])
-            if element[0] == 'scalar' and element[1] in SCALAR_TERMS - {'bool'}:
-                return f'array<{element[1]}, {array[1]}>'
+            if element[0] == 'scalar' and (element[1] in SCALAR_TERMS - {'bool'} or is_vector(element[1])):
+                return f'array<{element[1]}, {array[1]}>'  # (of vectors: IR version 11)
         raise Unsupported(p, 'parameter-type', f'parameter type {p["type"]["qualType"]} is not in qpel yet')
 
     # -- functions --
@@ -1180,6 +1184,29 @@ class Importer:
         for child in node.get('inner', ()):
             yield from self.live(child)
 
+    def callees_first(self, decls):
+        """The functions in source order, except that each comes after the functions it calls (qpel
+        requires it: CALL_ORDER). A function made before import (a function object's operator(),
+        functors.py) is placed by its struct, which may come after a library template that calls it.
+        An order that already has this property is kept as it is; recursion is left to be reported."""
+        by_name = {d['name']: d for d in decls}
+        out, state = [], {}
+
+        def visit(decl):
+            if state.get(decl['name']):
+                return
+            state[decl['name']] = 'busy'
+            for node in walk(body_of(decl)):
+                if node.get('kind') == 'CallExpr':
+                    callee = self.callee(node)
+                    if callee in by_name and not state.get(callee):
+                        visit(by_name[callee])
+            state[decl['name']] = 'done'
+            out.append(decl)
+        for decl in decls:
+            visit(decl)
+        return out
+
     def run(self, plan=None, block_size=64, kernels=None):
         if kernels:
             self.select(kernels)
@@ -1192,6 +1219,14 @@ class Importer:
         types = self.parameter_types(plan_groups)
         self.kernel_params = {}
         function_ids = []
+        self.decls = self.callees_first(self.decls)
+        imported = {d['id'] for d in self.decls}
+        for ident, note in self.view_notes:
+            if ident in imported and note not in self.adaptations:
+                self.adaptations.append(note)
+        names = {d['name'] for d in self.decls}
+        self.adaptations.extend(f'operator() of a function object was read as the function {name}, taking the '
+                                'object\'s fields' for name in self.lifted if name in names)
         for decl in self.decls:
             self.current = decl['name']
             function_ids.append(self.function(decl, types))
@@ -1256,6 +1291,8 @@ class Importer:
                 self.scope[p['id']] = ('untyped', p['name'])
                 continue
             attrs = {'name': self.safe_name(p['name'])}
+            if kernel and p.get('_qpel_field_of'):
+                self.struct_fields.add(attrs['name'])  # (statics.flatten_argument_structs)
             if is_array(kind):
                 attrs['reference'] = True  # an array by reference (IR version 10), const or not
             elif is_reference(p['type']['qualType']):
@@ -1391,6 +1428,19 @@ class Importer:
                 continue
             entry = self.scope.get(p['id'])
             item = {'name': p['name'], 'binding': self.dialect.binding(p, position), 'type': describe(p['type']['qualType'])[-1]}
+            if p.get('_qpel_values_of'):  # the scalar fields of a struct argument, as one struct value
+                whole = structs.get(p['_qpel_values_of'])
+                if whole is None:
+                    whole = structs[p['_qpel_values_of']] = {
+                        'name': p['_qpel_values_of'], 'binding': self.dialect.binding(p, position),
+                        'source': 'struct', 'struct': p['_qpel_struct'], 'fields': []}
+                    out.append(whole)
+                    position += 1
+                whole['values'] = p['type']['qualType']  # its qpel struct, which the original's harness declares
+                whole['fields'].extend({'name': p['name'], 'field': f, 'source': 'member',
+                                        'parameter': self.safe_name(p['name']), 'member': self.safe_name(f)}
+                                       for f in p['_qpel_value_fields'])
+                continue
             if p.get('_qpel_field_of'):  # a field of a struct argument (statics.flatten_argument_structs)
                 whole = structs.get(p['_qpel_field_of'])
                 if whole is None:
@@ -1399,7 +1449,7 @@ class Importer:
                         'source': 'struct', 'struct': p['_qpel_struct'], 'fields': []}
                     out.append(whole)
                     position += 1
-                item = {'name': p['name'], 'field': p['_qpel_field'], 'type': item['type']}
+                item = {'name': p['name'], 'field': p['_qpel_field'], 'type': describe(view_spelling(p))[-1]}
                 whole['fields'].append(item)
             else:
                 out.append(item)
@@ -1863,7 +1913,8 @@ class Importer:
         return [s for d in node['inner'] for s in self.local(d)]
 
     def local(self, decl):
-        if decl['kind'] in ('TypedefDecl', 'TypeAliasDecl', 'UsingDecl', 'UsingDirectiveDecl') or decl.get('_qpel_facade'):
+        if decl['kind'] in ('TypedefDecl', 'TypeAliasDecl', 'UsingDecl', 'UsingDirectiveDecl', 'StaticAssertDecl') \
+                or decl.get('_qpel_facade'):  # (static_assert: checked by the compiler, nothing at run time)
             return []  # local type names are read where they are used; a library facade object is inlined
         if decl['kind'] != 'VarDecl':
             raise Unsupported(decl, 'declaration', decl['kind'] + ' inside a function is not supported')
@@ -1878,6 +1929,8 @@ class Importer:
         t = describe(view_spelling(decl))
         if t[0] == 'pointer' and self.into_shared(decl):
             return self.shared_view_local(decl, name, t[2])
+        if t[0] == 'pointer' and is_vector(t[2]) and self.kernel and 'init' in decl:
+            return self.vector_buffer_local(decl, name, t)
         if t[0] == 'pointer' and t[2] in SCALAR_TERMS - {'bool'} and \
                 not {'threadgroup', 'constant', 'thread'} & set(decl['type']['qualType'].replace('*', ' ').split()):
             return self.buffer_local(decl, name, type_buffer(t[2], 'read' if t[1] else 'write'))
@@ -1924,6 +1977,9 @@ class Importer:
         return [ir]
 
     def zero(self, scalar):
+        if is_vector(scalar):  # an element of an array of vectors (IR version 11)
+            return self.graph.add('VectorValue', {'element': vector_element(scalar), 'length': vector_length(scalar)},
+                                  {'elements': [self.zero(vector_element(scalar)) for _ in range(vector_length(scalar))]})
         if scalar in ZERO:
             return self.graph.add(ZERO[scalar][0], {'value': ZERO[scalar][1]})
         if scalar in INTEGER_TERMS:
@@ -1935,7 +1991,7 @@ class Importer:
         initializer leaves out are zero, as in C; an array without one starts all zero (C leaves
         it undefined)."""
         element = describe(array.group(1))
-        if element[0] != 'scalar' or element[1] not in SCALAR_TERMS:  # `input_t[4]` of a traits class: float[4]
+        if element[0] != 'scalar' or element[1] not in SCALAR_TERMS and not is_vector(element[1]):  # `input_t[4]`: float[4]
             plain = LOCAL_ARRAY.fullmatch(decl['type'].get('desugaredQualType', '').strip())
             if plain and plain.group(2) == array.group(2):
                 array, element = plain, describe(plain.group(1))
@@ -1945,13 +2001,15 @@ class Importer:
             return self.shared_local(decl, name, element, length)
         if space or decl.get('storageClass') == 'static':  # one copy for all: not a thread's own array
             raise Unsupported(decl, 'local-type', f'local {name}: a static or constant-space array is not in qpel yet')
-        if element[0] != 'scalar' or element[1] not in SCALAR_TERMS or not 1 <= length <= 1024:
+        if element[0] != 'scalar' or element[1] not in SCALAR_TERMS and not is_vector(element[1]) or not 1 <= length <= 1024:
             raise Unsupported(decl, 'local-type', f'local {name} of type {decl["type"]["qualType"]} is not in qpel: '
-                                                  'local arrays hold 1 to 1024 scalars')
+                                                  'local arrays hold 1 to 1024 scalars or vectors')
         scalar = element[1]
         init = decl['inner'][0] if 'init' in decl else None
         while init is not None and init['kind'] in ('ExprWithCleanups', 'ConstantExpr') and init.get('inner'):
             init = init['inner'][0]
+        if init is not None and init['kind'] == 'CXXConstructExpr' and not init.get('inner'):
+            init = None  # `float2 items[4];`: each element default-constructed, which is no initializer
         values = []
         if init is not None:
             if init['kind'] != 'InitListExpr':
@@ -2154,6 +2212,37 @@ class Importer:
             return self.graph.add('I32Literal', {'value': str(value)})
         return self.graph.add('Constant', {'scalar': scalar, 'value': str(value)})
 
+    def copy_in_place(self, decl, args, arguments):
+        """CUB's block methods may be given one array as input and output (`InclusiveScan(items, items,
+        ...)`, mamba's scan), and give what they would for a copy of the input; qpel passes a variable by
+        reference once per call. So when a function of qpel's CUB subset gets one local array twice,
+        the first gets a copy of it, made just before the call."""
+        file = clang_ast.position(decl)[0] or ''
+        if 'qpel_cub' not in file:
+            return
+        seen = {}
+        for k, a in enumerate(args):
+            variable = self.local_array(a)
+            if variable is None or not is_array(self.scope.get(peel_decl(a), (None, None, ''))[2]):
+                continue
+            if variable not in seen:
+                seen[variable] = k
+                continue
+            first = seen[variable]
+            t = self.scope[peel_decl(args[first])][2]
+            name = self.unique_name(self.graph.nodes[variable]['attributes']['name'] + '_in')
+            elements = [self.graph.add('Index', children={'base': self.name(variable), 'index': self.int_value('u32', i)})
+                        for i in range(array_length(t))]
+            copy = self.graph.add('Variable', {'name': name},
+                                  {'type': self.graph.add('ArrayType', {'element': array_element(t), 'length': array_length(t)}),
+                                   'value': self.graph.add('ArrayValue', children={'elements': elements})})
+            self.prelude.append(copy)
+            arguments[first] = self.name(copy)
+            message = f'{self.current}: {self.graph.nodes[variable]["attributes"]["name"]} is both input and output of a CUB ' \
+                      'method; the input is a copy made before the call'
+            if message not in self.adaptations:
+                self.adaptations.append(message)
+
     def local_array(self, base):
         """The qpel Variable of a local array that `base` names, or None."""
         core = base
@@ -2222,6 +2311,32 @@ class Importer:
         self.scope[decl['id']] = ('local', ir, kind)
         return [ir]
 
+    def vector_buffer_local(self, decl, name, t):
+        """`float2 *x = xs + offset;` with xs a kernel's vector buffer (a buffer of the vector's scalars,
+        parameter_type): a local of the same kind, the offset counted in scalars (N per vector), whose
+        elements x[i] are read and written as vectors like the buffer's."""
+        init = peel(decl['inner'][0])
+        base, offset = init, None
+        if init.get('kind') == 'BinaryOperator' and init.get('opcode') == '+':
+            base, offset = peel(init['inner'][0]), init['inner'][1]
+        source = base.get('referencedDecl', {}).get('id') if base.get('kind') == 'DeclRefExpr' else None
+        length = vector_length(t[2])
+        if source not in self.vector_params or self.vector_params[source] != length:
+            raise Unsupported(decl, 'local-type', f'local {name} of type {decl["type"]["qualType"]} is not in qpel yet: '
+                                                  'a vector pointer is a vector buffer argument plus an offset')
+        entry = self.scope[source]
+        value = self.name(entry[1])
+        if offset is not None:
+            kind = scalar_of(offset) if scalar_of(offset) in INTEGER_TERMS else 'u32'
+            scaled = self.graph.add('Binary', {'operator': '*'}, {'left': self.expr(offset), 'right': self.int_value(kind, length)})
+            if kind == 'i32':  # a buffer offset, which qpel takes unsigned (offset())
+                scaled = self.graph.add('U32Cast', children={'operand': scaled})
+            value = self.graph.add('Binary', {'operator': '+'}, {'left': value, 'right': scaled})
+        ir = self.graph.add('Variable', {'name': self.unique_name(name)}, {'type': self.type_node(entry[2]), 'value': value})
+        self.scope[decl['id']] = ('local', ir, entry[2])
+        self.vector_params[decl['id']] = length
+        return [ir]
+
     def buffer_local(self, decl, name, kind):
         """A pointer local into a device buffer (a view): `device float* row = (device float*)(dst + off)`."""
         children = {'type': self.type_node(kind)}
@@ -2281,7 +2396,9 @@ class Importer:
             return self.vector_store(node, node['inner'][1], node['inner'][2])
         if kind == 'BinaryOperator' and node['opcode'] == '=':
             target, value = node['inner']
-            return add('Assign', children={'target': self.lvalue(target), 'value': self.expr(value)})
+            # (a pointer: its offset read as a buffer offset, as in an initializer: `Bvar = Bvar + n`)
+            return add('Assign', children={'target': self.lvalue(target),
+                                           'value': self.expr(value, address=scalar_of(value) == 'pointer')})
         if kind == 'CompoundAssignOperator':
             # x op= y computes in C's computation type, then converts back to x's type.
             op = node['opcode'][:-1]
@@ -2290,7 +2407,9 @@ class Importer:
             computation = describe(node.get('computeLHSType', {}).get('qualType', target['type']['qualType']))
             computation = computation[1] if computation[0] == 'scalar' else own
             left = self.convert_types(self.expr(target), own, computation, node)
-            combined = add('Binary', {'operator': op}, {'left': left, 'right': self.expr(value)})
+            # (p += n on a pointer: n a buffer offset, as `p + n` in an initializer reads it)
+            right = self.offset(value) if own == 'pointer' and op in ('+', '-') else self.expr(value)
+            combined = add('Binary', {'operator': op}, {'left': left, 'right': right})
             result = self.convert_types(combined, computation, own, node)
             return add('Assign', children={'target': self.lvalue(target), 'value': result})
         if kind == 'CXXOperatorCallExpr' and decl_name(node['inner'][0]) == 'operator=':
@@ -2889,6 +3008,7 @@ class Importer:
             arguments = [self.name(self.local_array(a)) if self.local_array(a) is not None and
                          is_array(self.scope.get(peel_decl(a), (None, None, ''))[2]) else self.expr(a, address=True)
                          for a in args]
+            self.copy_in_place(decl, args, arguments)
             for role, axis in self.builtin_reads(callee):  # the thread builtins the helper reads
                 arguments.append(add(GROUP_NODES[role], {'axis': axis}) if self.kernel
                                  else self.name(self.hidden_params[(role, axis)]))
@@ -3229,6 +3349,8 @@ class Importer:
                 kind = type_term(self.graph.nodes[self.graph.nodes[ident]['children']['type'][0]])
                 role = ('shape' if kind == 'shape3' else 'value' if kind in VALUE_TERMS or is_struct(kind) else 'input' if access(kind) == 'read'
                         else 'scratch' if access(kind) == 'atomic' else 'output')
+                if role == 'output' and name in self.struct_fields:
+                    role = 'inout'  # a struct's void * field: C++ does not say which the kernel only reads
                 previous = resources.setdefault(name, {'name': name, 'kind': role, 'type': kind})
                 if previous['type'] != kind:
                     raise Unsupported(None, 'resource-type', f'{name} has type {previous["type"]} and {kind} in different kernels')
@@ -3644,6 +3766,20 @@ def assigned_decls(body):
     return out
 
 
+def original_shared(importer):
+    """The lengths the original's own `extern __shared__` arrays are run with: the lengths given, without
+    those of views of a carved block (qpel's side only, views.py), and with each carved block's (its
+    bytes), which the import must be given to run the original."""
+    carved = importer.unit.get('_qpel_carved', {})
+    views = {v for names in carved.values() for v in names}
+    out = {k: v for k, v in importer.shared_lengths.items() if k not in views}
+    missing = [block for block in carved if block not in out]
+    if missing:
+        raise clang_ast.SourceError(f'{", ".join(missing)} is carved into views; to run the original, '
+                                    f'import with shared={{{missing[0]!r}: bytes}} too')
+    return out
+
+
 def import_source(path, dialect=None, module=None, plan=None, block_size=64, include=(), kernels=None,
                   constants=None, geometry=None, resources=None, shared=None, defines=()):
     """Import every kernel and device function in `path`. Returns (program, report).
@@ -3677,7 +3813,7 @@ def import_source(path, dialect=None, module=None, plan=None, block_size=64, inc
               'adaptations': importer.adaptations, 'warnings': unguarded_kernels(program),
               'qualified': {k: importer.qualified[k] for k in importer.arguments}, 'arguments': importer.arguments,
               'host_spans': importer.host_spans, 'header_host_bodies': importer.header_host_bodies,
-              'shared': dict(importer.shared_lengths), 'defines': list(defines)}
+              'shared': original_shared(importer), 'defines': list(defines)}
     return program, report
 
 

@@ -85,6 +85,10 @@ Optional buffers, as PyTorch extensions pass optional tensors (`if (bias != null
 
 Arrays passed to helpers by reference, as kernels pass several items per thread (mamba's selective scan, CUB's blocked arrangements): a helper `Parameter` with `reference` may have an `ArrayType` (text `ref items: array<f32, 4>`). Its argument is the name of a local array, or of such a parameter, of exactly that element type and length; the helper reads and writes the caller's array in place. An array is still not a value otherwise (it is only indexed). CUDA writes `T (&items)[N]`, Metal `thread T (&items)[N]`. The CUDA and Metal importers read `T (&)[N]` and `const T (&)[N]` helper parameters. A program with one is version 10.
 
+## IR version 11
+
+Arrays of vectors: an `ArrayType` element may be a vector (`array<vec<f32, 2>, 4>`), as CUB-style code keeps several items of a pair type per thread (mamba's selective scan scans `float2` pairs). Everything that holds for arrays holds for these: thread-private locals initialized element by element (an `ArrayValue` of `VectorValue`s, zero vectors where C has no initializer), indexed, never values otherwise, and passed to helpers by reference. An element is a vector value (`items[k].x`, `items[k] = vec<f32, 2>(a, b)`). CUDA and Metal write `float2 items[4]`. The CUDA importer reads such locals (a default-constructed `float2 items[4]` has no initializer) and `float2 (&)[N]` parameters. examples/vector_arrays.qpel, tests/test_vector_arrays.py. A program with one is version 11.
+
 ## Numeric revision
 
 New exports use `qpel-portable-core-v1` and the `u32-modulo-v1` numeric emitter. See NUMERICS.md for exact rules, migration limitations and CPU UBSan evidence. Earlier sections describing exact native source parity and incomplete numeric lowering refer to the preceding revision; only the compatibility rendering now has native token parity. Dynamic division-by-zero, pointer validity and GPU execution remain unchecked.

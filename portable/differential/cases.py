@@ -391,8 +391,54 @@ def sparse_spmm_value_bw(plan, seed, shapes=None):
     return out
 
 
+def mamba_selective_scan_fwd(plan, seed, shapes=None):
+    """mamba's selective scan forward (fp32, real weights, B and C fixed per channel, no z): inputs u
+    and delta (batch, dim, seqlen), A (dim, dstate) negative as mamba makes it (-exp of a log), B and
+    C (dim, dstate), the optional D and delta_bias (dim), contiguous as PyTorch lays them out; the
+    output and the chunk states x (batch, dim, n_chunks, dstate, 2) start at zero. Lengths up to 128
+    are mamba's own use of this instance (one chunk of 32 threads x 4 items); longer ones scan in
+    several chunks, carrying the prefix from chunk to chunk. Half the cases apply softplus to delta
+    (with delta_bias); the others give a positive delta, as mamba is given time steps, so that the
+    state decays (A < 0) as in mamba rather than growing to 1e21. D is left out in some."""
+    rng = np.random.default_rng(seed)
+    configs = [(1, 1, 1, 1), (1, 2, 37, 4), (2, 3, 128, 8), (1, 2, 100, 16), (2, 2, 300, 4), (1, 3, 513, 2)]
+    out = []
+    for i, (batch, dim, seqlen, dstate) in enumerate(configs):
+        n_chunks = (seqlen + 127) // 128
+        f32 = lambda *shape, scale=1.0: (rng.standard_normal(shape) * scale).astype(np.float32).reshape(-1)
+        delta = f32(batch, dim, seqlen, scale=0.5)
+        if i % 2 == 0:  # without softplus, delta is a time step as mamba is given it: positive (A < 0: the state decays)
+            delta = np.abs(delta)
+        inputs = {'params_u_ptr': f32(batch, dim, seqlen), 'params_delta_ptr': delta,
+                  'params_A_ptr': (-np.exp(rng.uniform(-1, 1, (dim, dstate)))).astype(np.float32).reshape(-1),
+                  'params_B_ptr': f32(dim, dstate), 'params_C_ptr': f32(dim, dstate),
+                  'params_out_ptr': np.zeros(batch * dim * seqlen, np.float32),
+                  'params_x_ptr': np.zeros(batch * dim * n_chunks * dstate * 2, np.float32)}
+        if i % 3 != 1:
+            inputs['params_D_ptr'] = f32(dim)
+        if i % 2 == 1:  # (a negative bias could make delta negative without softplus)
+            inputs['params_delta_bias_ptr'] = f32(dim, scale=0.5)
+        fields = {'dim': dim, 'seqlen': seqlen, 'dstate': dstate, 'n_chunks': n_chunks,
+                  'dim_ngroups_ratio': 1, 'delta_softplus': i % 2,
+                  'A_d_stride': dstate, 'A_dstate_stride': 1,
+                  'B_batch_stride': 0, 'B_d_stride': dstate, 'B_dstate_stride': 1,
+                  'B_group_stride': 0, 'C_batch_stride': 0, 'C_d_stride': dstate,
+                  'C_dstate_stride': 1, 'C_group_stride': 0,
+                  'u_batch_stride': dim * seqlen, 'u_d_stride': seqlen,
+                  'delta_batch_stride': dim * seqlen, 'delta_d_stride': seqlen,
+                  'out_batch_stride': dim * seqlen, 'out_d_stride': seqlen}
+        values = {'params': fields}  # the struct value of SSMParamsBase's scalar fields
+        shapes_ = {'seq': (seqlen, dim, batch), 'state': (dstate, dim, 1), 'channels': (dim, 1, 1),
+                   'chunks': (n_chunks * dstate, dim, batch)}
+        label = (f'{batch}x{dim}x{seqlen} dstate={dstate}{" softplus" if i % 2 else ""}'
+                 f'{"" if "params_D_ptr" in inputs else " no D"}{"" if "params_delta_bias_ptr" in inputs else " no bias"}')
+        out.append(Case(shapes_, inputs, values, label))
+    return out
+
+
 SPECIAL = {'scale_offset': scale_offset, 'sam2_cc': sam2_cc, 'grid_stride': grid_stride,
            'mmcv_roi_align_forward': mmcv_roi_align, 'mmcv_nms': mmcv_nms, 'mmcv_roi_pool_forward': mmcv_roi_pool,
+           'mamba_selective_scan_fwd': mamba_selective_scan_fwd,
            'pytorch_sparse_spmm_sum': sparse_spmm, 'pytorch_sparse_spmm_mean': sparse_spmm,
            'pytorch_sparse_spmm_max': sparse_spmm, 'pytorch_sparse_spmm_value_bw_mean': sparse_spmm_value_bw}
 PREFIXES = {'trellis2_hashmap_': hashmap_cases, 'trellis2_hash3d_': hash3d_cases}  # families of corpus programs

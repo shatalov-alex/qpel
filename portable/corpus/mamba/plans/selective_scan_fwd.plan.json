@@ -1,0 +1,254 @@
+{
+ "schema": 2,
+ "module": "mamba_selective_scan_fwd",
+ "resources": [
+  {
+   "name": "seq",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "state",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "channels",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "chunks",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "params",
+   "kind": "value",
+   "type": "struct SSMParamsBase_values_2",
+   "extent": null
+  },
+  {
+   "name": "params_A_ptr",
+   "kind": "input",
+   "type": "buffer<f32, write>",
+   "extent": "state"
+  },
+  {
+   "name": "params_B_ptr",
+   "kind": "input",
+   "type": "buffer<f32, write>",
+   "extent": "state"
+  },
+  {
+   "name": "params_C_ptr",
+   "kind": "input",
+   "type": "buffer<f32, write>",
+   "extent": "state"
+  },
+  {
+   "name": "params_D_ptr",
+   "kind": "input",
+   "type": "buffer<f32, write>",
+   "extent": "channels",
+   "optional": true
+  },
+  {
+   "name": "params_u_ptr",
+   "kind": "input",
+   "type": "buffer<f32, write>",
+   "extent": "seq"
+  },
+  {
+   "name": "params_delta_ptr",
+   "kind": "input",
+   "type": "buffer<f32, write>",
+   "extent": "seq"
+  },
+  {
+   "name": "params_delta_bias_ptr",
+   "kind": "input",
+   "type": "buffer<f32, write>",
+   "extent": "channels",
+   "optional": true
+  },
+  {
+   "name": "params_out_ptr",
+   "kind": "inout",
+   "type": "buffer<f32, write>",
+   "extent": "seq"
+  },
+  {
+   "name": "params_x_ptr",
+   "kind": "inout",
+   "type": "buffer<f32, write>",
+   "extent": "chunks",
+   "scale": 2
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "selective_scan_fwd_kernel_Selective_Scan_fwd_kernel_traits_32_4_1_false_false_false_false_float_float",
+   "grid": "seq",
+   "blockSize": 32,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "params",
+     "resource": "params"
+    },
+    {
+     "parameter": "params_A_ptr",
+     "resource": "params_A_ptr"
+    },
+    {
+     "parameter": "params_B_ptr",
+     "resource": "params_B_ptr"
+    },
+    {
+     "parameter": "params_C_ptr",
+     "resource": "params_C_ptr"
+    },
+    {
+     "parameter": "params_D_ptr",
+     "resource": "params_D_ptr"
+    },
+    {
+     "parameter": "params_u_ptr",
+     "resource": "params_u_ptr"
+    },
+    {
+     "parameter": "params_delta_ptr",
+     "resource": "params_delta_ptr"
+    },
+    {
+     "parameter": "params_delta_bias_ptr",
+     "resource": "params_delta_bias_ptr"
+    },
+    {
+     "parameter": "params_out_ptr",
+     "resource": "params_out_ptr"
+    },
+    {
+     "parameter": "params_x_ptr",
+     "resource": "params_x_ptr"
+    }
+   ],
+   "domain": "groups",
+   "blockShape": [
+    32,
+    1,
+    1
+   ],
+   "groups": [
+    "N",
+    "H",
+    "1"
+   ]
+  }
+ ],
+ "features": [
+  "groups",
+  "int32",
+  "int64",
+  "math",
+  "scalar_arguments",
+  "subgroups"
+ ],
+ "structs": {
+  "SSMParamsBase_values_2": [
+   [
+    "dim",
+    "i32"
+   ],
+   [
+    "seqlen",
+    "i32"
+   ],
+   [
+    "dstate",
+    "i32"
+   ],
+   [
+    "n_chunks",
+    "i32"
+   ],
+   [
+    "dim_ngroups_ratio",
+    "i32"
+   ],
+   [
+    "delta_softplus",
+    "bool"
+   ],
+   [
+    "A_d_stride",
+    "u64"
+   ],
+   [
+    "A_dstate_stride",
+    "u64"
+   ],
+   [
+    "B_batch_stride",
+    "u64"
+   ],
+   [
+    "B_d_stride",
+    "u64"
+   ],
+   [
+    "B_dstate_stride",
+    "u64"
+   ],
+   [
+    "B_group_stride",
+    "u64"
+   ],
+   [
+    "C_batch_stride",
+    "u64"
+   ],
+   [
+    "C_d_stride",
+    "u64"
+   ],
+   [
+    "C_dstate_stride",
+    "u64"
+   ],
+   [
+    "C_group_stride",
+    "u64"
+   ],
+   [
+    "u_batch_stride",
+    "u64"
+   ],
+   [
+    "u_d_stride",
+    "u64"
+   ],
+   [
+    "delta_batch_stride",
+    "u64"
+   ],
+   [
+    "delta_d_stride",
+    "u64"
+   ],
+   [
+    "out_batch_stride",
+    "u64"
+   ],
+   [
+    "out_d_stride",
+    "u64"
+   ]
+  ]
+ }
+}

@@ -280,7 +280,7 @@ def validate_structure(nodes):
         if kind == 'BufferType' and not is_valid(buffer(a['element'], a['access'])):
             fail(f"Invalid buffer type buffer<{a['element']}, {a['access']}>")
         if kind == 'ArrayType' and not is_valid(array(a['element'], a['length'])):
-            fail(f"Invalid array type array<{a['element']}, {a['length']}>: a scalar element and 1 to 1024 of them")
+            fail(f"Invalid array type array<{a['element']}, {a['length']}>: a scalar or vector element and 1 to 1024 of them")
         if kind == 'SharedType' and not is_valid(shared(a['element'], a['length'])):
             fail(f"Invalid shared type shared<{a['element']}, {a['length']}>: scalars or vectors, at most 16384 bytes")
         if kind == 'SharedViewType' and not is_valid(shared_view(a['element'])):

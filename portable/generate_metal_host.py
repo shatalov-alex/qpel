@@ -67,12 +67,14 @@ def _struct(value, layout, size):
     data = bytearray(size)
     for field, kind, offset in layout:
         number = value[field] if kind == 'bf16' else _value(value[field], kind) if kind in ('f32', 'f16') else value[field]
-        if kind not in ('f32', 'f16', 'bf16'):
+        if kind == 'bool':  # (a C bool field: one byte, 0 or 1)
+            number = bool(number)
+        elif kind not in ('f32', 'f16', 'bf16'):
             _value(number, kind)  # range check; packed with its own type below
         _pack.pack_into('<' + _PACK[kind], data, offset, number)
     return bytes(data)
 
-_PACK = {'u8': 'B', 'i8': 'b', 'u16': 'H', 'i16': 'h', 'f16': 'e', 'bf16': 'H', 'u32': 'I', 'i32': 'i', 'f32': 'f', 'u64': 'Q', 'i64': 'q'}
+_PACK = {'u8': 'B', 'i8': 'b', 'bool': '?', 'u16': 'H', 'i16': 'h', 'f16': 'e', 'bf16': 'H', 'u32': 'I', 'i32': 'i', 'f32': 'f', 'u64': 'Q', 'i64': 'q'}
 
 def _value(value, kind):
     """A scalar kernel argument, checked against its qpel type."""

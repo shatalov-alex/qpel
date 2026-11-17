@@ -344,6 +344,7 @@ def desugar_aliases(unit):
                 found = _aliases(node)
                 if found:
                     members.setdefault(spelled, {}).update(found)
+    unit['_qpel_alias_members'] = members  # (functors.py resolves the aliases of lifted methods with it)
     if members:
         for function in walk(unit):
             if function.get('kind') != 'FunctionDecl':
@@ -500,8 +501,10 @@ def _plain(spelled):
 
 def flatten_argument_structs(unit):
     """A kernel argument that is a struct holding pointers (mamba's `SSMParamsBase params`, with
-    `void *u_ptr` and strides) becomes one argument per field the kernel reads, `params_u_ptr`,
-    `params_seqlen`: `params.f` reads that argument. qpel buffers are kernel arguments, so this is
+    `void *u_ptr` and strides) becomes one buffer argument per pointer field the kernel reads,
+    `params_u_ptr`, and one struct value `params` of the scalar fields it reads (`SSMParamsBase_values`;
+    one argument rather than twenty: Metal has 31 buffer slots): `params.u_ptr` reads the buffer and
+    `params.seqlen` the value's member. qpel buffers are kernel arguments, so this is
     how a struct of pointers maps onto qpel; the originals are still called with the struct (the
     harness rebuilds it field by field from the argument map, `source: 'struct'`). A `void *` field
     takes the type every use casts it to (`reinterpret_cast<float *>(params.u_ptr)`); the cast is
@@ -515,8 +518,8 @@ def flatten_argument_structs(unit):
             fields = [c for c in node.get('inner', ()) if c.get('kind') == 'FieldDecl']
             if fields:
                 records.setdefault(node['name'], fields)
-    flattened = {}
-    for function in walk(unit):
+    flattened, value_records = {}, {}
+    for function in list(walk(unit)):
         if function.get('kind') != 'FunctionDecl' or not any(a.get('kind') == 'CUDAGlobalAttr' for a in function.get('inner', ())):
             continue
         body = _body(function)
@@ -544,8 +547,10 @@ def flatten_argument_structs(unit):
                     if inner.get('kind') == 'MemberExpr' and any(inner is m for m in members):
                         casts.setdefault(inner['name'], set()).add(_plain(_spelling(node['type'])))
             used = [name for name in fields if any(m['name'] == name for m in members)]
+            pointers = [name for name in used if '*' in _spelling(fields[name]['type'])]
+            scalars = [name for name in used if name not in pointers]
             synthetic = {}
-            for name in used:
+            for name in pointers:
                 t = dict(fields[name]['type'])
                 if _plain(_spelling(t)).replace(' ', '') in ('void*', 'constvoid*'):
                     if len(casts.get(name, ())) != 1:
@@ -558,6 +563,8 @@ def flatten_argument_structs(unit):
                                    '_qpel_field_of': p['name'], '_qpel_field': name, '_qpel_struct': struct}
             else:
                 for m in members:
+                    if m['name'] not in synthetic:
+                        continue  # a scalar field: a member of the struct value
                     target = synthetic[m['name']]
                     reference = {'kind': 'DeclRefExpr', 'id': m.get('id'), 'range': m.get('range'),
                                  'type': dict(target['type']), 'valueCategory': 'lvalue',
@@ -573,10 +580,26 @@ def flatten_argument_structs(unit):
                         if target and _plain(_spelling(node['type'])) == _plain(_spelling(target['type'])):
                             node.clear()
                             node.update(dict(inner, valueCategory='prvalue'))
+                values = []
+                if scalars:  # the scalar fields read travel as one struct value (Metal has 31 buffer slots)
+                    key = (struct, tuple(scalars))
+                    if key not in value_records:
+                        name = f'{struct}_values' + (f'_{len(value_records) + 1}' if value_records else '')
+                        record = {'id': f'{p["id"]}.values', 'kind': 'CXXRecordDecl', 'name': name, 'tagUsed': 'struct',
+                                  'completeDefinition': True, 'loc': p.get('loc'), 'range': p.get('range'),
+                                  'inner': [{'id': f'{p["id"]}.values.{f}', 'kind': 'FieldDecl', 'name': f,
+                                             'type': {'qualType': _plain(_spelling(fields[f]['type'])).replace('const ', '')}}
+                                            for f in scalars]}
+                        value_records[key] = record
+                        unit['inner'].insert(0, record)
+                    p['type'] = {'qualType': value_records[key]['name']}
+                    p['_qpel_values_of'], p['_qpel_value_fields'], p['_qpel_struct'] = p['name'], scalars, struct
+                    values = [p]
                 at = function['inner'].index(p)
-                function['inner'][at:at + 1] = [synthetic[name] for name in used]
+                function['inner'][at:at + 1] = values + [synthetic[name] for name in pointers]
                 flattened.setdefault(function.get('name'), {})[p['name']] = {
-                    'struct': struct, 'fields': [(name, synthetic[name]['name']) for name in used]}
+                    'struct': struct, 'fields': [(name, synthetic[name]['name'] if name in synthetic else p['name'])
+                                                 for name in used]}
     unit['_qpel_flattened'] = flattened
     return flattened
 
@@ -667,12 +690,14 @@ def single_rows(unit):
             for ref in walk(loop_body):
                 if ref.get('kind') == 'DeclRefExpr' and ref.get('referencedDecl', {}).get('id') == index:
                     ref.clear()
-                    ref.update({'kind': 'IntegerLiteral', 'type': {'qualType': 'int'}, 'valueCategory': 'prvalue', 'value': '0'})
+                    ref.update({'kind': 'IntegerLiteral', 'type': {'qualType': 'int'}, 'valueCategory': 'prvalue', 'value': '0',
+                                '_qpel_row': True})
             node.clear()
             node.update(loop_body if loop_body.get('kind') == 'CompoundStmt' else
                         {'kind': 'CompoundStmt', 'inner': [loop_body]})
         for node in walk(body):
-            if node.get('kind') == 'IfStmt' and not node.get('hasVar') and not node.get('hasInit') and node.get('inner'):
+            if node.get('kind') == 'IfStmt' and not node.get('hasVar') and not node.get('hasInit') and node.get('inner') \
+                    and any(n.get('_qpel_row') for n in walk(node['inner'][0])):  # a test of the row index only
                 value = _literal(node['inner'][0])
                 if value is None:
                     continue

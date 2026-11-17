@@ -7,7 +7,9 @@
 //
 // Supported: 1D blocks whose size is a multiple of 32 (1 to 32 warps), T = int, unsigned int or
 // float, the operators cub::Sum, cub::Max and cub::Min, one item per thread or several
-// (`T (&items)[ITEMS]`), and BlockLoad and BlockStore from and to pointers. Every method ends with the barriers CUB
+// (`T (&items)[ITEMS]`), and BlockLoad and BlockStore from and to pointers; with warp scans, InclusiveScan on
+// items with an operator functor without state (any copyable T, float2 among them) and a block prefix
+// callback (frontends/functors.py reads both as functions). Every method ends with the barriers CUB
 // has; as with CUB, a second use of the same TempStorage needs a __syncthreads() first.
 #pragma once
 
@@ -380,6 +382,137 @@ __device__ __forceinline__ void block_scan_items_exclusive_value(qpel_shared_vie
   block_scan_items_exclusive<OP, T, THREADS, ALGORITHM, ITEMS>(storage, input, output, initial, aggregate);
 }
 
+// Scans with a functor: an operator struct without state (mamba's SSMScanOp: (a0, b0) then (a1, b1)
+// is (a1 a0, a1 b0 + b1)) on any copyable T, float2 and float4 among them, in CUB 2.5's order:
+// WarpScanShfl's generic InclusiveScanStep (op(the value `offset` lanes below, own)), the
+// warp-scans block scan, and a block prefix callback (a stateful functor passed by reference, which
+// every thread of warp 0 calls with the block's aggregate; lane 0's result is shared through
+// TempStorage and prefixes every output). A float2 or float4 is shuffled field by field, as CUB
+// shuffles a value 32-bit word by word.
+template <class Op> struct functor
+    : std::integral_constant<bool, !known<Op>::value && std::is_empty<Op>::value> {};
+
+template <typename T>
+__device__ __forceinline__ T shuffle_up(T v, int offset) {
+  return __shfl_up_sync(0xffffffffu, v, offset);
+}
+__device__ __forceinline__ float2 shuffle_up(float2 v, int offset) {
+  return make_float2(__shfl_up_sync(0xffffffffu, v.x, offset), __shfl_up_sync(0xffffffffu, v.y, offset));
+}
+__device__ __forceinline__ float4 shuffle_up(float4 v, int offset) {
+  return make_float4(__shfl_up_sync(0xffffffffu, v.x, offset), __shfl_up_sync(0xffffffffu, v.y, offset),
+                     __shfl_up_sync(0xffffffffu, v.z, offset), __shfl_up_sync(0xffffffffu, v.w, offset));
+}
+
+template <typename ScanOp, typename T>
+__device__ __forceinline__ T op_warp_inclusive(T x, unsigned lane) {
+  for (int offset = 1; offset < 32; offset *= 2) {
+    T below = shuffle_up(x, offset);
+    if (lane >= (unsigned)offset) {
+      x = ScanOp()(below, x);
+    }
+  }
+  return x;
+}
+
+// BlockScanWarpScans with a functor, unseeded: the inclusive scan, or with `exclusive` the exclusive
+// one (whose value in thread 0 is its own input: CUB leaves it undefined).
+template <typename ScanOp, typename T, int THREADS, bool EXCLUSIVE>
+__device__ __forceinline__ T op_warp_scans_scan(qpel_shared_view<T> storage, T input, T& aggregate) {
+  constexpr int WARPS = THREADS / 32;
+  const unsigned tid = threadIdx.x;
+  const unsigned lane = tid % 32u;
+  const unsigned warp = tid / 32u;
+  T inclusive = op_warp_inclusive<ScanOp, T>(input, lane);
+  T exclusive = shuffle_up(inclusive, 1);
+  if (lane == 31u) {
+    storage[warp] = inclusive;
+  }
+  __syncthreads();
+  T prefix = storage[0];
+  T total = storage[0];
+  for (int w = 1; w < WARPS; ++w) {
+    if (warp == (unsigned)w) {
+      prefix = total;
+    }
+    total = ScanOp()(total, storage[(unsigned)w]);
+  }
+  aggregate = total;
+  if constexpr (!EXCLUSIVE) {
+    if (warp != 0u) {
+      inclusive = ScanOp()(prefix, inclusive);
+    }
+    return inclusive;
+  } else {
+    if (warp != 0u) {
+      exclusive = ScanOp()(prefix, exclusive);
+      if (lane == 0u) {
+        exclusive = prefix;
+      }
+    }
+    return exclusive;
+  }
+}
+
+// The same with a block prefix callback: warp 0 calls it with the aggregate, lane 0 shares its
+// result in storage[WARPS], and every output is prefixed with it (an exclusive scan's thread 0 gets it).
+template <typename ScanOp, typename T, int THREADS, bool EXCLUSIVE, typename Callback>
+__device__ __forceinline__ T op_warp_scans_prefixed(qpel_shared_view<T> storage, T input, Callback& callback) {
+  T aggregate = input;
+  T output = op_warp_scans_scan<ScanOp, T, THREADS, EXCLUSIVE>(storage, input, aggregate);
+  const unsigned tid = threadIdx.x;
+  if (tid / 32u == 0u) {
+    T block_prefix = callback(aggregate);
+    if (tid == 0u) {
+      storage[THREADS / 32] = block_prefix;
+      if constexpr (EXCLUSIVE) {
+        output = block_prefix;
+      }
+    }
+  }
+  __syncthreads();
+  T block_prefix = storage[THREADS / 32];
+  if (!EXCLUSIVE || tid != 0u) {
+    output = ScanOp()(block_prefix, output);
+  }
+  return output;
+}
+
+template <typename ScanOp, typename T, int ITEMS>
+__device__ __forceinline__ T op_thread_reduce(T (&input)[ITEMS]) {
+  T partial = input[0];
+  for (int k = 1; k < ITEMS; ++k) {
+    partial = ScanOp()(partial, input[k]);
+  }
+  return partial;
+}
+
+// ThreadScanInclusive from a prefix: every thread applies it (a prefixed block scan defines thread 0's).
+template <typename ScanOp, typename T, int ITEMS>
+__device__ __forceinline__ void op_thread_scan_inclusive(T (&input)[ITEMS], T (&output)[ITEMS], T prefix) {
+  T inclusive = ScanOp()(prefix, input[0]);
+  output[0] = inclusive;
+  for (int k = 1; k < ITEMS; ++k) {
+    inclusive = ScanOp()(inclusive, input[k]);
+    output[k] = inclusive;
+  }
+}
+
+// BlockScan::InclusiveScan(items, items, op, callback): the items reduced, an exclusive prefixed
+// block scan of the partials, then each thread's items scanned from its prefix (CUB's ITEMS == 1
+// case is the one-item prefixed inclusive scan).
+template <typename ScanOp, typename T, int THREADS, int ITEMS, typename Callback>
+__device__ __forceinline__ void op_block_scan_items_prefixed(qpel_shared_view<T> storage, T (&input)[ITEMS],
+                                                             T (&output)[ITEMS], Callback& callback) {
+  if constexpr (ITEMS == 1) {
+    output[0] = op_warp_scans_prefixed<ScanOp, T, THREADS, false, Callback>(storage, input[0], callback);
+  } else {
+    T partial = op_thread_reduce<ScanOp, T, ITEMS>(input);
+    T prefix = op_warp_scans_prefixed<ScanOp, T, THREADS, true, Callback>(storage, partial, callback);
+    op_thread_scan_inclusive<ScanOp, T, ITEMS>(input, output, prefix);
+  }
+}
+
 // BlockReduce on items: the thread's items reduced in order, then the block's reduction.
 template <int OP, typename T, int THREADS, int ITEMS>
 __device__ __forceinline__ T block_reduce_items(qpel_shared_view<T> storage, T (&input)[ITEMS]) {
@@ -395,7 +528,8 @@ class BlockScan {
   static_assert(BLOCK_DIM_X % 32 == 0 && BLOCK_DIM_X <= 1024, "qpel's CUB subset: whole warps");
 
  public:
-  typedef T TempStorage[ALGORITHM == BLOCK_SCAN_WARP_SCANS ? BLOCK_DIM_X / 32 : qpel_detail::Raking<BLOCK_DIM_X>::LENGTH];
+  // (warp scans: one total per warp, then the block prefix a callback gives, as CUB's TempStorage has)
+  typedef T TempStorage[ALGORITHM == BLOCK_SCAN_WARP_SCANS ? BLOCK_DIM_X / 32 + 1 : qpel_detail::Raking<BLOCK_DIM_X>::LENGTH];
 
   __device__ __forceinline__ BlockScan(TempStorage& storage) : storage(storage) {}
 
@@ -471,10 +605,18 @@ class BlockScan {
                                                                                           initial_value, block_aggregate);
   }
 
-  // Declared only (not in the subset yet): block prefix callbacks, and other operators on items.
+  // A functor and a block prefix callback on items, with warp scans (mamba's selective scan).
+  template <int ITEMS, typename Op, typename Callback, int A = ALGORITHM,
+            typename std::enable_if<A == BLOCK_SCAN_WARP_SCANS && qpel_detail::functor<Op>::value, int>::type = 0>
+  __device__ __forceinline__ void InclusiveScan(T (&input)[ITEMS], T (&output)[ITEMS], Op, Callback& prefix) {
+    qpel_detail::op_block_scan_items_prefixed<Op, T, BLOCK_DIM_X, ITEMS, Callback>(storage, input, output, prefix);
+  }
+
+  // Declared only (not in the subset yet): other block prefix callbacks, and other operators on items.
   template <int ITEMS, typename Op, qpel_detail::if_unknown<Op> = 0>
   __device__ void InclusiveScan(T (&input)[ITEMS], T (&output)[ITEMS], Op op) { qpel_detail::qpel_unsupported(); }
-  template <int ITEMS, typename Op, typename Callback>
+  template <int ITEMS, typename Op, typename Callback, int A = ALGORITHM,
+            typename std::enable_if<!(A == BLOCK_SCAN_WARP_SCANS && qpel_detail::functor<Op>::value), int>::type = 0>
   __device__ void InclusiveScan(T (&input)[ITEMS], T (&output)[ITEMS], Op op, Callback& prefix);
   template <int ITEMS, typename Op, typename Callback>
   __device__ void ExclusiveScan(T (&input)[ITEMS], T (&output)[ITEMS], Op op, Callback& prefix);

@@ -62,7 +62,7 @@ def sources():
         options = {'kernels': program['kernels'], 'module': program['fixture'], 'values': program.get('values', {}),
                    'constants': program.get('constants'), 'geometry': program.get('geometry'),
                    'shapes': program.get('shapes'), 'inputs': program.get('inputs'), 'outputs': program.get('outputs'),
-                   'shared': program.get('shared'), 'defines': roundtrip.corpus_defines(entry)}
+                   'shared': program.get('shared'), 'ulps': program.get('ulps'), 'defines': roundtrip.corpus_defines(entry)}
         out.append((program['fixture'], path, 'cuda' if path.suffix == '.cu' else 'metal', plan, include, {}, options))
     return out
 
@@ -95,6 +95,8 @@ class Prepared:
         bounded = any(n['kind'] == 'Math' and n['attributes']['function'] not in EXACT_MATH
                       for n in self.program['nodes'])
         self.ulps = 2*MATH_ULPS if bounded else 0
+        if bounded and options.get('ulps'):  # a program's own bound, where bounded results compound
+            self.ulps = max(self.ulps, int(options['ulps']))  # (corpus.json "ulps", with its reason)
 
     def cases(self):
         o = self.options

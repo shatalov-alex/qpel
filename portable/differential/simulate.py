@@ -80,12 +80,18 @@ def absent(resource, case):
         (resource['kind'] in ('input', 'inout') and resource['name'] not in case.inputs)
 
 
+C_FIELD = {'bool': 'bool', 'u8': 'unsigned char', 'i8': 'signed char', 'u16': 'unsigned short', 'i16': 'short',
+           'u32': 'unsigned int', 'i32': 'int', 'u64': 'unsigned long long', 'i64': 'long long', 'f32': 'float',
+           'f16': '__half', 'bf16': 'unsigned short'}  # (struct value fields, in qpel_types.struct_layout's layout)
+
+
 def sized_shared(text, lengths):
-    """Each `extern __shared__ T name[];` becomes `__shared__ T name[N];`, for {name: N}."""
+    """Each `extern __shared__ T name[];` becomes `__shared__ T name[N];`, for {name: N}, aligned to 16
+    bytes as CUDA aligns dynamic shared memory (a `char` block carved into float2 views needs it)."""
     import re
     for name, length in lengths.items():
         text, count = re.subn(r'extern\s+__shared__\s+((?:\w+\s+)*?\w+)\s+' + re.escape(name) + r'\s*\[\s*\]\s*;',
-                              lambda m: f'__shared__ {m.group(1)} {name}[{int(length)}];', text)
+                              lambda m: f'__shared__ {m.group(1)} {name}[{int(length)}] __attribute__((aligned(16)));', text)
         if not count:
             raise ValueError(f'dynamic shared memory {name}: no extern __shared__ declaration found')
     # The rest belong to kernels this program does not run (the importer needs a length for any it
@@ -195,6 +201,13 @@ class Program:
                 for start, end in sorted(spans, reverse=True):
                     text[start:end] = b';' + bytes(b if b == 10 else 32 for b in text[start + 1:end])
                 copy.write_bytes(bytes(text))
+            # Host functions too large for qpel to read (clang_ast's DECLARATION_LIMIT: mamba's launcher,
+            # nested BOOL_SWITCH lambdas) keep their bodies: their launches `k<<<g, b, s, t>>>(args)`
+            # become calls `k(args)`, which compile as C++ (the simulator never runs host code).
+            for header in tree.rglob('*'):
+                if header.suffix in ('.cuh', '.h', '.hpp') and '<<<' in header.read_text(errors='replace'):
+                    header.write_text(re.sub(r'<<<[^;{}]*?>>>', lambda m: re.sub(r'[^\n]', ' ', m.group(0)),
+                                             header.read_text(errors='replace')))
             include = [tree/d.relative_to(root) for d in include if d.is_relative_to(root)] + include
             source = tree/source.relative_to(root)
         if original and original.get('host_spans'):
@@ -210,8 +223,11 @@ class Program:
         if original and original.get('dialect') == 'cuda' and (self.work/'tree').is_dir():
             # the same in the library's headers (their copy): launch-sized arrays of kernels not run here
             for header in (self.work/'tree').rglob('*'):
-                if header.suffix in ('.cuh', '.h', '.hpp') and 'extern __shared__' in header.read_text(errors='replace'):
-                    header.write_text(sized_shared(header.read_text(), {}))
+                text = header.read_text(errors='replace') if header.suffix in ('.cuh', '.h', '.hpp') else ''
+                if 'extern __shared__' in text:  # (a kernel this program runs may be in a header: mamba's)
+                    lengths = {name: n for name, n in original.get('shared', {}).items()
+                               if re.search(r'extern\s+__shared__[^;]*\b' + re.escape(name) + r'\s*\[\s*\]', text)}
+                    header.write_text(sized_shared(text, lengths))
         if original and original.get('dialect') == 'cuda' and 'extern __shared__' in source.read_text(errors='replace'):
             # extern __shared__ T s[] gets its length from the launch (the third <<<>>> argument);
             # the simulator and the NVIDIA hosts run it as __shared__ T s[N], the length the import had.
@@ -274,6 +290,16 @@ class Program:
                  'static __half qpel_sim_f16(unsigned int w) { unsigned short b = (unsigned short)w; __half v; std::memcpy(&v, &b, 2); return v; }']
         namespaces = sorted({q.split('<')[0].rpartition('::')[0] for q in (self.original or {}).get('qualified', {}).values()} - {''})
         lines += [f'using namespace {n};' for n in namespaces]
+        # The struct values qpel made of an original struct argument's scalar fields (statics.flatten_argument_structs)
+        # are not the original's types: declared here, in the C layout the value files are written in.
+        declared = set()
+        for arguments in (self.original or {}).get('arguments', {}).values():
+            for a in arguments:
+                name = a.get('values')
+                if a.get('source') == 'struct' and name and name not in declared:
+                    declared.add(name)
+                    fields = self.plan.get('structs', {}).get(name, [])
+                    lines.append(f'struct {name} {{ ' + ' '.join(f'{C_FIELD[t]} {f};' for f, t in fields) + ' };')
         lines += ['int main(int argc, char** argv) {', '  std::string dir = argv[1];',
                   '  std::vector<char> scalars = load(dir + "/scalars.bin");',
                   '  const unsigned int* S = (const unsigned int*)scalars.data();']
@@ -328,6 +354,9 @@ class Program:
                 elif a['source'] == 'struct':  # a struct of pointers, flattened by the import: rebuilt field by field
                     fields = []
                     for f in a['fields']:
+                        if f.get('source') == 'member':  # a scalar field: from the struct value qpel's kernel takes
+                            fields.append(f' s.{f["field"]} = qpel_struct_{params[f["parameter"]]}.{f["member"]};')
+                            continue
                         if f.get('source') != 'parameter':
                             raise ValueError(f'{kernel}: field {f["field"]} of {a["name"]} has no qpel equivalent')
                         fields.append(f' s.{f["field"]} = {resource_arg(params[f["parameter"]])};')

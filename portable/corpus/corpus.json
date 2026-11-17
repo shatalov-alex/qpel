@@ -2401,7 +2401,22 @@
     ],
     "origin": "https://github.com/state-spaces/mamba, commit e9594ce1c732d97440f0332fdc43170a2294dbfa, csrc/selective_scan/selective_scan_fwd_fp32.cu (unmodified)",
     "license": "Apache-2.0 (mamba/LICENSE)",
-    "sha256": "2ae10cb46816a25caa9711fd8b0aa9252763cda46f7f1765c11ca29bf57944b1"
+    "sha256": "2ae10cb46816a25caa9711fd8b0aa9252763cda46f7f1765c11ca29bf57944b1",
+    "programs": [
+      {
+        "kernels": [
+          "selective_scan_fwd_kernel_Selective_Scan_fwd_kernel_traits_32_4_1_false_false_false_false_float_float"
+        ],
+        "fixture": "mamba_selective_scan_fwd",
+        "plan": "mamba/plans/selective_scan_fwd.plan.json",
+        "shared": {
+          "smem_running_prefix": 256,
+          "smem_": 4096
+        },
+        "ulps": 32,
+        "ulps_reason": "each output sums dstate states of a recurrence that multiplies exp2 results along the sequence, so the bounded functions' few ulp compound: Apple's exp2 and log1p against C's libm reached 10 ulp in one element"
+      }
+    ]
   },
   {
     "source": "pytorch_sparse/csrc/cuda/convert_cuda.cu",

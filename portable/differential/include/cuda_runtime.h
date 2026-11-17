@@ -310,3 +310,13 @@ cudaError_t cudaEventRecord(cudaEvent_t, cudaStream_t);
 cudaError_t cudaStreamWaitEvent(cudaStream_t, cudaEvent_t, unsigned);
 cudaError_t cudaConfigureCall(dim3, dim3, unsigned long, cudaStream_t);
 }
+// CUDA's overload for a kernel itself (mamba's launcher: cudaFuncSetAttribute(kernel, ..., kSmemSize)).
+template <class T>
+inline cudaError_t cudaFuncSetAttribute(T* entry, cudaFuncAttribute attribute, int value) {
+  return cudaFuncSetAttribute((const void*)entry, (int)attribute, value);
+}
+#if defined(__APPLE__)
+// CUDA's sincosf (glibc has one; macOS only __sincosf), used by mamba's complex exponentials.
+#include <cmath>
+inline void sincosf(float x, float* s, float* c) { *s = sinf(x); *c = cosf(x); }
+#endif

@@ -270,7 +270,15 @@ class Parser:
     def fail(self, message):
         raise ParseError(f'line {self.peek()[2]}: {message} (at {self.peek()[1]!r})')
 
+    def split_closing(self):
+        """`>>` closing two type arguments (`shared<vec<f32, 2>>`): read as `>` then `>`."""
+        token = self.peek()
+        if token[1] == '>>':
+            self.tokens[self.at:self.at + 1] = [(token[0], '>', token[2]), (token[0], '>', token[2])]
+
     def take(self, value=None, kind=None):
+        if value == '>':
+            self.split_closing()
         token = self.peek()
         if value is not None and token[1] != value or kind is not None and token[0] != kind:
             self.fail(f'expected {value or kind}')
@@ -278,6 +286,8 @@ class Parser:
         return token[1]
 
     def accept(self, value):
+        if value == '>':
+            self.split_closing()
         if self.peek()[1] == value:
             self.at += 1
             return True
@@ -354,7 +364,7 @@ class Parser:
             return f'vec<{element}, {length}>'
         if name == 'array':
             self.take('<')
-            element = self.take(kind='name')
+            element = self.type_term()  # a scalar, or a vector (IR version 11)
             self.take(',')
             length = self.take(kind='number')
             self.take('>')
@@ -382,7 +392,7 @@ class Parser:
                 self.fail('a vector length is 2, 3 or 4')
             return self.add('VectorType', {'element': element, 'length': int(length)})
         if t.startswith('array<'):
-            element, length = t[len('array<'):-1].split(', ')
+            element, length = t[len('array<'):-1].rsplit(', ', 1)
             if not length.isdigit():
                 self.fail('an array length is a decimal number')
             return self.add('ArrayType', {'element': element, 'length': int(length)})

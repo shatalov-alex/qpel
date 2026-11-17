@@ -17,11 +17,13 @@ own CUB, which the tests compare against.
 | `cub::BlockReduce<T, N>`, `BLOCK_REDUCE_WARP_REDUCTIONS` (the default) | `Sum(x)`, `Sum(x, valid)`, `Reduce(x, op)`, `Reduce(x, op, valid)`; the result is the block's in thread 0 only, as in CUB |
 | `BlockScan` and `BlockReduce` on several items per thread (`T (&items)[ITEMS]`, IR version 10) | the same methods with item arrays (`InclusiveSum(items, out)`, `ExclusiveScan(items, out, initial, op, total)`, `Sum(items)`, `Reduce(items, op)`, ...): the thread's items reduced in order, a block scan of those partials, the items scanned from the thread's prefix, in CUB 2.5's order (`ThreadReduce`, `ThreadScanInclusive`/`Exclusive`) |
 | `cub::BlockLoad<T, N, ITEMS, ALGORITHM>`, `cub::BlockStore<...>`: `DIRECT`, `STRIPED`, `VECTORIZE`, `TRANSPOSE`, `WARP_TRANSPOSE` | `Load(ptr, items)`, `Load(ptr, items, valid)`, `Load(ptr, items, valid, default)`, `Store(ptr, items)`, `Store(ptr, items, valid)`: the blocked arrangement (thread t's items are elements t * ITEMS + k), or the striped one (t + k * N) for `STRIPED`, read and written directly; their TempStorage is not used |
+| `BlockScan<T, N, BLOCK_SCAN_WARP_SCANS>::InclusiveScan(items, out, op, prefix_callback)` with an operator functor without state and a block prefix callback (mamba's `SSMScanOp` and `SSMScanPrefixCallbackOp` on `float2` pairs) | the items reduced with `op`, an exclusive warp-scans scan of the partials whose aggregate warp 0 passes to the callback (every thread of warp 0 calls it; lane 0's result is shared through TempStorage and prefixes every thread's partial), then the items scanned from that prefix, in CUB 2.5's order (`WarpScanShfl`'s generic step, a `float2` shuffled field by field). The functors are read as functions of their fields (frontends/functors.py): `op(a, b)` a call, the callback's `running_prefix` a reference argument |
 | `cub::Sum`, `cub::Max`, `cub::Min` | `a + b`, `CUB_MAX` (`b > a ? b : a`) and `CUB_MIN`, NaNs included |
-| `__shared__ typename BlockScanT::TempStorage s;` | `shared<T, L>` of the length the algorithm needs (raking: 32 segments with CUB's padding and the total) |
+| `__shared__ typename BlockScanT::TempStorage s;` | `shared<T, L>` of the length the algorithm needs (raking: 32 segments with CUB's padding and the total; warp scans: a total per warp and the block prefix) |
+| `auto& s = reinterpret_cast<typename BlockScanT::TempStorage&>(smem_)`, views of dynamic shared memory | shared memory of its own per view (frontends/views.py); the original runs with the block's bytes, given at import (`shared={'smem_': bytes}`) |
 | `BlockScanT(s).InclusiveSum(...)`, or a named `BlockScanT scan(s);` | a call of the library function |
 
-T is `int`, `unsigned int` or `float`, one item per thread or several; N is a multiple of 32 up to 256
+T is `int`, `unsigned int` or `float` (and any copyable type, `float2` among them, for a scan with a functor), one item per thread or several; N is a multiple of 32 up to 256
 (qpel's block limit), in a 1D block. Signed sums wrap, as CUB's `add.s32` does. `cub::DeviceScan`
 and `cub::DeviceReduce` are declared, so host code that uses them parses, but they are host calls
 (temporary storage, several launches) and not translated.
@@ -30,9 +32,10 @@ A load with `valid` and no default leaves the items from `valid` on as they were
 and striped loads do; CUB's transposing loads put other threads' unset values there instead, so a
 program must not read them (with a default, every algorithm gives the default).
 
-Not yet: block prefix callbacks, the timesliced load and store, loads through iterators, other operators and value types (mamba's
-`float2` scan pairs), the raking `BlockReduce` algorithms, `WarpScan`/`WarpReduce` on their own,
-and TempStorage in unions or reinterpreted dynamic shared memory. A source using one of these does
+Not yet: block prefix callbacks other than with warp scans on items (one-item and exclusive
+forms, the raking algorithms), the timesliced load and store, loads through iterators, functors
+with state as the operator, the raking `BlockReduce` algorithms, `WarpScan`/`WarpReduce` on their
+own, and TempStorage in unions. A source using one of these does
 not compile against qpel's header (a `static_assert` or a missing declaration names it), and
 the importer reports it.
 
@@ -78,6 +81,12 @@ Barriers inside these functions are why IR version 7 allows `qpel.barrier()` in 
   every scan and reduction method on item arrays (blocks of 32 to 128 threads, 2 to 8 items, int,
   unsigned int and float), bit for bit on the CPU simulator, the Apple GPU and, against NVIDIA's
   CUB 2.5, on GPGPU-Sim (`test_cub.ItemRows`).
+- `tests/ssm_scan.cu` is mamba's scan in miniature: `float2` pairs under `SSMScanOp` with the
+  prefix callback carrying the running prefix from chunk to chunk (32 threads x 4 items as mamba
+  launches it, 64 x 4, 32 x 1), bit for bit on the CPU simulator, the Apple GPU and, against
+  NVIDIA's CUB 2.5, on GPGPU-Sim (`test_ssm_scan.py`). `tests/traits.cu` covers what mamba's
+  kernels read around it: traits classes, a struct of pointers as the argument, views of dynamic
+  shared memory (`test_traits.py`).
 - llama.cpp's `cumsum_cub_kernel` (an unmodified corpus source, `GGML_CUDA_USE_CUB`) passes the
   behaviour rows on the CPU simulator, the Apple GPU and GPGPU-Sim (fixture `llama_cumsum_cub_f32`).
 - On the way, GPGPU-Sim turned out to invert the in-range predicate of `shfl.sync` (our own shuffle
