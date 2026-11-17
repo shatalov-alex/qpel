@@ -17,10 +17,20 @@ static_assert(sizeof(QpelShape) == 16, "qpel shape ABI must be 16 bytes");
 #define QPEL_PRESENT(name) ((name) != nullptr)
 #define QPEL_GRID_PARAM(name)
 #define QPEL_GRID_LOCAL(name) const unsigned int name = blockIdx.x * blockDim.x + threadIdx.x;
-// Legacy CUDA atomics have relaxed ordering at device scope. A zero-add is an
-// atomic read implemented as an RMW: correct, but potentially slower than load.
+// Legacy CUDA atomics have relaxed ordering at device scope. An atomic load or store is a
+// volatile access on the GPU: PTX gives ld/st.volatile the semantics of ld/st.relaxed.sys, the
+// relaxed order Metal's atomic_load/store_explicit have, without the read-modify-write of a
+// zero-add or an exchange (sam2_cc's union-find reads its labels this way: x1.47 before).
+// The CPU simulator (no __CUDA_ARCH__) keeps the atomics.
+#if defined(__CUDA_ARCH__)
+template <class T> __device__ __forceinline__ T qpel_relaxed_load(T* address) { return *(volatile T*)address; }
+template <class T, class U> __device__ __forceinline__ void qpel_relaxed_store(T* address, U value) { *(volatile T*)address = (T)value; }
+#define QPEL_LOAD(address) qpel_relaxed_load((address))
+#define QPEL_STORE(address, value) qpel_relaxed_store((address), (value))
+#else
 #define QPEL_LOAD(address) atomicAdd((address), 0u)
 #define QPEL_STORE(address, value) atomicExch((address), (value))
+#endif
 #define QPEL_ADD(address, value) atomicAdd((address), (value))
 #define QPEL_MIN(address, value) atomicMin((address), (value))
 
@@ -64,7 +74,11 @@ template <class T> using qpel_shared_view = T*;
 #define QPEL_FADD(a, b) __fadd_rn((a), (b))
 #define QPEL_FSUB(a, b) __fsub_rn((a), (b))
 #define QPEL_FMUL(a, b) __fmul_rn((a), (b))
-#define QPEL_FDIV(a, b) __fdiv_rn((a), (b))
+// Division never contracts, so it is written `/`: correctly rounded under nvcc's default
+// -prec-div=true (qpel's CUDA is not for -use_fast_math or -prec-div=false; its bounded math
+// functions assume that too). __fdiv_rn gives the same bits, but nvcc does not treat it as a
+// division: `1.0f / x` gets no reciprocal and is not hoisted out of loops (TRELLIS.2's render: x1.97).
+#define QPEL_FDIV(a, b) ((a) / (b))
 
 #ifdef QPEL_F16_ENABLED
 #include <cuda_fp16.h>
@@ -152,16 +166,33 @@ __device__ __forceinline__ long long qpel_i64_rem(long long a, long long b) { re
 #ifdef QPEL_F32_TO_INT_ENABLED
 // float32 -> integer truncates toward zero, saturates out of range and maps NaN to 0 (C leaves
 // out-of-range conversions undefined). Written out so both backends agree.
+// On the GPU this is PTX's own float-to-integer cvt.rzi, which saturates and gives 0 for NaN (the
+// 8- and 16-bit ones through the 32-bit conversion, then clamped); the CPU simulator writes it out.
+#if defined(__CUDA_ARCH__)
+#define QPEL_F32_TO_INT_FUNCTION(name, T, low, high, lowest, highest) \
+    __device__ __forceinline__ T name(float x) { \
+      const int v = __float2int_rz(x); return (T)(v < (int)(lowest) ? (int)(lowest) : v > (int)(highest) ? (int)(highest) : v); }
+#define QPEL_F32_TO_WIDE_FUNCTION(name, T, conversion) \
+    __device__ __forceinline__ T name(float x) { return (T)conversion(x); }
+#else
 #define QPEL_F32_TO_INT_FUNCTION(name, T, low, high, lowest, highest) \
     __device__ __forceinline__ T name(float x) { return x != x ? (T)0 : x < (low) ? (T)(lowest) : x >= (high) ? (T)(highest) : (T)x; }
+#endif
 QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_u8, unsigned char, 0.0f, 256.0f, 0, 255)
 QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i8, signed char, -128.0f, 128.0f, -128, 127)
 QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_u16, unsigned short, 0.0f, 65536.0f, 0, 65535)
 QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i16, short, -32768.0f, 32768.0f, -32768, 32767)
+#if defined(__CUDA_ARCH__)
+QPEL_F32_TO_WIDE_FUNCTION(qpel_f32_to_u32, unsigned int, __float2uint_rz)
+QPEL_F32_TO_WIDE_FUNCTION(qpel_f32_to_i32, int, __float2int_rz)
+QPEL_F32_TO_WIDE_FUNCTION(qpel_f32_to_u64, unsigned long long, __float2ull_rz)
+QPEL_F32_TO_WIDE_FUNCTION(qpel_f32_to_i64, long long, __float2ll_rz)
+#else
 QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_u32, unsigned int, 0.0f, 4294967296.0f, 0u, 4294967295u)
 QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i32, int, -2147483648.0f, 2147483648.0f, (-2147483647 - 1), 2147483647)
 QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_u64, unsigned long long, 0.0f, 18446744073709551616.0f, 0ull, 18446744073709551615ull)
 QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long long, -9223372036854775808.0f, 9223372036854775808.0f, (-9223372036854775807ll - 1), 9223372036854775807ll)
+#endif
 #define QPEL_F32_TO_U8(x) qpel_f32_to_u8((x))
 #define QPEL_F32_TO_I8(x) qpel_f32_to_i8((x))
 #define QPEL_F32_TO_U16(x) qpel_f32_to_u16((x))
@@ -227,7 +258,11 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long long, -9223372036854775808.0f, 92
 #define QPEL_EXCHANGE(address, value) atomicExch((address), (value))
 // A float32 read gets the stored bits: an or with 0 changes nothing, where an add of zero would
 // turn -0 into +0 (and flush subnormals).
+#if defined(__CUDA_ARCH__)
+__device__ __forceinline__ float qpel_load_f32(float* address) { return *(volatile float*)address; }  // (see QPEL_LOAD)
+#else
 __device__ __forceinline__ float qpel_load_f32(float* address) { return __int_as_float(atomicOr((int*)address, 0)); }
+#endif
 #define QPEL_LOAD_F32(address) qpel_load_f32((address))
 // 64-bit atomics are statements (Metal gives no previous value).
 #define QPEL_ADD_U64(address, value) atomicAdd((address), (value))

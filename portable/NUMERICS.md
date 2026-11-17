@@ -44,7 +44,7 @@ IR version 3 (`"version": 3`, semantics `qpel-portable-core-v3`) writes types as
 - **Wrapping and division.** `+ - *` and unary minus wrap modulo 2^width for signed and unsigned types, emitted through the unsigned type of the same width. Signed `/` truncates and `%` follows the dividend; `MIN / -1` is MIN and `MIN % -1` is 0, at 32 and 64 bits alike. Comparisons and min/max convert both operands to the common type.
 - **Shifts.** The count is taken modulo the width of the left operand's arithmetic type (32 or 64). Signed `>>` is arithmetic; signed `<<` works on the bit pattern.
 - **Integer → integer `Cast`** keeps the low bits (two's complement), as C's conversion to an unsigned type does and as nvcc and Metal do for signed types.
-- **float32 → integer `Cast`** truncates toward zero, **saturates** values outside the target's range to its minimum or maximum, and maps NaN to 0. C leaves out-of-range conversions undefined; qpel writes the comparisons out (`qpel_f32_to_*` helpers in both backends) so both GPUs give the same answer.
+- **float32 → integer `Cast`** truncates toward zero, **saturates** values outside the target's range to its minimum or maximum, and maps NaN to 0. C leaves out-of-range conversions undefined; both backends give that answer: qpel's Metal and the CPU simulator write the comparisons out (`qpel_f32_to_*`), and qpel's CUDA on the GPU uses PTX's own conversion (`cvt.rzi`, through `__float2int_rz` and friends), which saturates and gives 0 for NaN; 8- and 16-bit targets convert to 32 bits and clamp.
 - **Integer → float32 `Cast`** rounds to nearest, ties to even (also for 64-bit integers, which float32 cannot hold exactly).
 - **bf16** is storage only, like f16: `Cast` to f32 widens exactly; `Cast` from f32 to bf16 rounds to nearest even (`__float2bfloat16_rn`, Metal `bfloat`). Metal needs language version 3.1 (macOS 14) for `bfloat`; such packages record `"standard": "metal3.1"`. Subnormal floats are not exercised: Apple GPUs flush them to zero.
 - **Kernel arguments** may be any integer type or f32. The hosts check the range per type; u16, u32 and u64 travel through torch as the signed type of the same width, and bf16 buffers travel through CuPy as their 16 bits.
@@ -57,7 +57,7 @@ A kernel with domain `Groups` (IR version 3) states its geometry instead of runn
 
 ## Floating point: f32-strict-v1
 
-Every float32 `+ - * /` rounds to nearest even on its own, as written; only `F32Fma` fuses a multiply and an add. Compilers otherwise contract `a*b + c` into an FMA when they choose (nvcc does by default; so does Metal), which changes the last bit. qpel's CUDA uses `__fadd_rn`, `__fsub_rn`, `__fmul_rn` and `__fdiv_rn`, which nvcc never contracts whatever its flags; its Metal turns contraction off with `#pragma clang fp contract(off)`. Generated sources that compute in float32 carry `// qpel numeric contract: f32-strict-v1`. The behaviour rows run originals the same way (the CPU simulator with `-ffp-contract=off`, Metal originals with the same pragma), i.e. as written. Found by the `grid_stride` example (`scale * x[i] + bias`), whose Metal output differed by one ulp before. Division on the Apple GPU was correctly rounded on 65536 random normal operands. Subnormals still flush to zero on Apple GPUs.
+Every float32 `+ - * /` rounds to nearest even on its own, as written; only `F32Fma` fuses a multiply and an add. Compilers otherwise contract `a*b + c` into an FMA when they choose (nvcc does by default; so does Metal), which changes the last bit. qpel's CUDA uses `__fadd_rn`, `__fsub_rn` and `__fmul_rn`, which nvcc never contracts whatever its flags, and writes division `/` (division never contracts; it is correctly rounded under nvcc's default `-prec-div=true`, so qpel's CUDA is built without `-use_fast_math` and `-prec-div=false`, as its bounded math functions already require; `__fdiv_rn` gives the same bits but kept nvcc from using its reciprocal and from hoisting divisions out of loops, Phase 6); its Metal turns contraction off with `#pragma clang fp contract(off)`. Generated sources that compute in float32 carry `// qpel numeric contract: f32-strict-v1`. The behaviour rows run originals the same way (the CPU simulator with `-ffp-contract=off`, Metal originals with the same pragma), i.e. as written. Found by the `grid_stride` example (`scale * x[i] + bias`), whose Metal output differed by one ulp before. Division on the Apple GPU was correctly rounded on 65536 random normal operands. Subnormals still flush to zero on Apple GPUs.
 
 ## Math functions
 
@@ -130,6 +130,10 @@ each element has the operations both platforms give it:
 | `f32` | load, store, add, exchange |
 | `u64` | add, min, max, as statements |
 
+- **Loads and stores** are relaxed single accesses: Metal's `atomic_load_explicit` and
+  `atomic_store_explicit`, and on NVIDIA GPUs `volatile` accesses, which PTX gives the semantics of
+  `ld`/`st.relaxed.sys` (no read-modify-write: until Phase 6 qpel's CUDA loaded with `atomicAdd(p, 0)`
+  and stored with `atomicExch`, which made sam2's union-find x1.47 slower on a T4).
 - **Results are the previous value**, as CUDA's `atomicMax` and Metal's `atomic_fetch_max_explicit`
   return it; `exchange` stores its value and returns the one it replaced.
 - **Order.** Atomic operations from different threads happen in no defined order. Integer add, min,
