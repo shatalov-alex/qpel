@@ -13,6 +13,7 @@ using namespace metal;
 #define QPEL_ATOMIC_U32 device atomic_uint*
 #define QPEL_WRITE_U32 device uint*
 #define QPEL_SHAPE constant uint3&
+#define QPEL_SHAPE_VOLUME(s, product) (product)  // (Metal's uint3 shape has no volume word)
 #define QPEL_PARAM(type, name, binding) type name [[buffer(binding)]]
 // An optional buffer (IR version 9): Metal cannot ask whether a buffer is bound, so the host
 // passes a presence flag after all of the kernel's parameters (a placeholder buffer when absent).

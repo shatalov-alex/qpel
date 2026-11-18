@@ -74,7 +74,7 @@ class CudaHostTests(unittest.TestCase):
             for e in calls[::2]:
                 self.assertEqual(e[1:3],((3,),(128,)))
                 self.assertIs(e[4],self.stream)
-            self.assertEqual(init[3][3].tobytes(),struct.pack('=4I',43,3,2,0))
+            self.assertEqual(init[3][3].tobytes(),struct.pack('=4I',43,3,2,43*3*2))
             self.assertEqual(init[3][3].itemsize,16)
             self.assertIsNot(init[3][0],mask)
             self.assertIs(init[3][1],merge[3][1])

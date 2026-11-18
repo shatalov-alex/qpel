@@ -92,7 +92,7 @@ int main(){
  std::vector<unsigned char> mask(N,1);
  std::ifstream("input.bin",std::ios::binary).read((char*)input.data(),N*2);
  std::ifstream("expected.bin",std::ios::binary).read((char*)expected.data(),N*2);
- for(unsigned i=0;i<N+5;++i){threadIdx.x=i;masked_copy(input.data(),mask.data(),output.data(),QpelShape{N,1,1,0});}
+ for(unsigned i=0;i<N+5;++i){threadIdx.x=i;masked_copy(input.data(),mask.data(),output.data(),QpelShape{N,1,1,N});}
  assert(std::memcmp(output.data(),expected.data(),N*2)==0);
 }
 ''')

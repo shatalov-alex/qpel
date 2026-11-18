@@ -68,7 +68,7 @@ using std::min;using std::max;
 #include "generated/float_window_sum.cu"
 int main(){float x[]={XS};float expected[]={YS};float out[N];unsigned char mask[N];
 for(unsigned i=0;i<N;++i)mask[i]=1;
-for(unsigned i=0;i<N+5;++i){threadIdx.x=i;masked_copy(x,mask,out,QpelShape{N,1,1,0});}
+for(unsigned i=0;i<N+5;++i){threadIdx.x=i;masked_copy(x,mask,out,QpelShape{N,1,1,N});}
 for(unsigned i=0;i<N;++i)assert(out[i]==expected[i]);
 assert(qpel_sum_f32(x,N,0)==0.0f);
 assert(qpel_sum_f32(x,0,4)==1.0f);

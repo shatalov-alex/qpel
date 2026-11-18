@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 import struct
 
-from qpel_schema import METAL_FUNCTIONS, is_identifier
+from qpel_schema import METAL_FUNCTIONS, MAX_BLOCK_SIZE, is_identifier
 from qpel_types import (SCALAR_TERMS, VALUE_TERMS, access, buffer as type_buffer, fits, is_buffer as type_is_buffer,
                         is_signed, node_spec, normalize_plan, term as type_term)
 from qpel_types import access as type_access, bits as type_bits, INTEGER_TERMS, MATH, is_struct, is_array, MATH_ULPS
@@ -467,6 +467,35 @@ def launch_sites(unit):
             callee.get('referencedDecl', {}).get('name') if callee.get('kind') == 'DeclRefExpr' else None
         if name:
             found.setdefault(name, []).append(node['inner'][2:])
+    return found
+
+
+def launch_blocks(unit):
+    """{kernel name as written at the call: [block size or None]} for every `kernel<<<grid, block, ...>>>(...)`:
+    the block's constant x size (an int or a dim3 of one), else None."""
+    found = {}
+    for node in walk(unit):
+        if node.get('kind') != 'CUDAKernelCallExpr' or len(node.get('inner', ())) < 2:
+            continue
+        callee = node['inner'][0]
+        while callee.get('kind') in LOOSE and callee.get('inner'):
+            callee = callee['inner'][0]
+        name = callee.get('name') if callee.get('kind') == 'UnresolvedLookupExpr' else \
+            callee.get('referencedDecl', {}).get('name') if callee.get('kind') == 'DeclRefExpr' else None
+        config = node['inner'][1]
+        args = [a for a in config.get('inner', ())[1:]] if config.get('kind') == 'CallExpr' else []
+        size = None
+        if len(args) >= 2:
+            block = args[1]
+            while block.get('kind') in LOOSE | {'CXXConstructExpr', 'MaterializeTemporaryExpr', 'CXXFunctionalCastExpr',
+                                                'ExprWithCleanups', 'ConstantExpr'} and block.get('inner'):
+                if block.get('kind') == 'CXXConstructExpr' and len(block['inner']) > 1 and \
+                        any(integer_constant(x) not in (None, 1) for x in block['inner'][1:]):
+                    break  # dim3(x, y, z) with y or z above 1: not a 1D block
+                block = block['inner'][0]
+            size = integer_constant(block)
+        if name:
+            found.setdefault(name, []).append(size)
     return found
 
 
@@ -3348,6 +3377,11 @@ class Importer:
                 return add('Member', {'member': self.safe_name(field)}, {'base': self.name(entry[1])})
             if entry and entry[0] == 'param' and entry[2] == 'shape3' and field in ('x', 'y', 'z'):
                 return add('Member', {'member': field}, {'base': self.name(entry[1])})
+            if entry and entry[0] == 'param' and entry[2] == 'shape3' and field == 'volume':
+                # qpel's own CUDA (QPEL_SHAPE_VOLUME): the element count, (x * y) * z
+                member = lambda m: add('Member', {'member': m}, {'base': self.name(entry[1])})
+                xy = add('Binary', {'operator': '*'}, {'left': member('x'), 'right': member('y')})
+                return add('Binary', {'operator': '*'}, {'left': xy, 'right': member('z')})
             if decl_name(base) in ('threadIdx', 'blockIdx', 'blockDim', 'gridDim'):
                 raise Unsupported(n, 'thread-builtin', 'only blockIdx.x * blockDim.x + threadIdx.x is supported')
             raise Unsupported(n, 'member', 'only shape.x, shape.y and shape.z members are supported')
@@ -3889,6 +3923,22 @@ class Importer:
             result[name] = next(iter(found)) if found else self.grid_params[kernel]
         return result
 
+    def launch_block(self, kernel):
+        """The block size every launch of a kernel in this source gives, when it is one constant qpel takes
+        (`arange_f32<<<blocks, CUDA_ARANGE_BLOCK_SIZE>>>`: 256); else None. The original's block size keeps
+        its occupancy, which a kernel's results do not depend on."""
+        if self.dialect.name != 'cuda' or kernel not in self.functions:
+            return None
+        if getattr(self, 'blocks', None) is None:
+            self.blocks = launch_blocks(self.unit)
+        decl = self.functions[kernel][0]
+        written = re.sub(r'<.*', '', self.qualified.get(decl['name'], decl['name'])).rpartition('::')[2]
+        sizes = set(self.blocks.get(written, ()))
+        if len(sizes) != 1:
+            return None
+        size = sizes.pop()
+        return size if isinstance(size, int) and 32 <= size <= MAX_BLOCK_SIZE and size % 32 == 0 else None
+
     def synthesize_plan(self, kernels, block_size):
         """One dispatch per kernel in source order; parameters with one name share a resource."""
         resources = {}
@@ -3909,7 +3959,8 @@ class Importer:
                 if role == 'shape' and (grid is None or name == self.grid_params.get(kernel)):
                     grid = name
                 bindings.append({'parameter': name, 'resource': name})
-            stage = {'kernel': kernel, 'grid': grid, 'blockSize': block_size, 'completionBarrier': True, 'bindings': bindings}
+            stage = {'kernel': kernel, 'grid': grid, 'blockSize': self.launch_block(kernel) or block_size,
+                     'completionBarrier': True, 'bindings': bindings}
             if self.domains[kernel] == 'grid3d':
                 stage.update(blockSize=GRID3D_BLOCK[0], domain='grid3d', blockShape=list(GRID3D_BLOCK))
             if self.domains[kernel] == 'groups' and getattr(self, 'geometry', None):

@@ -116,7 +116,7 @@ inline float __fdiv_rn(float a,float b){volatile float r=a/b;return r;}
 int main(){
  float pixels[257], output[257]; unsigned char mask[257];
  for(unsigned i=0;i<257;++i){pixels[i]=(float(i)-128.0f)*0.125f;mask[i]=i%3;output[i]=12345;}
- for(unsigned i=0;i<262;++i){threadIdx.x=i;masked_copy(pixels,mask,output,QpelShape{257,1,1,0});}
+ for(unsigned i=0;i<262;++i){threadIdx.x=i;masked_copy(pixels,mask,output,QpelShape{257,1,1,257});}
  for(unsigned i=0;i<257;++i)assert(output[i]==(mask[i]?pixels[i]*0.5f:0.0f));
 }
 ''').replace('generated/cuda_masked_copy.cu', 'generated/'+module+'.cu'))

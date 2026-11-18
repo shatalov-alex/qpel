@@ -331,7 +331,8 @@ class Program:
                 dims = [self.word(f'{name}.{a}') for a in 'xyz']
                 if wanted == 'volume':
                     return f'({dims[0]} * {dims[1]} * {dims[2]})'
-                return 'QpelShape{' + ', '.join(dims) + ', 0u}' if not self.original else 'uint3{' + ', '.join(dims) + '}'
+                volume = f'({dims[0]} * {dims[1]} * {dims[2]})'  # (the fourth word: the element count)
+                return 'QpelShape{' + ', '.join(dims) + ', ' + volume + '}' if not self.original else 'uint3{' + ', '.join(dims) + '}'
             if r['kind'] == 'value' and is_struct(r['type']):
                 return f'qpel_struct_{name}'  # loaded from value_<name>.bin before the stages
             if r['kind'] == 'value':

@@ -1,6 +1,8 @@
 // qpel backend: device-scope relaxed unsigned 32-bit atomics.
 #include <cuda_runtime.h>
-struct alignas(16) QpelShape { unsigned int x, y, z, padding; };
+// volume: x * y * z, which the host fills (it refuses more than INT32_MAX elements, so the product is exact)
+struct alignas(16) QpelShape { unsigned int x, y, z, volume; };
+#define QPEL_SHAPE_VOLUME(s, product) ((s).volume)
 static_assert(sizeof(unsigned int) == 4, "qpel requires 32-bit unsigned int");
 static_assert(sizeof(QpelShape) == 16, "qpel shape ABI must be 16 bytes");
 #define QPEL_KERNEL extern "C" __global__

@@ -14,7 +14,7 @@ Answer run(const Case& c) {
     Buffer<unsigned char> mask(size);
     Buffer<unsigned> parent(size),counts(size),labels(size),output(size);
     check(cudaMemcpy(mask.data,c.mask.data(),size,cudaMemcpyHostToDevice));
-    QpelShape shape{c.w,c.h,c.n,0};
+    QpelShape shape{c.w,c.h,c.n,c.w*c.h*c.n};
     // Bind host allocations by resource names; every generated stage completes.
     auto* maskPtr=mask.data;auto* parentPtr=parent.data;auto* countsPtr=counts.data;
     auto* labelsPtr=labels.data;auto* outputPtr=output.data;

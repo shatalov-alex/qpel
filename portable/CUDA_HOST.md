@@ -6,7 +6,7 @@ CUDA requires CuPy, NumPy, an NVIDIA device and a compatible CUDA/NVRTC installa
 
 Input names, shape dimensions/product, array type, device, dtype and element count are checked before allocation/compilation. Strided inputs are copied to contiguous storage on the selected device's current stream. Callers must establish dependencies for input writes on other streams. Each stage launches ceil(element_count/blockSize) blocks and synchronizes that stream before continuing. Exceptions stop the pipeline. This is synchronous and deliberately untuned.
 
-QpelShape is passed by value as a NumPy structured scalar with uint32 fields at offsets 0,4,8,12 and total size 16. The fourth field is zero padding. Unlike Metal, this is not a device-buffer pointer. u32/atomic buffers retain the existing host convention of int32 backing storage; CUDA kernels interpret those bits as unsigned. Float16/float32 and uint8 storage follow the common resource map.
+QpelShape is passed by value as a NumPy structured scalar with uint32 fields at offsets 0,4,8,12 and total size 16. The fourth field is the element count, x * y * z (at most INT32_MAX), which kernels read where they compare with the volume (QPEL_SHAPE_VOLUME). Unlike Metal, this is not a device-buffer pointer. u32/atomic buffers retain the existing host convention of int32 backing storage; CUDA kernels interpret those bits as unsigned. Float16/float32 and uint8 storage follow the common resource map.
 
 The compiler still does not prove per-element bounds or race freedom. CUDA pads the last group, so qpel programs must guard accesses; collective kernels must contribute zero for padded lanes and reach every barrier.
 

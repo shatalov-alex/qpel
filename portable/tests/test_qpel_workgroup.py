@@ -105,7 +105,7 @@ int main(){
   blockDim.x=width;
   for(unsigned start=0;start<n;start+=width){
    blockIdx.x=start/width;Barrier b(width);barrier=&b;std::vector<std::thread>threads;
-   for(unsigned lane=0;lane<width;++lane)threads.emplace_back([&,lane]{threadIdx.x=lane;masked_copy(x.data(),mask.data(),out.data(),QpelShape{n,1,1,0});});
+   for(unsigned lane=0;lane<width;++lane)threads.emplace_back([&,lane]{threadIdx.x=lane;masked_copy(x.data(),mask.data(),out.data(),QpelShape{n,1,1,n});});
    for(auto&thread:threads)thread.join();
    std::vector<float> vals(width,0);for(unsigned lane=0;lane<width&&start+lane<n;++lane)vals[lane]=mask[start+lane]?x[start+lane]*0.5f:0;
    float expected=oracle(vals);for(unsigned lane=0;lane<width&&start+lane<n;++lane)assert(out[start+lane]==expected);

@@ -266,6 +266,7 @@ class Lowering:
         validate(program);self.program=program;self.nodes={n['id']:n for n in program['nodes']}
         checker = TypeChecker(program);checker.validate()
         self.expression_types = checker.expression_types
+        self.plain_volumes = set()  # Binary ids emitted as the product inside QPEL_SHAPE_VOLUME
         import qpel_opt  # optimisation facts, apart from the portability lowering (qpel_opt.py)
         self.vector_loads = qpel_opt.vector_loads(program, self.expression_types)
     def children(self,n,role):return [self.nodes[i] for i in n['children'].get(role,[])]
@@ -283,6 +284,17 @@ class Lowering:
                 optional=[q['id'] for q in params if q['attributes'].get('optional')]
                 return len(params)+optional.index(param['id'])
         raise ValueError('optional parameter outside a function')
+    def shape_volume(self,n):
+        """True for (s.x * s.y) * s.z of one shape parameter or local (the volume a kernel compares with)."""
+        if n['kind']!='Binary' or n['attributes'].get('operator')!='*':return False
+        left,right=self.child(n,'left'),self.child(n,'right')
+        if left['kind']!='Binary' or left['attributes'].get('operator')!='*':return False
+        parts=[self.child(left,'left'),self.child(left,'right'),right]
+        if any(p['kind']!='Member' or self.child(p,'base')['kind']!='Name' for p in parts):return False
+        if [p['attributes'].get('member') for p in parts]!=['x','y','z']:return False
+        names={self.child(p,'base')['links'].get('declaration') for p in parts}
+        return len(names)==1 and self.expression_types.get(self.child(parts[0],'base')['id'])=='shape3'
+
     def emit(self,n):
         k=n['kind'];a=n['attributes']
         e=lambda role:self.emit(self.child(n,role))
@@ -349,6 +361,10 @@ class Lowering:
         if k=='F32Fma':return 'QPEL_FMA_F32('+e('left')+', '+e('right')+', '+e('addend')+')'
         if k=='F16Cast':return 'QPEL_TO_F16('+e('operand')+')'
         if k=='F32Cast':return '(QPEL_F32)('+e('operand')+')'
+        if k=='Binary' and n['id'] not in self.plain_volumes and self.shape_volume(n):
+            # (s.x * s.y) * s.z of a shape: the host's precomputed element count on CUDA (backends/*.h)
+            self.plain_volumes.add(n['id'])
+            return 'QPEL_SHAPE_VOLUME('+self.emit(self.child(self.child(n,'right'),'base'))+', '+self.emit(n)+')'
         if k=='Binary':
             left, right = e('left'), e('right')
             op = a['operator']

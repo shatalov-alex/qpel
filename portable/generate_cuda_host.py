@@ -12,8 +12,8 @@ from pathlib import Path
 import cupy as cp
 import numpy as np
 
-# By-value QpelShape: four uint32 fields, including explicit padding.
-SHAPE_DTYPE = np.dtype({'names': ['x', 'y', 'z', 'padding'],
+# By-value QpelShape: four uint32 fields, the fourth the element count (x * y * z, at most INT32_MAX).
+SHAPE_DTYPE = np.dtype({'names': ['x', 'y', 'z', 'volume'],
                        'formats': ['uint32'] * 4,
                        'offsets': [0, 4, 8, 12], 'itemsize': 16})
 
@@ -33,7 +33,7 @@ def _shape(value):
     w, h, n = value
     if w * h * n > 2**31 - 1:
         raise ValueError("Shape exceeds INT32_MAX elements")
-    return np.array((w, h, n, 0), dtype=SHAPE_DTYPE)[()], w * h * n
+    return np.array((w, h, n, w * h * n), dtype=SHAPE_DTYPE)[()], w * h * n
 
 def _grid3d(shape, block):
     """Blocks covering a (W, H, N) shape; CUDA limits grid y and z to 65535 blocks."""

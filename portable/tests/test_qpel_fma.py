@@ -63,7 +63,7 @@ int main(){
 float x[]={XS};float expected[]={YS};
 float output[N];unsigned char mask[N];
 for(unsigned i=0;i<N;++i) mask[i]=1;
-for(unsigned i=0;i<N+5;++i){threadIdx.x=i;masked_copy(x,mask,output,QpelShape{N,1,1,0});}
+for(unsigned i=0;i<N+5;++i){threadIdx.x=i;masked_copy(x,mask,output,QpelShape{N,1,1,N});}
 for(unsigned i=0;i<N;++i) assert(output[i]==expected[i]);
 assert(output[0]!=0.0f);
 }
