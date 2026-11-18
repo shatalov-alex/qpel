@@ -4299,9 +4299,10 @@ def written_buffers(body):
         elif node['kind'] == 'UnaryOperator' and node['opcode'] in ('++', '--'):
             target = node['inner'][0]
         elif node['kind'] in ('CallExpr', 'CXXMemberCallExpr'):
-            out.update(decl_name(a) for a in node['inner'][1:] if scalar_of(peel(a)) == 'pointer')
+            pointers = [a for a in node['inner'][1:] if scalar_of(safe_peel(a)) == 'pointer']
+            out.update(decl_name(a) for a in pointers)
             # (also through an address into the buffer: `&out[i]` or `out + i` handed to CUB's BlockStore)
-            out.update(pointer_base(a) for a in node['inner'][1:] if scalar_of(peel(a)) == 'pointer' and not const_pointee(a))
+            out.update(pointer_base(a) for a in pointers if not const_pointee(a))
             out.update(atomic_address_base(a) for a in node['inner'][1:2])
         if target is not None and peel(target)['kind'] == 'ArraySubscriptExpr':
             out.add(decl_name(peel(target)['inner'][0]))
@@ -4334,6 +4335,14 @@ def written_through_casts(body):
     return out
 
 
+def safe_peel(node):
+    """peel, or the node itself where peel meets a conversion qpel does not read (a scan for pointers only)."""
+    try:
+        return peel(node)
+    except Unsupported:
+        return node
+
+
 def const_pointee(node):
     """True when an argument reaches the callee as a pointer to const (`const T *`): the call only reads through it."""
     spelling = node.get('type', {}).get('qualType', '')
@@ -4342,12 +4351,12 @@ def const_pointee(node):
 
 def pointer_base(node):
     """The pointer an address is formed from: p for p, &p[i], &(p[i]) and p + i (else None)."""
-    core = peel(node)
+    core = safe_peel(node)
     while True:
-        if core.get('kind') == 'UnaryOperator' and core.get('opcode') == '&' and peel(core['inner'][0]).get('kind') == 'ArraySubscriptExpr':
-            core = peel(peel(core['inner'][0])['inner'][0])
-        elif core.get('kind') == 'BinaryOperator' and core.get('opcode') in ('+', '-') and scalar_of(peel(core['inner'][0])) == 'pointer':
-            core = peel(core['inner'][0])
+        if core.get('kind') == 'UnaryOperator' and core.get('opcode') == '&' and safe_peel(core['inner'][0]).get('kind') == 'ArraySubscriptExpr':
+            core = safe_peel(safe_peel(core['inner'][0])['inner'][0])
+        elif core.get('kind') == 'BinaryOperator' and core.get('opcode') in ('+', '-') and scalar_of(safe_peel(core['inner'][0])) == 'pointer':
+            core = safe_peel(core['inner'][0])
         else:
             break
     return core.get('referencedDecl', {}).get('name') if core.get('kind') == 'DeclRefExpr' else None
