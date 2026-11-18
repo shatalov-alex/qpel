@@ -1,0 +1,91 @@
+{
+ "schema": 2,
+ "module": "llama_metal_mul_mm_f32_f32",
+ "resources": [
+  {
+   "name": "tiles",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "a_bytes",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "b_bytes",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "c_bytes",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "args",
+   "kind": "value",
+   "type": "struct ggml_metal_kargs_mul_mm",
+   "extent": null
+  },
+  {
+   "name": "src0",
+   "kind": "input",
+   "type": "buffer<i8, read>",
+   "extent": "a_bytes"
+  },
+  {
+   "name": "src1",
+   "kind": "input",
+   "type": "buffer<i8, read>",
+   "extent": "b_bytes"
+  },
+  {
+   "name": "dst",
+   "kind": "output",
+   "type": "buffer<i8, write>",
+   "extent": "c_bytes"
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "kernel_mul_mm_f32_f32",
+   "grid": "tiles",
+   "blockSize": 128,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "args",
+     "resource": "args"
+    },
+    {
+     "parameter": "src0",
+     "resource": "src0"
+    },
+    {
+     "parameter": "src1",
+     "resource": "src1"
+    },
+    {
+     "parameter": "dst",
+     "resource": "dst"
+    }
+   ],
+   "domain": "groups",
+   "blockShape": [
+    128,
+    1,
+    1
+   ],
+   "groups": [
+    "(W + 31) / 32",
+    "(H + 63) / 64",
+    "1"
+   ]
+  }
+ ]
+}

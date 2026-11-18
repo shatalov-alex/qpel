@@ -143,6 +143,39 @@ def system_traits(text):
     return found
 
 
+STATIC_VALUE_CLASSES = ('integral_constant', 'is_same', 'bool_constant')  # whose static `value` qpel reads
+
+
+def system_values(text):
+    """{declaration id: bool or int} of the static constexpr `value` members in a system declaration's JSON
+    (metal::is_same<A, B>::value, an integral_constant<bool, b>), which read_unit leaves out."""
+    if not any(f'"name": "{name}"' in text for name in STATIC_VALUE_CLASSES):
+        return {}
+    lines, found = text.split('\n'), {}
+    for i, line in enumerate(lines):
+        if line.strip() != '"kind": "VarDecl",' or i + 1 >= len(lines):
+            continue
+        indent = len(line) - len(line.lstrip()) - 2
+        start = next((j for j in range(i - 1, -1, -1) if lines[j] == ' ' * indent + '{'), None)
+        end = next((j for j in range(i + 1, len(lines)) if lines[j].rstrip(',') == ' ' * indent + '}'), None)
+        if start is None or end is None or end - start > 400:
+            continue
+        try:
+            decl = json.loads('\n'.join(lines[start:end]) + '\n' + ' ' * indent + '}')
+        except ValueError:
+            continue
+        if decl.get('name') != 'value' or not decl.get('constexpr') or not decl.get('inner'):
+            continue
+        init = decl['inner'][-1]
+        while init.get('kind') in ('ImplicitCastExpr', 'SubstNonTypeTemplateParmExpr', 'ParenExpr', 'ConstantExpr') and init.get('inner'):
+            init = init['inner'][-1]
+        if init.get('kind') == 'CXXBoolLiteralExpr':
+            found[decl['id']] = bool(init.get('value'))
+        elif init.get('kind') == 'IntegerLiteral':
+            found[decl['id']] = int(init['value'])
+    return found
+
+
 def read_unit(stream):
     """The translation unit from clang's JSON dump, without system-header declarations.
 
@@ -155,7 +188,7 @@ def read_unit(stream):
     make 100 GB of JSON for one function), and a source whose kept JSON passes UNIT_LIMIT is
     refused (SourceError), so that importing never takes the machine's memory."""
     head, decls, chunk, state, started = [], [], None, {'file': None, 'line': None}, False
-    size, kept, skipped, oversized, kept_traits = 0, 0, [], None, []
+    size, kept, skipped, oversized, kept_traits, kept_values = 0, 0, [], None, [], {}
     for line in stream:
         if chunk is None and oversized is None:
             if line == '    {\n':
@@ -190,6 +223,7 @@ def read_unit(stream):
             last_location(text, state)
             if is_system(at['file']):
                 kept_traits.extend(system_traits(text))
+                kept_values.update(system_values(text))
             else:
                 kept += len(text)
                 if kept > UNIT_LIMIT:
@@ -203,6 +237,7 @@ def read_unit(stream):
     unit['inner'] = decls
     unit['_skipped'] = skipped
     unit['_system_traits'] = kept_traits
+    unit['_system_values'] = kept_values
     unit['_kept_bytes'] = kept
     return unit
 

@@ -1011,7 +1011,9 @@ class Importer:
                     name += '_'
                 taken.add(name)
                 self.instances[use['id']] = name
-                instance = dict(use, name=name)
+                params = [p.get('name') for p in node.get('inner', ()) if p.get('kind') in
+                          ('TemplateTypeParmDecl', 'NonTypeTemplateParmDecl', 'TemplateTemplateParmDecl')]
+                instance = dict(use, name=name, _qpel_template=dict(zip(params, arguments)) if len(params) == len(arguments) else {})
                 imported = self.attempt(lambda: self.top_level(instance, qualified=False), [])
                 if imported:
                     spelled = ', '.join(self.spelled_arguments(use, node))
@@ -1432,6 +1434,7 @@ class Importer:
         _, ident, kernel = self.functions[name]
         self.scope = {}
         self.kernel = kernel
+        self.template_map = decl.get("_qpel_template", {})  # this instance's template parameters -> arguments
         self.assigned = assigned_decls(body_of(decl))
         self.names = {self.safe_name(p['name']) for p in params_of(decl) if p.get('name')}  # unique per function
         self.conditional_exchanges = conditional_exchanges(body_of(decl))
@@ -1447,6 +1450,7 @@ class Importer:
         self.groups = kernel and self.uses_groups(decl)
         self.grid3d = kernel and not self.groups and self.uses_grid3d(decl)
         self.dynamic_shared = []  # threadgroup parameters made shared memory (threadgroup_parameter)
+        self.planes = {}  # threadgroup char* parameters read as several types: {param id: {type: (array, size)}}
         count = self.attempt(lambda: self.element_count(decl, types)) if kernel and not self.grid3d and not self.groups else None
         sizes = self.launch_sizes(decl, types) if count is not None else {}
         sized = {p['id']: p for p in params_of(decl) if p['name'] in sizes and p['id'] != count['id']}
@@ -1678,6 +1682,28 @@ class Importer:
                                      f'shared={{{name!r}: N}} to give its length in elements')))
             return
         length = int(self.shared_lengths[name])
+        planes = self.byte_planes(p, kernel) if item in ('i8', 'u8') else None
+        if planes and (len(planes) > 1 or any(offset for offset in planes.values())):
+            # threadgroup char* read as several types, or from byte offsets (llama.cpp's kernel_mul_mm: sa = (half *)
+            # shmem, sb = (half *)(shmem + 4096)): shared memory of each type over the whole block, a cast its
+            # type's array from the byte offset over the type's size. A type's array holds what was written as
+            # that type: the program reads bytes back only as the type it wrote them as.
+            self.names.discard(self.safe_name(name))
+            self.planes[p['id']] = {}
+            for typed in sorted(planes):
+                size = shared_bytes(f'shared<{typed}, 1>')
+                if length % size:
+                    self.attempt(lambda: self.reject(Unsupported(p, 'shared', f'{name} has {length} bytes, not a whole number of {typed}')))
+                    return
+                plane = name if len(planes) == 1 else f'{name}_{typed}'
+                ir = self.graph.add('Variable', {'name': self.unique_name(plane)},
+                                    {'type': self.graph.add('SharedType', {'element': typed, 'length': length // size})})
+                self.planes[p['id']][typed] = (ir, size)
+                self.dynamic_shared.append(ir)
+            self.scope[p['id']] = ('planes', name)
+            self.adaptations.append(f'{self.current}: threadgroup memory {name} of {length} bytes, read as '
+                                    f'{" and ".join(sorted(planes))}, became shared memory of each type')
+            return
         if item in ('i8', 'u8'):  # untyped memory (threadgroup char*) that every use reads as one type
             typed = self.typed_bytes(p, kernel)
             if typed and typed != item:
@@ -1696,6 +1722,56 @@ class Importer:
         self.dynamic_shared.append(ir)
         self.adaptations.append(f'{self.current}: threadgroup parameter {name}, sized by the host, became shared '
                                 f'memory of {length} elements declared in the kernel')
+
+    def byte_planes(self, p, kernel):
+        """{type: True when some cast is from a byte offset} for a `threadgroup char*` parameter whose every use is a
+        cast `(threadgroup T *) shmem` or `(threadgroup T *)(shmem + constant)`; else None."""
+        found, uses, cast = {}, 0, 0
+        for node in walk(body_of(kernel)):
+            if node.get('kind') == 'DeclRefExpr' and node.get('referencedDecl', {}).get('id') == p['id']:
+                uses += 1
+            if node.get('castKind') == 'BitCast' and scalar_of(node) == 'pointer':
+                base, offset = self.plane_source(node)
+                if base is not None and base.get('referencedDecl', {}).get('id') == p['id']:
+                    if offset is None:
+                        return None  # a byte offset that is not a constant
+                    cast += 1
+                    typed = describe(node['type']['qualType'])[2]
+                    found[typed] = found.get(typed, False) or offset != 0
+        if not found or cast != uses or any(t not in SCALAR_TERMS - {'bool'} and not is_vector(t or '') for t in found):
+            return None
+        return found
+
+    @staticmethod
+    def plane_source(node):
+        """(the DeclRefExpr, its constant byte offset or None) a pointer cast is made from: shmem or shmem + 4096."""
+        inner = node['inner'][0]
+        while inner.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and inner.get('castKind') != 'BitCast' and inner.get('inner'):
+            inner = inner['inner'][0]
+        if inner.get('kind') == 'DeclRefExpr':
+            return inner, 0
+        if inner.get('kind') == 'BinaryOperator' and inner.get('opcode') == '+':
+            base = inner['inner'][0]
+            while base.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and base.get('inner'):
+                base = base['inner'][0]
+            if base.get('kind') == 'DeclRefExpr':
+                return base, integer_constant(inner['inner'][1])
+        return None, None
+
+    def plane_cast(self, n):
+        """A cast of a threadgroup char* that became shared memory of each type (threadgroup_parameter): its
+        type's array from the byte offset over the type's size; else None."""
+        base, offset = self.plane_source(n)
+        planes = getattr(self, 'planes', {}).get(base.get('referencedDecl', {}).get('id')) if base is not None else None
+        if not planes:
+            return None
+        typed = describe(n['type']['qualType'])[2]
+        ir, size = planes[typed]
+        if offset % size:
+            raise Unsupported(n, 'shared', f'a byte offset of {offset} into threadgroup memory read as {typed}')
+        if not offset:
+            return self.name(ir)
+        return self.graph.add('Binary', {'operator': '+'}, {'left': self.name(ir), 'right': self.graph.add('Literal', {'value': f'{offset // size}u'})})
 
     def typed_bytes(self, p, kernel):
         """The one element type every use of a `threadgroup char*` parameter casts it to
@@ -2153,6 +2229,12 @@ class Importer:
             return self.fragment_local(decl, name, fragment_of(decl['type']))
         if matrix_type_of(decl) and not matrix_pointee(decl):
             return self.matrix_local(decl, name, matrix_type_of(decl))
+        if matrix_pointee(decl) and 'init' in decl and \
+                not {'threadgroup', 'thread'} & set(decl['type']['qualType'].replace('*', ' ').split()):
+            # device const block_q * x = ...: a buffer local of the matrices' scalars (its arithmetic scales by C * R)
+            element = matrix_pointee(decl)[0]
+            const = 'const' in decl['type']['qualType'].split('*')[0].split()
+            return self.buffer_local(decl, name, type_buffer(element, 'read' if const else 'write'))
         if 'thread_block' in decl['type']['qualType']:
             self.scope[decl['id']] = ('cg-block',)  # cg::this_thread_block(): the group, read through its methods
             return []
@@ -2382,6 +2464,44 @@ class Importer:
                                            'type': decl['type']}, init, decl))
         return out
 
+    def is_same_value(self, n):
+        """True or False for `is_same<A, B>::value` as the source spells it, A and B this instance's template
+        arguments or types; None for anything else (Metal's library is a module, so its traits are not in the AST)."""
+        begin = n.get('range', {}).get('begin', {})
+        file = begin.get('_file')
+        if file is None or 'offset' not in begin:
+            return None
+        if file not in self.files:
+            self.files[file] = Path(file).read_bytes()
+        end = n.get('range', {}).get('end', {}).get('offset', begin['offset'] + 200)
+        text = self.files[file][begin['offset']:end + 16].decode('utf-8', 'replace')
+        found = re.match(r'(?:metal::|std::)?is_same\s*<\s*([\w:]+)\s*,\s*([\w:]+)\s*>\s*::\s*value', text)
+        if not found:
+            return None
+        arguments = getattr(self, 'template_map', {})
+        def canonical(name):
+            spelled = arguments.get(name, name).replace('metal::', '').replace('const ', '').strip()
+            return metal_matrix(spelled) or describe(spelled)
+        return canonical(found.group(1)) == canonical(found.group(2))
+
+    def static_constant(self, ident):
+        """The integer or bool a static constexpr data member of a class (template instance) holds, by its
+        declaration's id (integral_constant<bool, false>::value), else None."""
+        if not hasattr(self, '_static_decls'):
+            self._static_decls = {d['id']: d for d in walk(self.unit) if d.get('kind') == 'VarDecl' and d.get('constexpr')
+                                  and d.get('storageClass') == 'static' and d.get('inner')}
+        decl = self._static_decls.get(ident)
+        if decl is None:
+            return self.unit.get('_system_values', {}).get(ident)  # (from a system header: clang_ast.system_values)
+        init = decl['inner'][-1]
+        while init.get('kind') in ('ImplicitCastExpr', 'ConstantExpr', 'SubstNonTypeTemplateParmExpr', 'ParenExpr') and init.get('inner'):
+            if init.get('kind') == 'ConstantExpr' and init.get('value') is not None:
+                return int(init['value']) if init['value'] not in ('true', 'false') else init['value'] == 'true'
+            init = init['inner'][-1]
+        if init.get('kind') == 'CXXBoolLiteralExpr':
+            return bool(init.get('value'))
+        return integer_constant(init)
+
     def matrix_array(self, node):
         """The array a Metal matrix local or `thread T &` parameter is."""
         core = node
@@ -2410,6 +2530,15 @@ class Importer:
             return base, step if offset is None else add('Binary', {'operator': '+'}, {'left': offset, 'right': step})
         if core['kind'] in EXPLICIT_CASTS | {'CXXReinterpretCastExpr', 'ImplicitCastExpr'} and core.get('inner') and \
                 scalar_of(core['inner'][0]) == 'pointer' and not matrix_pointee(core['inner'][0]):
+            source = describe(core['inner'][0].get('type', {}).get('qualType', ''))
+            element = matrix_pointee(core)[0]
+            if source[0] == 'pointer' and source[2] != element:
+                # (device const float4x4 *)(src0 + bytes): the bytes read as the matrices' scalars, as a cast to float * is
+                spelling = core['type']['qualType'].rpartition('*')[0]
+                scalar = {'f32': 'float', 'f16': 'half', 'bf16': 'bfloat'}[element]
+                words_ = [w for w in spelling.split() if w in ('const', 'device', 'threadgroup', 'constant')]
+                as_scalars = dict(core, type={'qualType': ' '.join(words_ + [scalar, '*'])}, castKind='BitCast')
+                return self.expr(as_scalars, address=True), None
             return self.expr(core['inner'][0], address=True), None  # (float *) -> (float4x4 *): the same scalars
         if core['kind'] in EXPLICIT_CASTS | {'CXXReinterpretCastExpr'} and core.get('inner'):
             return self.matrix_pointer(core['inner'][0])  # a matrix pointer cast to another's, of the same scalars
@@ -3356,6 +3485,16 @@ class Importer:
                                                         'qpel has no global data yet')
             if entry is None and ref.get('name') == 'warpSize' and self.dialect.name == 'cuda':
                 return self.literal({'value': '32'}, scalar_of(n))  # 32 lanes on every NVIDIA GPU so far
+            if entry is None and ref.get('kind') == 'VarDecl' and ref.get('name') == 'value':
+                same = self.is_same_value(n)
+                if same is not None:  # metal::is_same<T0_4x4, block_q>::value, of this instance's arguments
+                    return add('Literal', {'value': 'true' if same else 'false'}) if scalar_of(n) == 'bool' else \
+                        self.literal({'value': str(int(same))}, scalar_of(n))
+            if entry is None and ref.get('kind') == 'VarDecl':
+                value = self.static_constant(ref['id'])
+                if value is not None:  # metal::is_same<T0_4x4, block_q>::value: a static constexpr member's value
+                    return self.literal({'value': str(int(value))}, scalar_of(n)) if scalar_of(n) != 'bool' else \
+                        add('Literal', {'value': 'true' if value else 'false'})
             if entry is None:
                 if ref.get('name') in ('threadIdx', 'blockIdx', 'blockDim', 'gridDim'):
                     raise Unsupported(n, 'thread-builtin', 'only blockIdx.x * blockDim.x + threadIdx.x is supported')
@@ -3488,6 +3627,10 @@ class Importer:
                 # *p is p[0]: `*((uint32_t*)&depths[i])` reads the bits of a float as an integer
                 return add('Index', children={'base': self.expr(operand, address=True), 'index': self.int_value('u32', 0)})
             raise Unsupported(n, 'operator', f'operator {op} is not supported here')
+        if n.get('castKind') == 'BitCast' and scalar_of(n) == 'pointer' and getattr(self, 'planes', None):
+            found = self.plane_cast(n)  # (threadgroup half *)(shmem + 4096): a typed view of threadgroup bytes
+            if found is not None:
+                return found
         if n.get('castKind') == 'BitCast':  # (device float*)(src + off): the bytes read as another type
             target = describe(n['type']['qualType'])
             root = peel(n['inner'][0]) if n.get('inner') else {}
