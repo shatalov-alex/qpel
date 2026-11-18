@@ -206,6 +206,41 @@ VALUE_CASTS = {'NoOp', 'LValueToRValue', 'IntegralCast', 'IntegralToBoolean', 'F
                'FunctionToPointerDecay', 'BuiltinFnToFnPtr', 'ConstructorConversion'}
 
 
+# Metal's matrix types (floatCxR, halfCxR: C columns of R-element vectors, column-major in memory), read as
+# C * R scalars: a pointer to one is a buffer of its scalars, a local or a `thread T &` an array of them,
+# m[i][j] its element i R + j (IMPORT.md, Metal matrix types).
+METAL_MATRIX = re.compile(r'(?:const\s+)?(?:thread\s+|device\s+|threadgroup\s+|constant\s+)?(?:metal::)?(float|half|bfloat)([234])x([234])\s*&?')
+METAL_MATRIX_ELEMENTS = {'float': 'f32', 'half': 'f16', 'bfloat': 'bf16'}
+
+
+METAL_MATRIX_TEMPLATE = re.compile(r'(?:const\s+)?(?:thread\s+|device\s+|threadgroup\s+|constant\s+)?matrix<(float|half|bfloat), ([234]), ([234])(?:, void)?>\s*&?')
+
+
+def metal_matrix(spelling):
+    """(element, columns, rows) of a Metal matrix type's spelling (half4x4, or matrix<half, 4, 4> in a template), else None."""
+    text = (spelling or '').replace('metal::', '').strip()
+    found = METAL_MATRIX.fullmatch(text) or METAL_MATRIX_TEMPLATE.fullmatch(text)
+    return (METAL_MATRIX_ELEMENTS[found.group(1)], int(found.group(2)), int(found.group(3))) if found else None
+
+
+def matrix_type_of(node):
+    """(element, columns, rows) of an expression or declaration of a Metal matrix type (also desugared)."""
+    t = node.get('type', {})
+    return metal_matrix(t.get('qualType')) or metal_matrix(t.get('desugaredQualType'))
+
+
+def matrix_pointee(node):
+    """(element, columns, rows) when an expression or declaration is a pointer to a Metal matrix type."""
+    t = node.get('type', {})
+    for spelling in (t.get('qualType', ''), t.get('desugaredQualType', '')):
+        if '*' in spelling:
+            found = metal_matrix(' '.join(w for w in spelling.rpartition('*')[0].split()
+                                          if w not in ('const', 'device', 'threadgroup', 'constant', 'thread')))
+            if found:
+                return found
+    return None
+
+
 MATRIX_TYPE = re.compile(r'(?:const\s+)?(?:metal::)?(?:simdgroup_(float|half)8x8|simdgroup_matrix<(float|half), 8(?:, 8)?>)\s*&?')
 MATRIX_CALLS = {'simdgroup_load', 'simdgroup_store', 'simdgroup_multiply_accumulate', 'simdgroup_multiply',
                 'make_filled_simdgroup_matrix'}
@@ -1165,6 +1200,9 @@ class Importer:
                     raise Unsupported(p, 'atomic-type', f'atomics on {p["type"]["qualType"]} are not in qpel; only on '
                                                         'unsigned int, int, float and unsigned 64-bit')
                 return type_buffer(scalar, 'atomic')
+            if matrix_pointee(p):  # device const float4x4 *: a buffer of its scalars, C * R per matrix
+                element, _, _ = matrix_pointee(p)
+                return type_buffer(element, 'read' if t[1] else 'write')
             if is_vector(t[2]):
                 # int4* bboxes: a buffer of the vector's scalars, N per element of its extent
                 if not self.dialect.is_kernel(decl):
@@ -1199,6 +1237,9 @@ class Importer:
             return t[1]
         if t[0] == 'scalar' and t[1] in self.records:
             return self.struct_type(t[1], p)
+        if matrix_type_of(p) and not self.dialect.is_kernel(decl) and is_reference(p['type']['qualType']):
+            element, columns, rows = matrix_type_of(p)
+            return f'array<{element}, {columns * rows}>'  # thread half4x4 & reg: the caller's matrix, in place
         array = array_reference(p['type'].get('desugaredQualType', p['type']['qualType'])) or array_reference(p['type']['qualType'])
         if not array and slot in getattr(self, 'shared_slots', ()):  # `float[132] &`, a typedef'd TempStorage desugared
             found = re.fullmatch(r'(?:const\s+)?(.+?)\s*\[(\d+)\]\s*&', p['type'].get('desugaredQualType', '').strip())
@@ -2110,6 +2151,8 @@ class Importer:
             return []
         if fragment_of(decl['type']):
             return self.fragment_local(decl, name, fragment_of(decl['type']))
+        if matrix_type_of(decl) and not matrix_pointee(decl):
+            return self.matrix_local(decl, name, matrix_type_of(decl))
         if 'thread_block' in decl['type']['qualType']:
             self.scope[decl['id']] = ('cg-block',)  # cg::this_thread_block(): the group, read through its methods
             return []
@@ -2319,6 +2362,109 @@ class Importer:
         ir = self.graph.add('Variable', {'name': self.unique_name(name)}, {'type': self.type_node(mtype), 'value': value})
         self.scope[decl['id']] = ('local', ir, mtype)
         return [ir]
+
+    # -- Metal matrix types (half4x4, float2x4, ...), read as arrays of their scalars --
+
+    STRIP = {'ParenExpr', 'ExprWithCleanups', 'MaterializeTemporaryExpr', 'CXXBindTemporaryExpr', 'ConstantExpr'}
+
+    def matrix_local(self, decl, name, matrix):
+        """`half4x4 temp_a;`: an array of its C * R scalars, column-major, starting at zero (Metal leaves it
+        undefined); an initializer is assigned after."""
+        element, columns, rows = matrix
+        ir = self.graph.add('Variable', {'name': self.unique_name(name)},
+                            {'type': self.graph.add('ArrayType', {'element': element, 'length': columns * rows}),
+                             'value': self.graph.add('ArrayValue', children={'elements': [self.zero(element) for _ in range(columns * rows)]})})
+        self.scope[decl['id']] = ('local', ir, f'array<{element}, {columns * rows}>')
+        out = [ir]
+        init = decl['inner'][0] if 'init' in decl and decl.get('inner') else None
+        if init is not None and not (init['kind'] == 'CXXConstructExpr' and not init.get('inner')):
+            out.append(self.matrix_assign({'kind': 'DeclRefExpr', 'referencedDecl': {'id': decl['id'], 'name': name},
+                                           'type': decl['type']}, init, decl))
+        return out
+
+    def matrix_array(self, node):
+        """The array a Metal matrix local or `thread T &` parameter is."""
+        core = node
+        while core['kind'] in self.STRIP | {'ImplicitCastExpr'} and core.get('inner'):
+            core = core['inner'][0]
+        entry = self.scope.get(core.get('referencedDecl', {}).get('id')) if core['kind'] == 'DeclRefExpr' else None
+        if not entry or entry[0] not in ('local', 'param'):
+            raise Unsupported(core, 'matrix', 'a Metal matrix value is a local or a parameter here')
+        return self.name(entry[1])
+
+    def matrix_pointer(self, node):
+        """(buffer or shared view, offset in scalars or None) of a pointer to Metal matrices: (device const
+        float4x4 *)(a) + i is a, offset 16 i."""
+        add = self.graph.add
+        core = node
+        while core['kind'] in self.STRIP | {'ImplicitCastExpr'} and core.get('inner') and \
+                (core['kind'] != 'ImplicitCastExpr' or core.get('castKind') in ('NoOp', 'LValueToRValue')):
+            core = core['inner'][0]
+        pointee = matrix_pointee(core)
+        if pointee and core['kind'] == 'BinaryOperator' and core['opcode'] in ('+', '-') and matrix_pointee(core['inner'][0]):
+            base, offset = self.matrix_pointer(core['inner'][0])
+            step = add('Binary', {'operator': '*'}, {'left': self.offset(core['inner'][1]),
+                                                       'right': add('Literal', {'value': f'{pointee[1] * pointee[2]}u'})})
+            if core['opcode'] == '-':
+                raise Unsupported(core, 'pointer', 'a pointer to matrices moved back is not in qpel')
+            return base, step if offset is None else add('Binary', {'operator': '+'}, {'left': offset, 'right': step})
+        if core['kind'] in EXPLICIT_CASTS | {'CXXReinterpretCastExpr', 'ImplicitCastExpr'} and core.get('inner') and \
+                scalar_of(core['inner'][0]) == 'pointer' and not matrix_pointee(core['inner'][0]):
+            return self.expr(core['inner'][0], address=True), None  # (float *) -> (float4x4 *): the same scalars
+        if core['kind'] in EXPLICIT_CASTS | {'CXXReinterpretCastExpr'} and core.get('inner'):
+            return self.matrix_pointer(core['inner'][0])  # a matrix pointer cast to another's, of the same scalars
+        if core['kind'] == 'DeclRefExpr':
+            return self.expr(core, address=True), None
+        raise Unsupported(core, 'pointer', f'this pointer to Metal matrices ({core["kind"]}) is not in qpel')
+
+    def matrix_element(self, node, k):
+        """(IR, element type) of element k (column-major) of a Metal matrix expression."""
+        add = self.graph.add
+        literal = lambda v: add('Literal', {'value': f'{v}u'})
+        plus = lambda a, b: b if a is None else add('Binary', {'operator': '+'}, {'left': a, 'right': b})
+        mine = matrix_type_of(node)
+        core = node
+        while core['kind'] in self.STRIP and core.get('inner'):
+            core = core['inner'][0]
+        if core['kind'] in EXPLICIT_CASTS | {'ImplicitCastExpr', 'CXXConstructExpr', 'CXXFunctionalCastExpr'} and \
+                len(core.get('inner', ())) == 1 and matrix_type_of(core['inner'][0]):
+            inner, element = self.matrix_element(core['inner'][0], k)  # (half4x4)(m): each element converted
+            want = (matrix_type_of(core) or mine or (element,))[0]
+            return (self.convert_types(inner, element, want, core) if element != want else inner), want
+        if core['kind'] == 'UnaryOperator' and core['opcode'] == '*' and matrix_pointee(core['inner'][0]):
+            base, offset = self.matrix_pointer(core['inner'][0])
+            return add('Index', children={'base': base, 'index': plus(offset, literal(k))}), matrix_pointee(core['inner'][0])[0]
+        if core['kind'] == 'ArraySubscriptExpr' and matrix_pointee(core['inner'][0]):
+            pointee = matrix_pointee(core['inner'][0])
+            base, offset = self.matrix_pointer(core['inner'][0])
+            at = add('Binary', {'operator': '*'}, {'left': self.offset(core['inner'][1]), 'right': literal(pointee[1] * pointee[2])})
+            return add('Index', children={'base': base, 'index': plus(plus(offset, at), literal(k))}), pointee[0]
+        if core['kind'] == 'DeclRefExpr' and matrix_type_of(core):
+            return add('Index', children={'base': self.matrix_array(core), 'index': literal(k)}), matrix_type_of(core)[0]
+        raise Unsupported(core, 'matrix', f'this Metal matrix expression ({core["kind"]}) is not in qpel')
+
+    def matrix_assign(self, target, value, node):
+        """m = value for a Metal matrix: one assignment per element (to a local array, or through a pointer)."""
+        add = self.graph.add
+        element, columns, rows = matrix_type_of(target)
+        core = target
+        while core['kind'] in self.STRIP | {'ImplicitCastExpr'} and core.get('inner'):
+            core = core['inner'][0]
+        statements = []
+        for k in range(columns * rows):
+            if core['kind'] == 'UnaryOperator' and core['opcode'] == '*' and matrix_pointee(core['inner'][0]):
+                base, offset = self.matrix_pointer(core['inner'][0])
+                index = add('Literal', {'value': f'{k}u'}) if offset is None else \
+                    add('Binary', {'operator': '+'}, {'left': offset, 'right': add('Literal', {'value': f'{k}u'})})
+                place = add('Index', children={'base': base, 'index': index})
+            elif core['kind'] == 'DeclRefExpr':
+                place = add('Index', children={'base': self.matrix_array(core), 'index': add('Literal', {'value': f'{k}u'})})
+            else:
+                raise Unsupported(core, 'matrix', 'a Metal matrix is assigned to a local or through a pointer')
+            item, kind = self.matrix_element(value, k)
+            statements.append(add('Assign', children={'target': place, 'value': self.convert_types(item, kind, element, node)
+                                                      if kind != element else item}))
+        return add('Block', children={'statements': statements})
 
     def fragment_local(self, decl, name, fragment):
         """A WMMA fragment local (`wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a;`): an
@@ -2931,6 +3077,11 @@ class Importer:
             combined = add('Binary', {'operator': op}, {'left': left, 'right': right})
             result = self.convert_types(combined, computation, own, node)
             return add('Assign', children={'target': self.lvalue(target), 'value': result})
+        if kind in ('CXXOperatorCallExpr', 'BinaryOperator') and (decl_name(node['inner'][0]) == 'operator=' if kind ==
+                                                                   'CXXOperatorCallExpr' else node.get('opcode') == '=') and \
+                matrix_type_of(node['inner'][1 if kind == 'CXXOperatorCallExpr' else 0]):
+            target, value = (node['inner'][1], node['inner'][2]) if kind == 'CXXOperatorCallExpr' else node['inner']
+            return self.matrix_assign(target, value, node)  # a Metal matrix, element by element
         if kind == 'CXXOperatorCallExpr' and decl_name(node['inner'][0]) == 'operator=':
             target, value = node['inner'][1], node['inner'][2]
             if matrix_of(target.get('type', {}).get('qualType', '')):  # a matrix (Metal's class, qpel's CUDA struct)
@@ -3278,6 +3429,25 @@ class Importer:
             if not self.kernel:
                 raise Unsupported(n, 'thread-builtin', 'the thread index is only available in kernels')
             return self.thread_index(grid_axis(n), n)
+        column = n['inner'][0] if kind == 'ArraySubscriptExpr' else None
+        while column is not None and column['kind'] in self.STRIP | {'ImplicitCastExpr'} and column.get('inner'):
+            column = column['inner'][0]
+        matrix, column_index = None, None
+        if column is not None and column['kind'] == 'ArraySubscriptExpr' and matrix_type_of(column['inner'][0]):
+            matrix, column_index = column['inner'][0], column['inner'][1]
+        elif column is not None and column['kind'] == 'CXXOperatorCallExpr' and decl_name(column['inner'][0]) == 'operator[]' \
+                and matrix_type_of(column['inner'][1]):
+            matrix, column_index = column['inner'][1], column['inner'][2]  # (Metal's matrix operator[])
+        if matrix is not None:
+            # m[i][j] of a Metal matrix: element i R + j of its array (column i, row j)
+            _, _, rows = matrix_type_of(matrix)
+            at = add('Binary', {'operator': '+'}, {'left': add('Binary', {'operator': '*'}, {
+                'left': self.offset(column_index), 'right': add('Literal', {'value': f'{rows}u'})}),
+                'right': self.offset(n['inner'][1])})
+            return add('Index', children={'base': self.matrix_array(matrix), 'index': at})
+        if matrix_pointee(n) and (kind in ('BinaryOperator', 'CXXReinterpretCastExpr') or kind in EXPLICIT_CASTS):
+            base, offset = self.matrix_pointer(n)  # a pointer to Metal matrices: its scalars, from an offset
+            return base if offset is None else add('Binary', {'operator': '+'}, {'left': base, 'right': offset})
         if kind == 'BinaryOperator':
             op = n['opcode']
             if op not in BINARY:
