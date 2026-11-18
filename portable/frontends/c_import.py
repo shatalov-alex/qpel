@@ -2921,9 +2921,13 @@ class Importer:
             own = scalar_of(target)
             computation = describe(node.get('computeLHSType', {}).get('qualType', target['type']['qualType']))
             computation = computation[1] if computation[0] == 'scalar' else own
+            if computation in ('f16', 'bf16') and op in ('+', '-', '*', '/'):
+                computation = 'f32'  # (rounded once back to the half type: its correctly rounded operation)
             left = self.convert_types(self.expr(target), own, computation, node)
             # (p += n on a pointer: n a buffer offset, as `p + n` in an initializer reads it)
             right = self.offset(value) if own == 'pointer' and op in ('+', '-') else self.expr(value)
+            if computation == 'f32' and scalar_of(value) in ('f16', 'bf16'):
+                right = self.convert_types(right, scalar_of(value), 'f32', node)
             combined = add('Binary', {'operator': op}, {'left': left, 'right': right})
             result = self.convert_types(combined, computation, own, node)
             return add('Assign', children={'target': self.lvalue(target), 'value': result})
@@ -3289,10 +3293,21 @@ class Importer:
                     raise Unsupported(n, 'pointer', 'only pointer + integer and pointer - integer are supported')
                 offset = self.offset(right) if address else self.expr(right)  # atomics keep their unsigned offsets
                 return add('Binary', {'operator': op}, {'left': self.expr(left, address=True), 'right': offset})
+            low = {scalar_of(left), scalar_of(right)} & {'f16', 'bf16'}
+            if low and op in {'+', '-', '*', '/'} | COMPARISONS:
+                # half (or bfloat) arithmetic, as Metal's half * half: the f32 operation rounded once to the type is
+                # the correctly rounded half one (f32 has at least 2 p + 2 bits of a p-bit type), so it is written so
+                wide = lambda x: self.convert_types(self.expr(x), scalar_of(x), 'f32', n) if scalar_of(x) != 'f32' else self.expr(x)
+                result = add('Binary', {'operator': op}, {'left': wide(left), 'right': wide(right)})
+                own = scalar_of(n)
+                return result if op in COMPARISONS or own == 'f32' else self.convert_types(result, 'f32', own, n)
             return add('Binary', {'operator': op}, {'left': self.expr(left), 'right': self.expr(right)})
         if kind == 'UnaryOperator':
             op = n['opcode']
             operand = n['inner'][0]
+            if op == '-' and scalar_of(operand) in ('f16', 'bf16'):  # -x of a half: exact, through f32
+                negated = add('Unary', {'operator': '-'}, {'operand': self.convert_types(self.expr(operand), scalar_of(operand), 'f32', n)})
+                return self.convert_types(negated, 'f32', scalar_of(operand), n)
             if op in ('!', '-', '~'):
                 return add('Unary', {'operator': op}, {'operand': self.expr(operand)})
             if op == '+':
