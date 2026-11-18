@@ -200,6 +200,7 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long, -9223372036854775808.0f, 9223372
 // threadgroup memory, as __syncthreads does; barrier_count counts with a threadgroup atomic.
 #define QPEL_SHARED(T, name, n) threadgroup T name[n]
 #define QPEL_BARRIER() threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup)
+#define QPEL_SUBGROUP_BARRIER() simdgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup)  // IR version 16
 #define QPEL_BARRIER_COUNT_SCRATCH threadgroup atomic_int qpel_barrier_counter;
 inline int qpel_barrier_count(bool p, threadgroup atomic_int* counter, uint rank) {
     if (rank == 0) atomic_store_explicit(counter, 0, memory_order_relaxed);

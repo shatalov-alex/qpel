@@ -592,6 +592,10 @@ class TypeChecker:
             check(value in (('u32', 'i32') if bitwise else ('u32', 'i32', 'f32')), 'SUBGROUP_TYPE',
                   f"subgroup_{a['operator']} takes {'u32 or i32' if bitwise else 'u32, i32 or f32'} values")
             return value
+        if k == 'SubgroupBarrier':  # IR version 16: the subgroup's lanes wait for each other, ordering their memory
+            parent = self.parents.get(node['id'])
+            check(parent is not None and parent['kind'] == 'Evaluate', 'BARRIER_CONTEXT', 'qpel.subgroup_barrier() is a statement')
+            return 'void'
         if k in ('Barrier', 'BarrierCount'):
             kernel = function['attributes'].get('isKernel', False)
             # IR version 7: a barrier may be in a helper (qpel_uniform.py checks the kernels that call it)

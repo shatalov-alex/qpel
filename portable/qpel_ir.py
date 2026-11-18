@@ -17,10 +17,10 @@ LEGACY_MACROS={'void':'void','bool':'bool','u8':'QPEL_U8','u32':'QPEL_U32','i32'
        'buffer<i32, write>':'QPEL_WRITE_I32','buffer<f32, read>':'QPEL_READ_F32','buffer<f32, write>':'QPEL_WRITE_F32',
        'buffer<f16, read>':'QPEL_READ_F16','buffer<f16, write>':'QPEL_WRITE_F16'}
 TYPE_KINDS=set(LEGACY)|{'ScalarType','BufferType','StructType','ArrayType','VectorType','SharedType','SharedViewType','MatrixType'}
-KINDS=TYPE_KINDS|set('MatrixFill MatrixLoad MatrixStore MatrixMma ConstantDecl ArrayValue VectorValue Barrier BarrierCount View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange AtomicMax AtomicAnd AtomicOr AtomicXor AtomicExchange Bitcast SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce BufferPresent Pipeline Resource Dispatch Binding'.split())
+KINDS=TYPE_KINDS|set('MatrixFill MatrixLoad MatrixStore MatrixMma ConstantDecl ArrayValue VectorValue Barrier BarrierCount View StructDecl Field StructType Math Grid3D Groups GroupIndex LocalIndex GroupSize GroupCount ThreadIndex GpuModule Function Parameter Block Variable Name Literal I32Literal Constant Cast I32Cast U32Cast U8Cast For DoWhile Break Continue F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select Assign Evaluate If While Return GridIndex Grid1D Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange AtomicMax AtomicAnd AtomicOr AtomicXor AtomicExchange Bitcast SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce SubgroupBarrier BufferPresent Pipeline Resource Dispatch Binding'.split())
 COMMON_FEATURES={'integer_buffers','grid_1d','grid_3d','control_flow','int32','device_relaxed_u32_atomics','float32','float32_fma','float16_storage','ordered_sum_f32','workgroup_sum_f32','int8_16','int64','bfloat16_storage','groups','math_exact','math_bounded','subgroups','atomics_f32','atomics_u64','matrix'}
 PROFILES={'metal':COMMON_FEATURES,'cuda':COMMON_FEATURES}
-SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3',4:'qpel-portable-core-v4',5:'qpel-portable-core-v5',6:'qpel-portable-core-v6',7:'qpel-portable-core-v7',8:'qpel-portable-core-v8',9:'qpel-portable-core-v9',10:'qpel-portable-core-v10',11:'qpel-portable-core-v11',12:'qpel-portable-core-v12',13:'qpel-portable-core-v13',14:'qpel-portable-core-v14',15:'qpel-portable-core-v15'}
+SEMANTICS={1:'qpel-portable-core-v1',2:'qpel-portable-core-v2',3:'qpel-portable-core-v3',4:'qpel-portable-core-v4',5:'qpel-portable-core-v5',6:'qpel-portable-core-v6',7:'qpel-portable-core-v7',8:'qpel-portable-core-v8',9:'qpel-portable-core-v9',10:'qpel-portable-core-v10',11:'qpel-portable-core-v11',12:'qpel-portable-core-v12',13:'qpel-portable-core-v13',14:'qpel-portable-core-v14',15:'qpel-portable-core-v15',16:'qpel-portable-core-v16'}
 # Version 2 adds else, for/do/break/continue, signed 32-bit integers and their atomics,
 # shifts, ~, conversion to u8, scalar arguments and 2D/3D kernels.
 V2_KINDS={'Grid3D','ThreadIndex','For','DoWhile','Break','Continue','I32Type','ReadOnlyI32BufferType','I32BufferType','AtomicI32BufferType','I32Literal','I32Cast','U32Cast','U8Cast'}
@@ -31,7 +31,7 @@ V3_KINDS={'ScalarType','BufferType','Cast','Constant','Math','View','StructDecl'
 # inout resources (filled by the caller, updated by the kernels, returned).
 V4_KINDS={'ArrayType','ArrayValue','AtomicCompareExchange','VectorType','VectorValue','SharedType','Barrier','BarrierCount'}
 # Version 5 adds SIMD-group (warp) operations: lane and subgroup indices, shuffles and reductions.
-V5_KINDS={'SubgroupLane','SubgroupIndex','SubgroupSize','SubgroupShuffle','SubgroupReduce','SharedViewType'}
+V5_KINDS={'SubgroupLane','SubgroupIndex','SubgroupSize','SubgroupShuffle','SubgroupReduce','SharedViewType','SubgroupBarrier'}
 # Version 6 adds atomic max, and, or, xor and exchange, and atomics on f32 and u64 buffers.
 V6_KINDS={'AtomicMax','AtomicAnd','AtomicOr','AtomicXor','AtomicExchange','Bitcast'}
 ATOMIC_MACROS={'AtomicLoad':'QPEL_LOAD','AtomicStore':'QPEL_STORE','AtomicAdd':'QPEL_ADD','AtomicMin':'QPEL_MIN',
@@ -167,9 +167,14 @@ def version_15_features(nodes):
     return {'column-major matrix memory' for n in nodes if n['kind'] in ('MatrixLoad','MatrixStore') and n['attributes'].get('columns')}
 
 
+def version_16_features(nodes):
+    """Version 16: a barrier of the subgroup's lanes (CUDA __syncwarp, Metal simdgroup_barrier)."""
+    return {'subgroup barrier' for n in nodes if n['kind']=='SubgroupBarrier'}
+
+
 def minimum_version(program):
     nodes=program['nodes']
-    return 15 if version_15_features(nodes) else 14 if version_14_features(nodes) else 13 if version_13_features(nodes) else 12 if version_12_features(nodes) else 11 if version_11_features(nodes) else 10 if version_10_features(nodes) else 9 if version_9_features(nodes) else 8 if version_8_features(nodes) else 7 if version_7_features(nodes) else 6 if version_6_features(nodes) else 5 if version_5_features(nodes) else 4 if version_4_features(nodes) else 3 if version_3_features(nodes) else 2 if version_2_features(nodes) else 1
+    return 16 if version_16_features(nodes) else 15 if version_15_features(nodes) else 14 if version_14_features(nodes) else 13 if version_13_features(nodes) else 12 if version_12_features(nodes) else 11 if version_11_features(nodes) else 10 if version_10_features(nodes) else 9 if version_9_features(nodes) else 8 if version_8_features(nodes) else 7 if version_7_features(nodes) else 6 if version_6_features(nodes) else 5 if version_5_features(nodes) else 4 if version_4_features(nodes) else 3 if version_3_features(nodes) else 2 if version_2_features(nodes) else 1
 
 
 def validate(program, backend=None):
@@ -192,6 +197,8 @@ def validate(program, backend=None):
         raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_8_features(program['nodes'])))+'; declare version 8')
     if program['version']<10 and version_10_features(program['nodes']):
         raise ValueError(f"IR version {program['version']} cannot use: "+', '.join(sorted(version_10_features(program['nodes'])))+'; declare version 10')
+    if program['version']<16 and version_16_features(program['nodes']):
+        raise ValueError(f"IR version {program['version']} cannot use: subgroup barrier; declare version 16")
     if program['version']<15 and version_15_features(program['nodes']):
         raise ValueError(f"IR version {program['version']} cannot use: column-major matrix memory; declare version 15")
     if program['version']<14 and version_14_features(program['nodes']):
@@ -419,6 +426,7 @@ class Lowering:
         if k=='Index':return e('base')+'['+e('index')+']'
         if k=='ArrayValue':return '{'+joined('elements',', ')+'}'
         if k=='Barrier':return 'QPEL_BARRIER()'
+        if k=='SubgroupBarrier':return 'QPEL_SUBGROUP_BARRIER()'  # IR version 16
         if k=='BarrierCount':return 'QPEL_BARRIER_COUNT('+e('value')+')'
         if k=='VectorValue':
             built=f"QPEL_MAKE_VEC{a['length']}_{a['element'].upper()}("+joined('elements',', ')+')'

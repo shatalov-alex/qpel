@@ -134,6 +134,12 @@ Column-major matrix memory, as BLAS, NVIDIA's WMMA samples (B as `col_major`) an
 
 examples/matrix_columns.qpel (row-major A times column-major B into column-major C, f32 and f16), tests/test_matrix_columns.py: the CPU simulator bit for bit in k order, GPGPU-Sim (f32 bit for bit, f16 within the bound) and the Apple GPU (within the bound). A program with column-major matrix memory is version 15.
 
+## IR version 16
+
+`SubgroupBarrier` (text `qpel.subgroup_barrier()`, a statement): the 32 lanes of a subgroup wait for each other, and each lane's earlier writes to shared and device memory are visible to the others' later reads (CUDA `__syncwarp()`, Metal `simdgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup)`). It orders nothing between subgroups; `qpel.barrier()` does. Every lane of the subgroup reaches it, under the subgroup rules of IR version 5 (`SUBGROUP_UNIFORM`), in Groups kernels and the functions they call.
+
+examples/subgroup_barrier.qpel (neighbouring lanes swap values through shared memory), tests/test_subgroup_barrier.py: the CPU simulator, GPGPU-Sim and the Apple GPU. A program with a subgroup barrier is version 16.
+
 ## Optimisation passes
 
 `qpel_opt.py` holds passes that read a validated program and tell the lowering how to emit it faster, with the same results; they never change the IR, whose meaning stays the portable one. Kept apart from the portability lowering (ROADMAP, Phase 6):

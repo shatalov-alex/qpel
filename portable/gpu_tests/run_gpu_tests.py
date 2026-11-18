@@ -735,11 +735,23 @@ def run_matrix_tiles(name, host, plan):
     return len(cases)
 
 
+def run_subgroup_barrier(name, host, plan):
+    """A barrier of the subgroup's lanes (IR version 16, tests/test_subgroup_barrier.py): neighbouring lanes swap values."""
+    module = test_module('test_subgroup_barrier')
+    cases = module.cases()
+    for case in cases:
+        n = case.shapes['n'][0]
+        inputs = {k: torch.from_numpy(v.astype(np.int32)).to(DEVICE) for k, v in case.inputs.items()}
+        got = host.run(inputs, case.shapes, case.values)['y'].cpu().numpy().astype(np.uint32)[:n]
+        np.testing.assert_array_equal(got, module.swapped(case.inputs['x'], n), err_msg=case.label)
+    return len(cases)
+
+
 TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fma32': run_fma32,
          'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components,
          'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset, 'box_sum': run_box_sum,
          'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride, 'math_ops': run_math_ops, 'math_v8': run_math_v8, 'optional_bias': run_optional_bias, 'array_refs': run_array_refs, 'sort_bytes': run_sort_bytes, 'atomics': run_atomics, 'bitcast': run_bitcast,
-         'matrix_tiles': run_matrix_tiles, 'matrix_blocks': run_matrix_tiles, 'matrix_columns': run_matrix_tiles}
+         'matrix_tiles': run_matrix_tiles, 'matrix_blocks': run_matrix_tiles, 'matrix_columns': run_matrix_tiles, 'subgroup_barrier': run_subgroup_barrier}
 
 
 def main(argv=None):

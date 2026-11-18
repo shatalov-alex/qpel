@@ -233,6 +233,7 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long long, -9223372036854775808.0f, 92
 // IR version 4 shared memory and barriers (Groups kernels).
 #define QPEL_SHARED(T, name, n) __shared__ T name[n]
 #define QPEL_BARRIER() __syncthreads()
+#define QPEL_SUBGROUP_BARRIER() __syncwarp()  // IR version 16: the warp's lanes, ordering their memory
 #define QPEL_BARRIER_COUNT(p) __syncthreads_count((p) ? 1 : 0)
 #define QPEL_BARRIER_COUNT_SCRATCH
 #endif

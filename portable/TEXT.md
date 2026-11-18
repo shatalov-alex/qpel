@@ -81,6 +81,7 @@ Literals: `7u` (u32), `7` (i32), `7_i64` (any integer type; negative ones
 | `qpel.subgroup_add(v)`, `qpel.subgroup_min(v)`, `qpel.subgroup_max(v)`, `qpel.subgroup_and(v)`, `qpel.subgroup_or(v)`, `qpel.subgroup_xor(v)` | SubgroupReduce |
 | `atomic.load(p)`, `atomic.store(p, v)`, `atomic.add(p, v)`, `atomic.min(p, v)`, `atomic.cas(p, expected, v)` | atomics on `buffer + offset`; `cas` returns the value found (IR version 4) |
 | `atomic.max(p, v)`, `atomic.and(p, v)`, `atomic.or(p, v)`, `atomic.xor(p, v)`, `atomic.exchange(p, v)` | IR version 6, also `buffer<f32, atomic>` and `buffer<u64, atomic>` (NUMERICS.md, Atomics) |
+| `qpel.subgroup_barrier()` | SubgroupBarrier: the subgroup's lanes wait for each other (IR version 16) |
 | `qpel.matrix_fill<T>(x)`, `qpel.matrix_load(b, offset, stride)`, `qpel.matrix_store(m, b, offset, stride)`, `qpel.matrix_mma(a, b, c)` | MatrixFill, MatrixLoad, MatrixStore, MatrixMma (IR version 13; CORE.md) |
 | `qpel.matrix_load_columns(b, offset, stride)`, `qpel.matrix_store_columns(m, b, offset, stride)` | MatrixLoad and MatrixStore of column-major memory (IR version 15) |
 | `b[i]`, `s.field`, `f(args)` | Index, Member, Call |

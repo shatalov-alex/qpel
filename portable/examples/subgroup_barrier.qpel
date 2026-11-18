@@ -1,0 +1,26 @@
+// A barrier of the subgroup's lanes (IR version 16): each lane writes its value to shared memory, the
+// 32 lanes of its subgroup wait for each other, and each reads its neighbour's (lane ^ 1, in the same
+// subgroup). The barrier orders the shared memory of the subgroup only, as CUDA's __syncwarp and
+// Metal's simdgroup_barrier do; it is reached by every lane of the subgroup.
+module subgroup_barrier {
+  kernel swap_pairs(x: buffer<u32, read> @0, y: buffer<u32, write> @1, n: shape3 @2) groups {
+    let slots: shared<u32, 64>;
+    let i: u32 = (qpel.group.x * 64u) + qpel.local.x;
+    let mine: u32 = 0u;
+    if (i < n.x) {
+      mine = x[i];
+    }
+    slots[qpel.local.x] = mine;
+    qpel.subgroup_barrier();
+    let partner: u32 = slots[qpel.local.x ^ 1u];
+    if (i < n.x) {
+      y[i] = partner;
+    }
+  }
+}
+pipeline subgroup_barrier_launch {
+  shape n;
+  input x: buffer<u32, read> in n;
+  output y: buffer<u32, write> in n;
+  dispatch swap_pairs over n block (64, 1, 1) groups ("(W + 63)/64", "1", "1") (x = x, y = y, n = n);
+}

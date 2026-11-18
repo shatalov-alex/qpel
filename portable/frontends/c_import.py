@@ -1863,7 +1863,7 @@ class Importer:
             if node.get('kind') != 'CallExpr' or not node.get('inner'):
                 continue
             name = decl_name(node['inner'][0])
-            if name in SUBGROUP_CALLS or name in WMMA_CALLS:
+            if name in SUBGROUP_CALLS or name in WMMA_CALLS or name in ('__syncwarp', 'simdgroup_barrier'):
                 return True
             if name in self.functions and name not in seen:
                 seen.add(name)
@@ -3563,6 +3563,11 @@ class Importer:
             return self.qpel_matrix_call(n, decl_name(n['inner'][0]))
         if callee in ('__syncthreads', 'threadgroup_barrier'):  # (Metal's flags: qpel's barrier orders both)
             return add('Barrier')
+        if callee in ('__syncwarp', 'simdgroup_barrier'):  # IR version 16: the subgroup's lanes, ordering memory
+            if callee == '__syncwarp' and args and args[0].get('kind') != 'CXXDefaultArgExpr' and \
+                    integer_constant(args[0]) not in (0xffffffff, -1):
+                raise Unsupported(n, 'call', '__syncwarp of some lanes is not in qpel (a whole warp is)')
+            return add('SubgroupBarrier')
         if callee in ('__syncthreads_count', 'qpel_barrier_count'):
             return add('BarrierCount', children={'value': self.expr(predicate(args[0]))})
         template = decl_name(n['inner'][0])  # the template's own name: instances may be renamed (_f32, _i32)

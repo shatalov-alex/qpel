@@ -164,6 +164,8 @@ class Printer:
             return f'qpel.group_sum_f32({e("value")})'
         if k == 'Barrier':
             return 'qpel.barrier()'
+        if k == 'SubgroupBarrier':
+            return 'qpel.subgroup_barrier()'
         if k == 'BarrierCount':
             return f'qpel.barrier_count({e("value")})'
         if k == 'GridIndex':
@@ -697,10 +699,10 @@ class Parser:
             what = self.take(kind='name')
             if what == 'index':
                 return self.add('GridIndex')
-            if what == 'barrier':
+            if what in ('barrier', 'subgroup_barrier'):
                 self.take('(')
                 self.take(')')
-                return self.add('Barrier')
+                return self.add('Barrier' if what == 'barrier' else 'SubgroupBarrier')
             if what == 'barrier_count':
                 return self.add('BarrierCount', children={'value': self.arguments()[0]})
             if what == 'matrix_fill':  # IR version 13: qpel.matrix_fill<f16>(x)
