@@ -341,25 +341,36 @@ QPEL_SUBGROUP_REDUCE(and) QPEL_SUBGROUP_REDUCE(or) QPEL_SUBGROUP_REDUCE(xor)
 struct qpel_matrix_f32 { float v[2]; };
 #define QPEL_MATRIX_F32 qpel_matrix_f32
 #ifdef QPEL_F16_ENABLED  // (f16 matrices load f16 memory, which needs f16 storage)
-struct qpel_matrix_f16 { __half v[2]; };
+// col: the same matrix as an mma.sync B fragment (b[2 (l % 4)][l / 4] and b[2 (l % 4) + 1][l / 4] in its two
+// halves), loaded with it, so a multiply needs no shuffles; nvcc drops it where the matrix is only an A.
+struct qpel_matrix_f16 { __half v[2]; unsigned int col; };
 #define QPEL_MATRIX_F16 qpel_matrix_f16
 #endif
 __device__ __forceinline__ unsigned int qpel_matrix_lane() { return qpel_subgroup_lane(); }
 __device__ __forceinline__ qpel_matrix_f32 qpel_matrix_fill_f32(float x) { qpel_matrix_f32 m; m.v[0] = x; m.v[1] = x; return m; }
 #define QPEL_MATRIX_FILL_F32(x) qpel_matrix_fill_f32((x))
 #ifdef QPEL_F16_ENABLED
+__device__ __forceinline__ unsigned int qpel_half_pair(__half lo, __half hi) {
+  return (unsigned int)__half_as_ushort(lo) | ((unsigned int)__half_as_ushort(hi) << 16); }
 __device__ __forceinline__ qpel_matrix_f16 qpel_matrix_fill_f16(float x) {
-  qpel_matrix_f16 m; m.v[0] = __float2half_rn(x); m.v[1] = m.v[0]; return m; }
+  qpel_matrix_f16 m; m.v[0] = __float2half_rn(x); m.v[1] = m.v[0]; m.col = qpel_half_pair(m.v[0], m.v[0]); return m; }
 #define QPEL_MATRIX_FILL_F16(x) qpel_matrix_fill_f16((x))
 #endif
 template <class M, class P> __device__ __forceinline__ M qpel_matrix_load(P base, unsigned int offset, unsigned int stride) {
   const unsigned int l = qpel_matrix_lane(), at = offset + (l >> 2) * stride + (l & 3u) * 2u;
   M m; m.v[0] = base[at]; m.v[1] = base[at + 1u]; return m; }
+#ifdef QPEL_F16_ENABLED
+template <class P> __device__ __forceinline__ qpel_matrix_f16 qpel_matrix_load_f16(P base, unsigned int offset, unsigned int stride) {
+  qpel_matrix_f16 m = qpel_matrix_load<qpel_matrix_f16>(base, offset, stride);
+  const unsigned int l = qpel_matrix_lane(), col = offset + (l & 3u) * 2u * stride + (l >> 2);  // b[2q][g], b[2q + 1][g]
+  m.col = qpel_half_pair(base[col], base[col + stride]); return m; }
+template <class P> __device__ __forceinline__ qpel_matrix_f16 qpel_matrix_load_columns_f16(P base, unsigned int offset, unsigned int stride);
+#endif
 template <class M, class P> __device__ __forceinline__ void qpel_matrix_store(M m, P base, unsigned int offset, unsigned int stride) {
   const unsigned int l = qpel_matrix_lane(), at = offset + (l >> 2) * stride + (l & 3u) * 2u;
   base[at] = m.v[0]; base[at + 1u] = m.v[1]; }
 #define QPEL_MATRIX_LOAD_F32(base, offset, stride) qpel_matrix_load<qpel_matrix_f32>((base), (offset), (stride))
-#define QPEL_MATRIX_LOAD_F16(base, offset, stride) qpel_matrix_load<qpel_matrix_f16>((base), (offset), (stride))
+#define QPEL_MATRIX_LOAD_F16(base, offset, stride) qpel_matrix_load_f16((base), (offset), (stride))
 #define QPEL_MATRIX_STORE_F32(m, base, offset, stride) qpel_matrix_store((m), (base), (offset), (stride))
 #define QPEL_MATRIX_STORE_F16(m, base, offset, stride) qpel_matrix_store((m), (base), (offset), (stride))
 // IR version 15: column-major memory, element (r, c) at base[offset + c stride + r]
@@ -370,7 +381,13 @@ template <class M, class P> __device__ __forceinline__ void qpel_matrix_store_co
   const unsigned int l = qpel_matrix_lane(), at = offset + (l & 3u) * 2u * stride + (l >> 2);
   base[at] = m.v[0]; base[at + stride] = m.v[1]; }
 #define QPEL_MATRIX_LOAD_COLUMNS_F32(base, offset, stride) qpel_matrix_load_columns<qpel_matrix_f32>((base), (offset), (stride))
-#define QPEL_MATRIX_LOAD_COLUMNS_F16(base, offset, stride) qpel_matrix_load_columns<qpel_matrix_f16>((base), (offset), (stride))
+#ifdef QPEL_F16_ENABLED
+template <class P> __device__ __forceinline__ qpel_matrix_f16 qpel_matrix_load_columns_f16(P base, unsigned int offset, unsigned int stride) {
+  qpel_matrix_f16 m = qpel_matrix_load_columns<qpel_matrix_f16>(base, offset, stride);
+  const unsigned int l = qpel_matrix_lane(), col = offset + (l >> 2) * stride + (l & 3u) * 2u;  // b[2q + i][g] at g stride + 2q + i
+  m.col = qpel_half_pair(base[col], base[col + 1u]); return m; }
+#endif
+#define QPEL_MATRIX_LOAD_COLUMNS_F16(base, offset, stride) qpel_matrix_load_columns_f16((base), (offset), (stride))
 #define QPEL_MATRIX_STORE_COLUMNS_F32(m, base, offset, stride) qpel_matrix_store_columns((m), (base), (offset), (stride))
 #define QPEL_MATRIX_STORE_COLUMNS_F16(m, base, offset, stride) qpel_matrix_store_columns((m), (base), (offset), (stride))
 // c[r][j] = fma(a[r][k], b[k][j], ...) for k = 0..7: a[r][k] is element k % 2 of lane 4 r + k / 2, and
@@ -392,19 +409,9 @@ __device__ __forceinline__ qpel_matrix_f32 qpel_matrix_mma_f32(qpel_matrix_f32 a
 #ifdef QPEL_F16_ENABLED
 __device__ __forceinline__ qpel_matrix_f32 qpel_matrix_mma_f16(qpel_matrix_f16 a, qpel_matrix_f16 b, qpel_matrix_f32 c) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750
-  // B as mma's column fragment: lane l needs b[2 (l % 4) + i][l / 4], element (l / 4) % 2 of lane
-  // 4 (2 (l % 4) + i) + (l / 4) / 2.
-  const unsigned int l = qpel_matrix_lane(), g = l >> 2, q = l & 3u;
-  const unsigned short bits0 = __half_as_ushort(b.v[0]), bits1 = __half_as_ushort(b.v[1]);
-  unsigned int lo[2];
-  for (unsigned int i = 0; i < 2u; ++i) {
-    const int source = (int)(4u * (2u * q + i) + (g >> 1));
-    const unsigned short e0 = (unsigned short)__shfl_sync(0xffffffffu, (unsigned int)bits0, source);
-    const unsigned short e1 = (unsigned short)__shfl_sync(0xffffffffu, (unsigned int)bits1, source);
-    lo[i] = (g & 1u) ? e1 : e0;
-  }
-  const unsigned int b_frag = lo[0] | (lo[1] << 16);
-  const unsigned int a_frag = (unsigned int)__half_as_ushort(a.v[0]) | ((unsigned int)__half_as_ushort(a.v[1]) << 16);
+  // B's column fragment came with it (qpel_matrix_f16::col); A's row fragment is its own layout
+  const unsigned int b_frag = b.col;
+  const unsigned int a_frag = qpel_half_pair(a.v[0], a.v[1]);
   float d0, d1, d2, d3;
   asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 {%0, %1, %2, %3}, {%4, %5}, {%6}, {%7, %8, %9, %10};"
                : "=f"(d0), "=f"(d1), "=f"(d2), "=f"(d3)

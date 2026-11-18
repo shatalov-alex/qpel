@@ -213,7 +213,8 @@ MATRIX_CALLS = {'simdgroup_load', 'simdgroup_store', 'simdgroup_multiply_accumul
 
 QPEL_MATRIX_TYPE = re.compile(r'(?:const\s+)?qpel_matrix_(f32|f16)\s*&?')  # qpel's own CUDA (backends/cuda.h)
 QPEL_MATRIX_CALLS = {'qpel_matrix_fill_f32', 'qpel_matrix_fill_f16', 'qpel_matrix_load', 'qpel_matrix_store',
-                     'qpel_matrix_mma_f32', 'qpel_matrix_mma_f16', 'qpel_matrix_load_columns', 'qpel_matrix_store_columns'}
+                     'qpel_matrix_mma_f32', 'qpel_matrix_mma_f16', 'qpel_matrix_load_columns', 'qpel_matrix_store_columns',
+                     'qpel_matrix_load_f16', 'qpel_matrix_load_columns_f16'}  # (f16 loads that carry the B fragment)
 
 
 # NVIDIA's WMMA (mma.h): a 16 x 16 fragment is a 2 x 2 array of qpel's 8 x 8 matrices (IR version 14), block
@@ -2439,6 +2440,7 @@ class Importer:
         if callee.startswith('qpel_matrix_mma_'):
             return add('MatrixMma', children={'a': self.matrix_value(args[0]), 'b': self.matrix_value(args[1]),
                                                'c': self.matrix_value(args[2])})
+        callee = callee[:-len('_f16')] if callee in ('qpel_matrix_load_f16', 'qpel_matrix_load_columns_f16') else callee
         columns = {'columns': True} if callee.endswith('_columns') else {}  # IR version 15
         if callee.startswith('qpel_matrix_load'):
             return add('MatrixLoad', columns, {'base': self.expr(args[0]), 'offset': u32(args[1]), 'stride': u32(args[2])})
