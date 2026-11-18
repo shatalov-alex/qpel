@@ -22,7 +22,7 @@ import re
 from pathlib import Path
 
 from . import clang_ast
-from .c_import import Importer
+from .c_import import Importer, Unsupported
 
 HERE = Path(__file__).resolve().parents[1]
 CORPUS = HERE/'corpus'
@@ -102,9 +102,31 @@ def source_coverage(entry, details=False):
     except clang_ast.SourceError as error:
         first = next((line for line in str(error).splitlines() if 'error:' in line), str(error).splitlines()[-1])
         found = {UNPARSED: ['parse at ' + first.split('error: ', 1)[-1][:200]]}
+    for kernel in [k for k, blockers in found.items() if not blockers and k != UNPARSED]:
+        problem = validation_problem(entry, kernel)
+        if problem:
+            found[kernel] = [f'invalid at {kernel}:0 ({problem})']
     if details:
         return found
     return {k: sorted({b.split(' ')[0] for b in blockers}) for k, blockers in found.items()}
+
+
+def validation_problem(entry, kernel):
+    """None when the kernel, imported on its own with the plan qpel makes for it, validates as a whole program;
+    else what stopped it (the import's blocker code, or the validator's). A kernel counts as importable only
+    then: the survey reads every function, validation checks the program they make."""
+    from .c_import import import_source
+    from qpel_ir import validate
+    try:
+        program, _ = import_source(CORPUS/entry['source'], include=[CORPUS/f for f in entry.get('include', ())],
+                                   kernels=[kernel], module='survey', defines=build_defines(entry))
+        validate(program)
+    except Unsupported as error:
+        return error.code
+    except (ValueError, KeyError, TypeError) as error:
+        found = re.search(r'\) ([A-Z_]+):', str(error))
+        return found.group(1) if found else type(error).__name__
+    return None
 
 
 def source_details(entry):

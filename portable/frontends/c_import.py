@@ -3923,6 +3923,29 @@ class Importer:
             result[name] = next(iter(found)) if found else self.grid_params[kernel]
         return result
 
+    def reads_buffer(self, kernel, param):
+        """True when a kernel (or a function it calls) reads elements of its buffer parameter: an Index of it,
+        or of a view or offset of it, that is not only the target of an assignment."""
+        nodes = self.graph.nodes
+        targets = {n['children']['target'][0] for n in nodes.values() if n['kind'] == 'Assign'}
+        names = {param} | {n['id'] for n in nodes.values() if n['kind'] == 'Variable' and any(
+            m['kind'] == 'Name' and m['links'].get('declaration') == param for m in self.subtree(n))}
+        for n in nodes.values():
+            if n['kind'] != 'Index' or n['id'] in targets:
+                continue
+            base = nodes[n['children']['base'][0]]
+            while base['kind'] == 'Binary':
+                base = nodes[base['children']['left'][0]]
+            if base['kind'] == 'Name' and base['links'].get('declaration') in names:
+                return True
+        return False
+
+    def subtree(self, node):
+        yield node
+        for values in node['children'].values():
+            for c in values:
+                yield from self.subtree(self.graph.nodes[c])
+
     def launch_block(self, kernel):
         """The block size every launch of a kernel in this source gives, when it is one constant qpel takes
         (`arange_f32<<<blocks, CUDA_ARANGE_BLOCK_SIZE>>>`: 256); else None. The original's block size keeps
@@ -3953,6 +3976,8 @@ class Importer:
                         else 'scratch' if access(kind) == 'atomic' else 'output')
                 if role == 'output' and name in self.struct_fields:
                     role = 'inout'  # a struct's void * field: C++ does not say which the kernel only reads
+                if role == 'output' and self.reads_buffer(kernel, ident):
+                    role = 'inout'  # read as well as written (dst[i] += x): it arrives with the caller's data
                 previous = resources.setdefault(name, {'name': name, 'kind': role, 'type': kind})
                 if previous['type'] != kind:
                     raise Unsupported(None, 'resource-type', f'{name} has type {previous["type"]} and {kind} in different kernels')
