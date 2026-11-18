@@ -3409,6 +3409,14 @@ class Importer:
             return add('U32Cast', children={'operand': value})
         if target == 'f32' and source in ('u32', 'u8', 'i32', 'f16'):
             return add('F32Cast', children={'operand': value})
+        if source in INTEGER_TERMS and target in ('f16', 'bf16'):
+            # through f32, exact for an integer f32 holds exactly (a literal, 8 and 16 bits): one rounding, to the half
+            node = self.graph.nodes[value]
+            exact = source in ('u8', 'i8', 'u16', 'i16') or node['kind'] in ('Literal', 'I32Literal', 'Constant') and \
+                abs(int(str(node['attributes'].get('value', '0')).rstrip('uU'))) < 2**24
+            if not exact:
+                raise Unsupported(outer, 'conversion', f'conversion from {source} to {target} is not in qpel (only of integers f32 holds exactly)')
+            return self.convert_types(self.convert_types(value, source, 'f32', outer), 'f32', target, outer)
         if (source, target) == ('f32', 'f16'):
             return add('F16Cast', children={'operand': value})
         if target == 'u8' and source in ('u32', 'i32'):
@@ -3668,7 +3676,12 @@ class Importer:
             return self.expr(n['inner'][2])  # qpel's whole-vector load (qpel_opt.py): its element loads are the meaning
         if kind == 'ConditionalOperator':
             c, yes, no = n['inner']
-            return add('Select', children={'condition': self.expr(c), 'yes': self.expr(yes), 'no': self.expr(no)})
+            own = scalar_of(n)
+            def branch(x):  # c ? half : 0: a branch converted to the conditional's half type (C's conversions)
+                value = self.expr(x)
+                core = scalar_of(peel(x))
+                return self.convert_types(value, core, own, n) if own in ('f16', 'bf16') and core in INTEGER_TERMS else value
+            return add('Select', children={'condition': self.expr(c), 'yes': branch(yes), 'no': branch(no)})
         if kind == 'ArraySubscriptExpr' and self.builtin_component(n):
             entry, field = self.builtin_component(n)  # Metal vectors also read by subscript: tgpig[1] is tgpig.y
             if entry[0] == 'position':

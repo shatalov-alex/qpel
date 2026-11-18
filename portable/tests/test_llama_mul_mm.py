@@ -1,4 +1,4 @@
-"""llama.cpp's Metal kernel_mul_mm (the f32 instance, its simdgroup-matrix path), unmodified: C (N x M) =
+"""llama.cpp's Metal kernel_mul_mm (the f32 and f16 instances, its simdgroup-matrix path), unmodified: C (N x M) =
 B A^T for row-major A (M x K) and B (N x K), staged through threadgroup memory as halves and multiplied in
 8x8 simdgroup matrices, ma[4], mb[2], mc[8]. The import reads its Metal matrix types, its threadgroup
 char memory carved into typed views, is_same<T0_4x4, block_q>::value and the function constants llama.cpp
@@ -23,27 +23,28 @@ SHARED = {'shmem': 8192}
 SHAPES = ((64, 32, 32), (128, 64, 64), (64, 64, 96), (192, 32, 32))  # (M, N, K)
 
 
-def cases():
+def cases(weights='f32'):
     import numpy as np
     from differential.simulate import Case
     rng = np.random.default_rng(21)
     out = []
+    size = 4 if weights == 'f32' else 2
     for m, n, k in SHAPES:
-        a = rng.uniform(-2, 2, m * k).astype(np.float32)
+        a = rng.uniform(-2, 2, m * k).astype(np.float32 if weights == 'f32' else np.float16)
         b = rng.uniform(-2, 2, n * k).astype(np.float32)
-        args = {'ne00': k, 'ne02': 1, 'nb01': 4 * k, 'nb02': 4 * m * k, 'nb03': 4 * m * k, 'ne12': 1, 'nb10': 4,
+        args = {'ne00': k, 'ne02': 1, 'nb01': size * k, 'nb02': size * m * k, 'nb03': size * m * k, 'ne12': 1, 'nb10': 4,
                 'nb11': 4 * k, 'nb12': 4 * n * k, 'nb13': 4 * n * k, 'ne0': m, 'ne1': n, 'r2': 1, 'r3': 1}
-        out.append(Case({'tiles': (n, m, 1), 'a_bytes': (4 * m * k, 1, 1), 'b_bytes': (4 * n * k, 1, 1),
+        out.append(Case({'tiles': (n, m, 1), 'a_bytes': (size * m * k, 1, 1), 'b_bytes': (4 * n * k, 1, 1),
                          'c_bytes': (4 * m * n, 1, 1)}, {'src0': a.view(np.int8), 'src1': b.view(np.int8)},
                         {'args': args}, f'M={m} N={n} K={k}'))
     return out
 
 
-def oracle(case):
+def oracle(case, weights='f32'):
     """C[n][m] = sum_k half(A[m][k]) half(B[n][k]) in float64, and the bound of any order of the K f32 sums."""
     import numpy as np
     m, n, k = case.values['args']['ne0'], case.values['args']['ne1'], case.values['args']['ne00']
-    a = case.inputs['src0'].view(np.float32).astype(np.float16).astype(np.float64).reshape(m, k)
+    a = case.inputs['src0'].view(np.float32 if weights == 'f32' else np.float16).astype(np.float16).astype(np.float64).reshape(m, k)
     b = case.inputs['src1'].view(np.float32).astype(np.float16).astype(np.float64).reshape(n, k)
     c = b @ a.T
     bound = (k + 2) * 2.0 ** -24 * (np.abs(b) @ np.abs(a).T)
@@ -52,6 +53,8 @@ def oracle(case):
 
 @unittest.skipUnless(shutil.which('clang'), 'clang required')
 class LlamaMulMm(unittest.TestCase):
+    KERNEL, WEIGHTS = 'kernel_mul_mm_f32_f32', 'f32'
+
     @classmethod
     def setUpClass(cls):
         from frontends.clang_ast import metal_available
@@ -64,8 +67,10 @@ class LlamaMulMm(unittest.TestCase):
         cls.source = CORPUS/entry['source']
         cls.include = [CORPUS/f for f in entry.get('include', ())]
         plan = json.loads((CORPUS/'llama.cpp/plans/mul_mm_f32_f32.plan.json').read_text())
-        cls.program, cls.report = import_source(cls.source, include=cls.include, kernels=['kernel_mul_mm_f32_f32'],
-                                                module='llama_metal_mul_mm_f32_f32', defines=build_defines(entry),
+        plan['stages'][0]['kernel'] = cls.KERNEL
+        plan['module'] = 'llama_metal_mul_mm'
+        cls.program, cls.report = import_source(cls.source, include=cls.include, kernels=[cls.KERNEL],
+                                                module='llama_metal_mul_mm', defines=build_defines(entry),
                                                 constants=CONSTANTS, shared=SHARED, plan=plan)
         cls.work = tempfile.TemporaryDirectory(prefix='qpel-llama-mul-mm-')
         work = Path(cls.work.name)
@@ -86,9 +91,9 @@ class LlamaMulMm(unittest.TestCase):
         import numpy as np
         from differential.simulate import Program
         (Path(self.work.name)/'sim').mkdir(exist_ok=True)
-        program = Program(self.generated/'llama_metal_mul_mm_f32_f32.cu', self.plan, Path(self.work.name)/'sim')
-        for case in cases():
-            want, bound = oracle(case)
+        program = Program(self.generated/'llama_metal_mul_mm.cu', self.plan, Path(self.work.name)/'sim')
+        for case in cases(self.WEIGHTS):
+            want, bound = oracle(case, self.WEIGHTS)
             got = np.asarray(program.run(case)['dst']).view(np.float32)[:len(want)].astype(np.float64)
             self.assertTrue(np.all(np.abs(got - want) <= bound), f'{case.label}: worst {np.max(np.abs(got - want) / np.maximum(bound, 1e-30)):.2f} of the bound')
 
@@ -102,13 +107,17 @@ class LlamaMulMm(unittest.TestCase):
             unavailable(self, 'gpu', 'PyTorch required for the Apple GPU tests')
         from differential import matrix, metal
         host = matrix.load_host(self.generated)
-        for case in cases():
-            want, bound = oracle(case)
+        for case in cases(self.WEIGHTS):
+            want, bound = oracle(case, self.WEIGHTS)
             original = np.asarray(metal.run_original(self.source, self.plan, self.report, case, include=self.include,
                                                      constants=CONSTANTS, whole_groups=True)['dst']).view(np.float32)[:len(want)]
             ours = np.asarray(metal.run_generated(host, self.plan, case)['dst']).view(np.float32)[:len(want)]
             np.testing.assert_array_equal(ours.view(np.uint32), original.view(np.uint32), err_msg=case.label)
             self.assertTrue(np.all(np.abs(original.astype(np.float64) - want) <= bound), case.label)
+
+
+class LlamaMulMmHalf(LlamaMulMm):
+    KERNEL, WEIGHTS = 'kernel_mul_mm_f16_f32', 'f16'
 
 
 if __name__ == '__main__':
