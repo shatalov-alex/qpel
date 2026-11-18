@@ -6,7 +6,7 @@ importers, the text syntax, and the checks that run all of them. For an overview
 
 ## Current scope
 
-- **IR version 16** (`CORE.md`): typed programs with integer widths from 8 to 64 bits, `f16`/`bf16`
+- **IR version 17** (`CORE.md`): typed programs with integer widths from 8 to 64 bits, `f16`/`bf16`
   storage, float32 arithmetic (f32-strict-v1), exact and bounded math functions, structs, buffer
   views, vectors and local arrays, 1D/2D/3D and explicit-group launch geometry, shared memory and
   barriers, subgroup shuffles, reductions and barriers, atomics, module constants, 8x8 matrices held by a

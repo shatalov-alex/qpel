@@ -140,6 +140,10 @@ examples/matrix_columns.qpel (row-major A times column-major B into column-major
 
 examples/subgroup_barrier.qpel (neighbouring lanes swap values through shared memory), tests/test_subgroup_barrier.py: the CPU simulator, GPGPU-Sim and the Apple GPU. A program with a subgroup barrier is version 16.
 
+## IR version 17
+
+`math.pow(x, y)` (`Math {function: pow}`), a bounded function with its own bound of 9 ulp (NUMERICS.md, math functions): CUDA `powf`, Metal `metal::precise::pow`. examples/math_pow.qpel, tests/test_math_pow.py. A program with `math.pow` is version 17.
+
 ## Optimisation passes
 
 `qpel_opt.py` holds passes that read a validated program and tell the lowering how to emit it faster, with the same results; they never change the IR, whose meaning stays the portable one. Kept apart from the portability lowering (ROADMAP, Phase 6):

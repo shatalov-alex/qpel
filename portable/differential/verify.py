@@ -59,7 +59,7 @@ sys.path.insert(0, str(HERE))
 from frontends import clang_ast  # noqa: E402
 from frontends.c_import import ATOMIC_SCALARS, Importer, describe, import_source, params_of  # noqa: E402
 from qpel_ir import Lowering  # noqa: E402
-from qpel_types import EXACT_MATH, MATH_ULPS, INTEGER_TERMS, bits as type_bits, is_struct  # noqa: E402
+from qpel_types import EXACT_MATH, MATH_ULPS, math_ulps, INTEGER_TERMS, bits as type_bits, is_struct  # noqa: E402
 
 from . import cases as test_cases  # noqa: E402
 from .simulate import Case, volume  # noqa: E402
@@ -512,7 +512,7 @@ def verify(original, port, kernels=None, mapping=None, include=(), constants=Non
     theirs = mapped.report
     outputs = [r['name'] for r in plan['resources'] if r['kind'] in ('output', 'inout')]
     bounded = any(n['kind'] == 'Math' and n['attributes']['function'] not in EXACT_MATH for n in program['nodes'])
-    ulps = 2 * MATH_ULPS if bounded else 0
+    ulps = 2 * math_ulps({n['attributes']['function'] for n in program['nodes'] if n['kind'] == 'Math'})
     zero_sign = report['dialect'] == 'cuda' and theirs['dialect'] == 'cuda'
     result = {'original': str(original), 'port': str(port), 'module': report['module'],
               'kernels': {k: theirs['qualified'][k] for k in theirs['kernels']}, 'arguments': mapped.mapped,

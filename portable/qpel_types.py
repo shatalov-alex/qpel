@@ -65,10 +65,20 @@ COMPARISONS = {'==', '!=', '<', '>', '<=', '>='}
 # the others are within MATH_ULPS of the exact result (NUMERICS.md, math functions).
 MATH = {'fabs': 1, 'fmin': 2, 'fmax': 2, 'floor': 1, 'ceil': 1, 'trunc': 1, 'round': 1, 'copysign': 2, 'sqrt': 1,
         'exp': 1, 'exp2': 1, 'log': 1, 'log2': 1, 'sin': 1, 'cos': 1, 'tanh': 1,
-        'erf': 1, 'expm1': 1, 'log1p': 1}  # (erf, expm1, log1p: IR version 8)
+        'erf': 1, 'expm1': 1, 'log1p': 1, 'pow': 2}  # (erf, expm1, log1p: IR version 8; pow: IR version 17)
 V8_MATH = {'erf', 'expm1', 'log1p'}
+V17_MATH = {'pow'}
 EXACT_MATH = {'fabs', 'fmin', 'fmax', 'floor', 'ceil', 'trunc', 'round', 'copysign', 'sqrt'}
 MATH_ULPS = 4
+# A bounded function's own bound where it is wider than MATH_ULPS: CUDA documents powf within 9 ulp
+# (Metal's precise::pow measured 1.5 ulp; NUMERICS.md, math functions).
+MATH_BOUNDS = {'pow': 9}
+
+
+def math_ulps(functions):
+    """The bound of the least accurate of these bounded functions (0 for none)."""
+    bounded = [MATH_BOUNDS.get(f, MATH_ULPS) for f in functions if f not in EXACT_MATH]
+    return max(bounded, default=0)
 LEGACY_CASTS = {'I32Cast': 'i32', 'U32Cast': 'u32', 'U8Cast': 'u8', 'F32Cast': 'f32', 'F16Cast': 'f16'}
 
 

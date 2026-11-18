@@ -232,6 +232,7 @@ inline int qpel_barrier_count(bool p, threadgroup atomic_int* counter, uint rank
 #define QPEL_MATH_SIN(x) metal::precise::sin((x))
 #define QPEL_MATH_COS(x) metal::precise::cos((x))
 #define QPEL_MATH_TANH(x) metal::precise::tanh((x))
+#define QPEL_MATH_POW(a, b) metal::precise::pow((a), (b))  // IR version 17 (C's special cases, measured)
 // erf, expm1 and log1p, which Metal does not have (IR version 8; NUMERICS.md, Math functions):
 // polynomials fitted for these ranges (backends/math_fit.py prints this code), evaluated with fma,
 // and Metal's precise exp and log. Apple GPU, 2^20 inputs: erf 1, expm1 3, log1p 3 ulp at most.

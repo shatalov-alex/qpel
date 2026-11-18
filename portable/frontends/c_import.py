@@ -649,7 +649,7 @@ TO_F16 = {'__float2half_rn', '__float2half'}
 TO_BF16 = {'__float2bfloat16_rn', '__float2bfloat16'}
 # C, CUDA and Metal spellings of qpel's math functions (on float arguments).
 MATH_CALLS = {name: f for f in ('fabs', 'fmin', 'fmax', 'floor', 'ceil', 'trunc', 'round', 'copysign', 'sqrt',
-                                'exp', 'exp2', 'log', 'log2', 'sin', 'cos', 'tanh', 'erf', 'expm1', 'log1p')
+                                'exp', 'exp2', 'log', 'log2', 'sin', 'cos', 'tanh', 'erf', 'expm1', 'log1p', 'pow')
               for name in (f, f + 'f')}
 MATH_CALLS.update({'abs': 'fabs', '__fsqrt_rn': 'sqrt'})
 # CUDA's fast intrinsics, documented less accurate than qpel's bounded functions (__expf: 2 + |1.173 x|

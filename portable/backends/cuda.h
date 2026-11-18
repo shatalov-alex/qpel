@@ -260,6 +260,7 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long long, -9223372036854775808.0f, 92
 #define QPEL_MATH_ERF(x) erff((x))
 #define QPEL_MATH_EXPM1(x) expm1f((x))
 #define QPEL_MATH_LOG1P(x) log1pf((x))
+#define QPEL_MATH_POW(a, b) powf((a), (b))  // IR version 17: within 9 ulp (CUDA's documented bound)
 #endif
 
 #ifdef QPEL_CAS_ENABLED

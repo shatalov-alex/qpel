@@ -747,11 +747,24 @@ def run_subgroup_barrier(name, host, plan):
     return len(cases)
 
 
+def run_math_pow(name, host, plan):
+    """math.pow (IR version 17, tests/test_math_pow.py): special cases exact, the rest within MATH_BOUNDS['pow']; prints the worst."""
+    module = test_module('test_math_pow')
+    x, y = module.inputs()
+    result = host.run({'x': torch.from_numpy(x).to(DEVICE), 'y': torch.from_numpy(y).to(DEVICE)}, {'n': (len(x), 1, 1)}, {})
+    class Check:
+        def assertLessEqual(self, a, b, message=''):
+            assert a <= b, message
+    worst = module.check(Check(), result['z'].cpu().numpy(), x, y)
+    print(f'  pow: worst {worst:.2f} ulp on {DEVICE}')
+    return 1
+
+
 TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fma32': run_fma32,
          'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components,
          'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset, 'box_sum': run_box_sum,
          'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride, 'math_ops': run_math_ops, 'math_v8': run_math_v8, 'optional_bias': run_optional_bias, 'array_refs': run_array_refs, 'sort_bytes': run_sort_bytes, 'atomics': run_atomics, 'bitcast': run_bitcast,
-         'matrix_tiles': run_matrix_tiles, 'matrix_blocks': run_matrix_tiles, 'matrix_columns': run_matrix_tiles, 'subgroup_barrier': run_subgroup_barrier}
+         'matrix_tiles': run_matrix_tiles, 'matrix_blocks': run_matrix_tiles, 'matrix_columns': run_matrix_tiles, 'subgroup_barrier': run_subgroup_barrier, 'math_pow': run_math_pow}
 
 
 def main(argv=None):

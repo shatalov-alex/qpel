@@ -1,0 +1,19 @@
+// math.pow (IR version 17): x to the power y, with C's special cases (a negative base with an integer
+// exponent, signed zeros, infinities, NaN). A bounded function with a bound of its own, 9 ulp: CUDA
+// documents powf within 9 ulp, and Metal's precise::pow measured 1.5 (NUMERICS.md, math functions).
+module math_pow {
+  kernel power(x: buffer<f32, read> @0, y: buffer<f32, read> @1, z: buffer<f32, write> @2, n: shape3 @3) grid1d {
+    let i: u32 = qpel.index;
+    if (i >= n.x) {
+      return;
+    }
+    z[i] = math.pow(x[i], y[i]);
+  }
+}
+pipeline math_pow_launch {
+  shape n;
+  input x: buffer<f32, read> in n;
+  input y: buffer<f32, read> in n;
+  output z: buffer<f32, write> in n;
+  dispatch power over n block (64) (x = x, y = y, z = z, n = n);
+}

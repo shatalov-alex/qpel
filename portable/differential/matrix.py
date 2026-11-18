@@ -30,7 +30,7 @@ from frontends import roundtrip  # noqa: E402
 from frontends.c_import import import_source  # noqa: E402
 from frontends.clang_ast import metal_available  # noqa: E402
 from qpel_ir import Lowering  # noqa: E402
-from qpel_types import EXACT_MATH, MATH_ULPS, normalize_plan  # noqa: E402
+from qpel_types import EXACT_MATH, MATH_ULPS, math_ulps, normalize_plan  # noqa: E402
 from . import cases as test_cases
 from .compare import compare, flushed, ulp_distance  # noqa: E402,F401  (used here and by callers)
 from .simulate import Program  # noqa: E402
@@ -94,7 +94,7 @@ class Prepared:
         # that pass through two of them (original and translation) get twice the bound.
         bounded = any(n['kind'] == 'Math' and n['attributes']['function'] not in EXACT_MATH
                       for n in self.program['nodes'])
-        self.ulps = 2*MATH_ULPS if bounded else 0
+        self.ulps = 2*math_ulps({n['attributes']['function'] for n in self.program['nodes'] if n['kind'] == 'Math'})
         if bounded and options.get('ulps'):  # a program's own bound, where bounded results compound
             self.ulps = max(self.ulps, int(options['ulps']))  # (corpus.json "ulps", with its reason)
 
