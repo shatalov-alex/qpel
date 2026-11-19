@@ -2103,6 +2103,11 @@ class Importer:
         if kind == 'CStyleCastExpr' and node.get('castKind') == 'ToVoid' and (
                 peel_void(node)['kind'] == 'DeclRefExpr' or not has_effects(node)):
             return []  # (void)x; or ggml's (void)sizeof((a, b, 0)): marks locals as unused and does nothing
+        if kind == 'IfStmt' and node.get('hasElse') and any(
+                x.get('kind') == 'CallExpr' and x.get('inner') and decl_name(x['inner'][0]) == 'qpel_vector_fits'
+                for x in walk(node['inner'][0])):
+            # qpel's whole-vector store (qpel_opt.py): its element stores, in the enclosing block, are the meaning
+            return [s for child in node['inner'][-1].get('inner', ()) for s in self.read_statement(child)]
         if kind == 'IfStmt' and node.get('isConstexpr') and node['inner'][0].get('kind') == 'ConstantExpr' \
                 and node['inner'][0].get('value') in ('true', 'false'):
             # if constexpr in a template instance: clang has chosen the branch; the other is not code

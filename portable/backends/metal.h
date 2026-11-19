@@ -123,6 +123,8 @@ template <class T, class P> inline void qpel_store_unaligned(device P* p, ulong 
 // otherwise. Both read the same elements.
 #define QPEL_VECTOR_ALIGNED(p, V) ((reinterpret_cast<ulong>(p) & (sizeof(V) - 1)) == 0)
 #define QPEL_VECTOR_AT(V, p, i) (reinterpret_cast<device const V*>(p)[(i)])
+// Whole-vector stores (qpel_opt.vector_stores): b[N i + k] = v_k for k < N as one N-wide store, the same condition.
+#define QPEL_VECTOR_STORE(V, p, i, v) (reinterpret_cast<device V*>(p)[(i)] = (v))
 template <int N> inline bool qpel_vector_fits(uint i) { return i <= (0xffffffffu - (N - 1)) / N; }
 template <int N> inline bool qpel_vector_fits(int i) { return i >= 0 && i <= (0x7fffffff - (N - 1)) / N; }
 template <int N> inline bool qpel_vector_fits(ulong i) { return i <= (~0ul - (N - 1)) / N; }

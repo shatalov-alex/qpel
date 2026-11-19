@@ -291,6 +291,7 @@ class Lowering:
         self.plain_volumes = set()  # Binary ids emitted as the product inside QPEL_SHAPE_VOLUME
         import qpel_opt  # optimisation facts, apart from the portability lowering (qpel_opt.py)
         self.vector_loads = qpel_opt.vector_loads(program, self.expression_types)
+        self.vector_stores = qpel_opt.vector_stores(program, self.expression_types)
     def children(self,n,role):return [self.nodes[i] for i in n['children'].get(role,[])]
     def child(self,n,role):
         values=self.children(n,role)
@@ -482,7 +483,21 @@ class Lowering:
                 left, right = '('+type_macro(t)+')('+left+')', '('+type_macro(t)+')('+right+')'
             return ('min' if k=='Minimum' else 'max')+'('+left+', '+right+')'
         if k=='Select':return '('+e('condition')+' ? '+e('yes')+' : '+e('no')+')'
-        if k=='Block':return '{\n'+joined('statements','')+' }'
+        if k=='Block':
+            statements=self.children(n,'statements');out=[];at=0
+            while at<len(statements):
+                found=self.vector_stores.get(statements[at]['id'])
+                if found:  # one aligned N-wide store, the same elements (qpel_opt.vector_stores)
+                    base,index,values,length,element_type=found
+                    vector=f"QPEL_VEC{length}_{element_type.upper()}"
+                    b,i=self.emit(base),self.emit(index)
+                    built=f"QPEL_MAKE_VEC{length}_{element_type.upper()}("+', '.join(self.emit(v) for v in values)+')'
+                    scalar=''.join(self.emit(s) for s in statements[at:at+length])
+                    out.append(f"if (QPEL_VECTOR_ALIGNED({b}, {vector}) && qpel_vector_fits<{length}>({i})) QPEL_VECTOR_STORE({vector}, {b}, {i}, {built});\nelse {{\n{scalar}}}\n")
+                    at+=length
+                else:
+                    out.append(self.emit(statements[at]));at+=1
+            return '{\n'+''.join(out)+' }'
         if k=='Variable':
             if not hasattr(self,'read_names'):
                 self.read_names={x['links']['declaration'] for x in self.nodes.values() if x['kind']=='Name'}
