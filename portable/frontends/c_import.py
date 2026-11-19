@@ -229,6 +229,29 @@ def matrix_type_of(node):
     return metal_matrix(t.get('qualType')) or metal_matrix(t.get('desugaredQualType'))
 
 
+def exact_half(text):
+    """True when a literal's value is a finite half exactly (16.h, 0.5h), so rounding it to f32 first changes nothing."""
+    try:
+        value = float(text)
+        return struct.unpack('<e', struct.pack('<e', value))[0] == value
+    except (ValueError, OverflowError):
+        return False
+
+
+def matrix_column(node):
+    """(matrix, column index) when an ArraySubscriptExpr is m[i][j] of a Metal matrix (m[i] its column, through
+    Metal's operator[] too), else None."""
+    column = node['inner'][0]
+    while column['kind'] in {'ParenExpr', 'ExprWithCleanups', 'MaterializeTemporaryExpr', 'CXXBindTemporaryExpr',
+                             'ConstantExpr', 'ImplicitCastExpr'} and column.get('inner'):
+        column = column['inner'][0]
+    if column['kind'] == 'ArraySubscriptExpr' and matrix_type_of(column['inner'][0]):
+        return column['inner'][0], column['inner'][1]
+    if column['kind'] == 'CXXOperatorCallExpr' and decl_name(column['inner'][0]) == 'operator[]' and matrix_type_of(column['inner'][1]):
+        return column['inner'][1], column['inner'][2]  # (Metal's matrix operator[])
+    return None
+
+
 def matrix_pointee(node):
     """(element, columns, rows) when an expression or declaration is a pointer to a Metal matrix type."""
     t = node.get('type', {})
@@ -811,6 +834,7 @@ class Importer:
         self.instances = {}  # clang id of a template instantiation -> its qpel function name
         self.bool_params = set()  # clang ids of bool kernel arguments, passed as u32
         self.records = records(unit)  # struct name -> its clang record, for argument structs
+        self.byte_blocks = byte_blocks(unit, self.records)  # pointers to blocks of bytes read as byte pointers
         self.structs = {}  # struct name -> [(field, type term)] used by imported functions
         self.function_constants = {}  # clang id -> name of a Metal [[function_constant]] variable
         self.globals = {}  # clang id -> name of another program-scope variable
@@ -3248,6 +3272,8 @@ class Importer:
                 return self.graph.add('Index', children={'base': self.graph.add('Name', links={'declaration': entry[1]}),
                                                          'index': self.int_value('u32', 0)})
             raise Unsupported(node, 'assign-target', 'cannot assign to ' + core['referencedDecl'].get('name', '?'))
+        if core['kind'] == 'ArraySubscriptExpr' and matrix_column(core) is not None:
+            return self.expr(core)  # m[i][j] = v of a Metal matrix: element i R + j of its array
         if core['kind'] == 'ArraySubscriptExpr':
             if self.vector_element_ref(core):
                 raise Unsupported(node, 'vector-buffer', 'a whole vector buffer element is stored by `p[i] = v;`')
@@ -3550,6 +3576,9 @@ class Importer:
             return self.literal(n, 'u32' if self.unsigned else scalar_of(n))
         if kind == 'CXXBoolLiteralExpr':
             return add('Literal', {'value': 'true' if n['value'] else 'false'})
+        if kind == 'FloatingLiteral' and scalar_of(n) == 'f16' and exact_half(n['value']):
+            # Metal's 16.h: a half literal of a value half holds exactly, as the f32 literal converted (exact)
+            return self.convert_types(add('F32Literal', {'value': n['value']}), 'f32', 'f16', n)
         if kind == 'FloatingLiteral':
             if scalar_of(n) != 'f32':
                 raise Unsupported(n, 'double', 'double precision is not in qpel; write a float literal such as 0.5f')
@@ -3576,15 +3605,7 @@ class Importer:
             if not self.kernel:
                 raise Unsupported(n, 'thread-builtin', 'the thread index is only available in kernels')
             return self.thread_index(grid_axis(n), n)
-        column = n['inner'][0] if kind == 'ArraySubscriptExpr' else None
-        while column is not None and column['kind'] in self.STRIP | {'ImplicitCastExpr'} and column.get('inner'):
-            column = column['inner'][0]
-        matrix, column_index = None, None
-        if column is not None and column['kind'] == 'ArraySubscriptExpr' and matrix_type_of(column['inner'][0]):
-            matrix, column_index = column['inner'][0], column['inner'][1]
-        elif column is not None and column['kind'] == 'CXXOperatorCallExpr' and decl_name(column['inner'][0]) == 'operator[]' \
-                and matrix_type_of(column['inner'][1]):
-            matrix, column_index = column['inner'][1], column['inner'][2]  # (Metal's matrix operator[])
+        matrix, column_index = (matrix_column(n) if kind == 'ArraySubscriptExpr' else None) or (None, None)
         if matrix is not None:
             # m[i][j] of a Metal matrix: element i R + j of its array (column i, row j)
             _, _, rows = matrix_type_of(matrix)
@@ -3781,7 +3802,7 @@ class Importer:
     def is_atomic_element(self, node):
         node = peel(node)
         return node['kind'] == 'ArraySubscriptExpr' and self.local_array(node['inner'][0]) is None and \
-            type_access(self.buffer_kind(node['inner'][0])) == 'atomic'
+            matrix_column(node) is None and type_access(self.buffer_kind(node['inner'][0])) == 'atomic'
 
     def index(self, node):
         base, index = node['inner']
@@ -4442,6 +4463,119 @@ def records(unit):
     for node in unit.get('inner', ()):
         typedefs(node)
     return named
+
+
+BLOCK_FIELD = re.compile(r'(?:const\s+)?(?:device\s+|constant\s+|threadgroup\s+)?(.+?)\s*(?:\[(\d+)\])?')
+
+
+def block_layout(record):
+    """(size, align, {field: (offset, scalar term, count or None)}) of a struct of scalars and arrays of scalars
+    (llama.cpp's block_q8_0: a half scale, then 32 int8 quants), laid out as C does on both platforms: each
+    field at the next multiple of its size, the whole a multiple of the largest. None for any other struct."""
+    offset, align, fields = 0, 1, {}
+    for field in record.get('inner', ()):
+        if field.get('kind') != 'FieldDecl':
+            if field.get('kind') in ('CXXRecordDecl', 'RecordDecl'):
+                return None  # (a union or nested struct: not yet)
+            continue
+        t = field.get('type', {})
+        found = BLOCK_FIELD.fullmatch((t.get('desugaredQualType') or t.get('qualType', '')).strip())
+        term = SCALARS.get(' '.join(words(found.group(1)))) if found else None
+        if term is None or term == 'bool' or term not in SCALAR_TERMS:
+            return None
+        size = {'f32': 4, 'f16': 2, 'bf16': 2}.get(term) or type_bits(term) // 8
+        offset = (offset + size - 1) // size * size
+        count = int(found.group(2)) if found.group(2) else None
+        fields[field['name']] = (offset, term, count)
+        offset += size * (count or 1)
+        align = max(align, size)
+    if not fields:
+        return None
+    return (offset + align - 1) // align * align, align, fields
+
+
+def byte_blocks(unit, named):
+    """Read pointers to blocks of bytes (block_layout) as byte pointers, in place, before the import: their
+    types become unsigned char *, p + i moves i * sizeof(block) bytes, p->f is *(T *)(p + offset) and an array
+    field p->qs the pointer (T *)(p + offset). Returns {block name: size}."""
+    layouts = {n: block_layout(r) for n, r in named.items()}
+    layouts = {n: l for n, l in layouts.items() if l}
+    if not layouts:
+        return {}
+    pointer = re.compile(r'\b(' + '|'.join(map(re.escape, layouts)) + r')\s*\*')
+
+    def block_of(node):
+        t = node.get('type', {})
+        found = pointer.search(t.get('qualType', '')) or pointer.search(t.get('desugaredQualType', ''))
+        return found.group(1) if found and t.get('qualType', '').rstrip().endswith('*') else None
+
+    def as_bytes(spelling):
+        return pointer.sub('unsigned char *', spelling)
+
+    def literal(value):
+        return {'kind': 'IntegerLiteral', 'type': {'qualType': 'unsigned long'}, 'valueCategory': 'prvalue', 'value': str(value)}
+
+    def scaled(operand, size):
+        wide = {'kind': 'ImplicitCastExpr', 'castKind': 'IntegralCast', 'type': {'qualType': 'unsigned long'},
+                'valueCategory': 'prvalue', 'inner': [operand]}
+        return {'kind': 'BinaryOperator', 'opcode': '*', 'type': {'qualType': 'unsigned long'}, 'valueCategory': 'prvalue',
+                'inner': [wide, literal(size)]}
+
+    def field_pointer(member, block, decay):
+        offset, term, count = layouts[block][2][member['name']]
+        base = member['inner'][0]
+        spelling = (member['type'].get('desugaredQualType') or member['type']['qualType']).strip()
+        element = re.sub(r'\s*\[\d+\]$', '', spelling)
+        quals = [w for w in ('const', 'device', 'constant', 'threadgroup') if w in base['type']['qualType'].split()]
+        if 'const' not in element.split() and 'const' in quals:
+            element = 'const ' + element
+        address = base if offset == 0 else {'kind': 'BinaryOperator', 'opcode': '+', 'type': dict(base['type']),
+                                            'valueCategory': 'prvalue', 'inner': [base, literal(offset)]}
+        cast = {'kind': 'CStyleCastExpr', 'castKind': 'BitCast', 'type': {'qualType': element + ' *'},
+                'valueCategory': 'prvalue', 'inner': [address], 'range': member.get('range')}
+        if decay:
+            return cast
+        return {'kind': 'UnaryOperator', 'opcode': '*', 'type': dict(member['type']), 'valueCategory': 'lvalue',
+                'inner': [cast], 'range': member.get('range')}
+
+    def visit(node):
+        inner = node.get('inner')
+        block = block_of(node)
+        step = None  # which operand of p + i, p - i, p += i is the integer, read before the operands are rewritten
+        if block and node.get('kind') in ('BinaryOperator', 'CompoundAssignOperator') and \
+                node.get('opcode') in ('+', '-', '+=', '-=') and len(inner or ()) == 2:
+            step = 1 if block_of(inner[0]) else 0
+            step = None if block_of(inner[step]) else step
+        if inner:
+            for i, child in enumerate(inner):
+                if not isinstance(child, dict):
+                    continue
+                if child.get('kind') == 'ImplicitCastExpr' and child.get('castKind') == 'ArrayToPointerDecay' and \
+                        child.get('inner') and child['inner'][0].get('kind') == 'MemberExpr' and \
+                        child['inner'][0].get('isArrow') and block_of(child['inner'][0]['inner'][0]):
+                    member = child['inner'][0]
+                    block = block_of(member['inner'][0])
+                    visit(member['inner'][0])
+                    inner[i] = field_pointer(member, block, True)
+                    continue
+                if child.get('kind') == 'MemberExpr' and child.get('isArrow') and child.get('inner') and \
+                        block_of(child['inner'][0]) and child['name'] in layouts[block_of(child['inner'][0])][2]:
+                    block = block_of(child['inner'][0])
+                    visit(child['inner'][0])
+                    inner[i] = field_pointer(child, block, False)
+                    continue
+                visit(child)
+        if step is not None:
+            inner[step] = scaled(inner[step], layouts[block][0])
+        for key in ('qualType', 'desugaredQualType'):
+            if key in node.get('type', {}) and pointer.search(node['type'][key]):
+                node['type'] = dict(node['type'], **{key: as_bytes(node['type'][key])})
+        if node.get('kind') == 'CompoundAssignOperator':
+            for key in ('computeLHSType', 'computeResultType'):
+                if key in node and pointer.search(node[key].get('qualType', '')):
+                    node[key] = {'qualType': as_bytes(node[key]['qualType'])}
+    visit(unit)
+    return {n: l[0] for n, l in layouts.items()}
 
 
 def instance_name(base, arguments):
