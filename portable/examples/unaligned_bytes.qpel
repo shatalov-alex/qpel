@@ -1,0 +1,28 @@
+// IR version 18: packed records of 7 bytes (a tag, a u16 at byte 1, a u32 at byte 3), read and written
+// through unaligned views, byte by byte on both platforms (an aligned load of a wider type would drop the
+// address's low bits on the Apple GPU and fault on NVIDIA); and a vector of 8-bit integers as a value.
+module unaligned_bytes {
+  fn ends(records: buffer<u8, read>, at: u32) -> vec<u8, 2> {
+    return vec<u8, 2>(records[at], records[at + 6u]);
+  }
+  kernel unpack(records: buffer<u8, read> @0, wide: buffer<u32, write> @1, copied: buffer<u8, write> @2, n: shape3 @3) grid1d {
+    let i: u32 = qpel.index;
+    if (i >= n.x) {
+      return;
+    }
+    let at: u32 = 7u * i;
+    let small: u16 = view_unaligned<u16>(records + (at + 1u))[0u];
+    let word: u32 = view_unaligned<u32>(records + (at + 3u))[0u];
+    let pair: vec<u8, 2> = ends(records, at);
+    wide[i] = ((word + cast<u32>(small)) + (cast<u32>(pair.x) * 65536u)) + cast<u32>(pair.y);
+    view_unaligned<u32>(copied + (at + 3u))[0u] = word ^ 2863311530u;
+  }
+}
+pipeline unaligned_bytes_launch {
+  shape n;
+  shape bytes;
+  input records: buffer<u8, read> in bytes;
+  output wide: buffer<u32, write> in n;
+  output copied: buffer<u8, write> in bytes;
+  dispatch unpack over n block (64) (records = records, wide = wide, copied = copied, n = n);
+}

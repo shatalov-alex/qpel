@@ -7,6 +7,7 @@ short reason code, never by guessing. The finished program then goes through
 the normal qpel checks, which decide types, scopes and pipeline effects.
 """
 from pathlib import Path
+import math
 import re
 import struct
 
@@ -71,6 +72,9 @@ SHAPES = {'uint3', 'QpelShape', 'dim3'}
 # and Metal spell thread positions and grid sizes.
 VECTOR_NAMES = {f'{c}{n}': f'vec<{t}, {n}>' for c, t in (('int', 'i32'), ('uint', 'u32'), ('float', 'f32'))
                 for n in (2, 3, 4) if f'{c}{n}' != 'uint3'}
+# IR version 18: 8- and 16-bit integer vectors, of 2 and 4 (Metal pads a uchar3 in memory, CUDA does not)
+VECTOR_NAMES.update({f'{c}{n}': f'vec<{t}, {n}>' for c, t in (('uchar', 'u8'), ('char', 'i8'), ('ushort', 'u16'),
+                                                              ('short', 'i16')) for n in (2, 4)})
 SCALARS.update(VECTOR_NAMES)
 
 
@@ -3436,9 +3440,12 @@ class Importer:
         if target == 'f32' and source in ('u32', 'u8', 'i32', 'f16'):
             return add('F32Cast', children={'operand': value})
         if source in INTEGER_TERMS and target in ('f16', 'bf16'):
-            # through f32, exact for an integer f32 holds exactly (a literal, 8 and 16 bits): one rounding, to the half
+            # through f32, one rounding, to the half. For f16 that holds for every integer: one that converts to a
+            # finite half is below 65520 < 2^24, which f32 holds exactly, and any 2^24 or more is infinity either way.
+            # bf16 reaches 2^127, so only integers f32 holds exactly (a literal, 8 and 16 bits) go through f32.
             node = self.graph.nodes[value]
-            exact = source in ('u8', 'i8', 'u16', 'i16') or node['kind'] in ('Literal', 'I32Literal', 'Constant') and \
+            exact = target == 'f16' or source in ('u8', 'i8', 'u16', 'i16') or \
+                node['kind'] in ('Literal', 'I32Literal', 'Constant') and \
                 abs(int(str(node['attributes'].get('value', '0')).rstrip('uU'))) < 2**24
             if not exact:
                 raise Unsupported(outer, 'conversion', f'conversion from {source} to {target} is not in qpel (only of integers f32 holds exactly)')
@@ -3669,7 +3676,8 @@ class Importer:
                 return self.expr(n['inner'][0], address=True)  # (threadgroup T*) of memory already of T
             if target[0] != 'pointer' or target[2] not in SCALAR_TERMS - {'bool'}:
                 raise Unsupported(n, 'conversion', f'reinterpreting as {n["type"]["qualType"]} is not in qpel')
-            return add('View', {'element': target[2]}, {'base': self.expr(n['inner'][0], address=True)})
+            return add('View', {'element': target[2]} | ({'unaligned': True} if n.get('qpelUnaligned') else {}),
+                       {'base': self.expr(n['inner'][0], address=True)})
         if kind in EXPLICIT_CASTS:  # explicit cast to float or half, see peel()
             operand = peel(n['inner'][0])
             source = scalar_of(operand)
@@ -3678,6 +3686,8 @@ class Importer:
                 return self.core(operand, False, False)  # (half)h is h
             if source == 'bool':  # (float)(x > 0): 1 or 0
                 return self.convert_types(self.expr(operand), 'bool', scalar_of(n), n)
+            if scalar_of(n) == 'f16' and source in INTEGER_TERMS and not has_explicit_cast(n['inner'][0]):
+                return self.convert_types(self.expr(operand), source, 'f16', n)  # (half)(q & 0xFF): one rounding
             inner = n['inner'][0]
             if has_explicit_cast(inner):  # (float)(int)i: convert to int first, then to float
                 source = scalar_of(inner)
@@ -3708,6 +3718,12 @@ class Importer:
             if entry[0] == 'position':
                 return self.thread_index(field, n)
             return add(GROUP_NODES[entry[1]], {'axis': field})
+        if kind == 'ArraySubscriptExpr' and is_vector(scalar_of(n['inner'][0])) and \
+                integer_constant(n['inner'][1]) is not None and self.local_array(n['inner'][0]) is None:
+            vtype, at = scalar_of(n['inner'][0]), integer_constant(n['inner'][1])
+            if not 0 <= at < vector_length(vtype):  # sc[0] of a Metal vector value: its element sc.x
+                raise Unsupported(n, 'member', f'element {at} of a {vtype}')
+            return add('Member', {'member': VECTOR_FIELDS[at]}, {'base': self.vector_value(n['inner'][0], vtype)})
         if kind == 'ArraySubscriptExpr':
             return self.index(n)
         if kind in ('MemberExpr', 'ExtVectorElementExpr'):
@@ -4469,29 +4485,65 @@ BLOCK_FIELD = re.compile(r'(?:const\s+)?(?:device\s+|constant\s+|threadgroup\s+)
 
 
 def block_layout(record):
-    """(size, align, {field: (offset, scalar term, count or None)}) of a struct of scalars and arrays of scalars
-    (llama.cpp's block_q8_0: a half scale, then 32 int8 quants), laid out as C does on both platforms: each
-    field at the next multiple of its size, the whole a multiple of the largest. None for any other struct."""
-    offset, align, fields = 0, 1, {}
+    """(size, align, {field: (offset, scalar term or None, count or None)}) of a struct of scalars, arrays of
+    scalars and anonymous unions and structs of them (llama.cpp's block_q8_0: a half scale, then 32 int8 quants;
+    block_q4_1: a union of {half d, m} and half2 dm, then 16 bytes), laid out as C does on both platforms: each
+    field at the next multiple of its alignment, a union's members all at its start, the whole a multiple of the
+    largest alignment. A vector field takes its room but is not read through it (term None). None for any
+    other struct."""
+    union = record.get('tagUsed') == 'union'
+    offset, size_, align, fields = 0, 0, 1, {}
+    nested = {}  # an anonymous member's clang record, by the spelling of its type
     for field in record.get('inner', ()):
-        if field.get('kind') != 'FieldDecl':
-            if field.get('kind') in ('CXXRecordDecl', 'RecordDecl'):
-                return None  # (a union or nested struct: not yet)
+        kind = field.get('kind')
+        if kind in ('CXXRecordDecl', 'RecordDecl'):
+            nested[len(nested)] = field
+            continue
+        if kind != 'FieldDecl':
             continue
         t = field.get('type', {})
-        found = BLOCK_FIELD.fullmatch((t.get('desugaredQualType') or t.get('qualType', '')).strip())
-        term = SCALARS.get(' '.join(words(found.group(1)))) if found else None
-        if term is None or term == 'bool' or term not in SCALAR_TERMS:
-            return None
-        size = {'f32': 4, 'f16': 2, 'bf16': 2}.get(term) or type_bits(term) // 8
-        offset = (offset + size - 1) // size * size
-        count = int(found.group(2)) if found.group(2) else None
-        fields[field['name']] = (offset, term, count)
-        offset += size * (count or 1)
-        align = max(align, size)
-    if not fields:
+        spelling = (t.get('desugaredQualType') or t.get('qualType', '')).strip()
+        if field.get('isImplicit') and '(anonymous' in spelling and nested:
+            inner = block_layout(nested.pop(max(nested)))
+            if inner is None:
+                return None
+            size, field_align, members = inner
+            place = 0 if union else (offset + field_align - 1) // field_align * field_align
+            for name, (at, term, count) in members.items():
+                fields[name] = (place + at, term, count)
+            count = None
+        else:
+            found = BLOCK_FIELD.fullmatch(spelling)
+            if not found:
+                return None
+            base = ' '.join(words(found.group(1)))
+            vector = re.fullmatch(r'(half|float|bfloat|short|ushort|int|uint|char|uchar) __attribute__\(\(ext_vector_type\((\d)\)\)\)', base)
+            if vector:
+                term = None
+                element = SCALARS.get(vector.group(1))
+                if element is None:
+                    return None
+                field_align = ({'f32': 4, 'f16': 2, 'bf16': 2}.get(element) or type_bits(element) // 8) * \
+                    (4 if vector.group(2) == '3' else int(vector.group(2)))
+                size = field_align
+            else:
+                term = SCALARS.get(base)
+                if term is None or term == 'bool' or term not in SCALAR_TERMS:
+                    return None
+                field_align = size = {'f32': 4, 'f16': 2, 'bf16': 2}.get(term) or type_bits(term) // 8
+            count = int(found.group(2)) if found.group(2) else None
+            place = 0 if union else (offset + field_align - 1) // field_align * field_align
+            fields[field['name']] = (place, term, count)
+            size *= count or 1
+        if union:
+            size_ = max(size_, size)
+        else:
+            offset = place + size
+        align = max(align, field_align)
+    if not fields or nested:
         return None
-    return (offset + align - 1) // align * align, align, fields
+    total = size_ if union else offset
+    return (total + align - 1) // align * align, align, fields
 
 
 def byte_blocks(unit, named):
@@ -4521,9 +4573,23 @@ def byte_blocks(unit, named):
         return {'kind': 'BinaryOperator', 'opcode': '*', 'type': {'qualType': 'unsigned long'}, 'valueCategory': 'prvalue',
                 'inner': [wide, literal(size)]}
 
-    def field_pointer(member, block, decay):
+    def block_member(member):
+        """(member, block pointer expression, block name) when member is p->f of a block pointer p, also through
+        the unnamed members of anonymous unions and structs (p->d of block_q4_1 is p->(union).(struct).d)."""
+        if member.get('kind') != 'MemberExpr' or not member.get('name') or not member.get('inner'):
+            return None
+        below = member
+        while not below.get('isArrow'):
+            below = below['inner'][0] if below.get('inner') else {}
+            if below.get('kind') != 'MemberExpr' or below.get('name') or not below.get('inner'):
+                return None
+        block = block_of(below['inner'][0])
+        if not block or member['name'] not in layouts[block][2] or layouts[block][2][member['name']][1] is None:
+            return None
+        return member, below['inner'][0], block
+
+    def field_pointer(member, base, block, decay):
         offset, term, count = layouts[block][2][member['name']]
-        base = member['inner'][0]
         spelling = (member['type'].get('desugaredQualType') or member['type']['qualType']).strip()
         element = re.sub(r'\s*\[\d+\]$', '', spelling)
         quals = [w for w in ('const', 'device', 'constant', 'threadgroup') if w in base['type']['qualType'].split()]
@@ -4532,15 +4598,31 @@ def byte_blocks(unit, named):
         address = base if offset == 0 else {'kind': 'BinaryOperator', 'opcode': '+', 'type': dict(base['type']),
                                             'valueCategory': 'prvalue', 'inner': [base, literal(offset)]}
         cast = {'kind': 'CStyleCastExpr', 'castKind': 'BitCast', 'type': {'qualType': element + ' *'},
-                'valueCategory': 'prvalue', 'inner': [address], 'range': member.get('range')}
+                'valueCategory': 'prvalue', 'inner': [address], 'range': member.get('range'),
+                'qpelAlign': math.gcd(layouts[block][1], offset) if offset else layouts[block][1]}
         if decay:
             return cast
         return {'kind': 'UnaryOperator', 'opcode': '*', 'type': dict(member['type']), 'valueCategory': 'lvalue',
                 'inner': [cast], 'range': member.get('range')}
 
+    def operand(node):
+        core = node['inner'][0] if node.get('inner') else {}
+        while core.get('kind') in ('ParenExpr', 'ImplicitCastExpr') and core.get('castKind') in (None, 'NoOp', 'LValueToRValue') \
+                and core.get('inner'):
+            core = core['inner'][0]
+        return core
+
+    def element_size(spelling):
+        found = re.fullmatch(r'(.+?)\s*\*', spelling.strip())
+        term = SCALARS.get(' '.join(w for w in words(found.group(1)) if w not in ('const', 'device', 'constant', 'threadgroup'))) if found else None
+        return {'f32': 4, 'f16': 2, 'bf16': 2}.get(term) or (type_bits(term) // 8 if term in INTEGER_TERMS else None)
+
     def visit(node):
         inner = node.get('inner')
         block = block_of(node)
+        cast = node.get('kind') in ('CStyleCastExpr', 'CXXReinterpretCastExpr', 'ImplicitCastExpr') and \
+            node.get('castKind') == 'BitCast' and bool(inner)
+        known = layouts[block_of(operand(node))][1] if cast and block_of(operand(node)) else None
         step = None  # which operand of p + i, p - i, p += i is the integer, read before the operands are rewritten
         if block and node.get('kind') in ('BinaryOperator', 'CompoundAssignOperator') and \
                 node.get('opcode') in ('+', '-', '+=', '-=') and len(inner or ()) == 2:
@@ -4550,23 +4632,22 @@ def byte_blocks(unit, named):
             for i, child in enumerate(inner):
                 if not isinstance(child, dict):
                     continue
-                if child.get('kind') == 'ImplicitCastExpr' and child.get('castKind') == 'ArrayToPointerDecay' and \
-                        child.get('inner') and child['inner'][0].get('kind') == 'MemberExpr' and \
-                        child['inner'][0].get('isArrow') and block_of(child['inner'][0]['inner'][0]):
-                    member = child['inner'][0]
-                    block = block_of(member['inner'][0])
-                    visit(member['inner'][0])
-                    inner[i] = field_pointer(member, block, True)
-                    continue
-                if child.get('kind') == 'MemberExpr' and child.get('isArrow') and child.get('inner') and \
-                        block_of(child['inner'][0]) and child['name'] in layouts[block_of(child['inner'][0])][2]:
-                    block = block_of(child['inner'][0])
-                    visit(child['inner'][0])
-                    inner[i] = field_pointer(child, block, False)
+                decay = child.get('kind') == 'ImplicitCastExpr' and child.get('castKind') == 'ArrayToPointerDecay' and \
+                    bool(child.get('inner'))
+                found = block_member(child['inner'][0] if decay else child)
+                if found:
+                    member, base, owner = found
+                    visit(base)
+                    inner[i] = field_pointer(member, base, owner, decay)
                     continue
                 visit(child)
         if step is not None:
             inner[step] = scaled(inner[step], layouts[block][0])
+        if cast and not block:  # (device const uint32_t *) xb->qh: a pointer into a block, of another type
+            known = known or operand(node).get('qpelAlign')
+            size = element_size(node['type'].get('qualType', ''))
+            if known and size and known % size:
+                node['qpelUnaligned'] = True  # its elements are read and written byte by byte (IR version 18)
         for key in ('qualType', 'desugaredQualType'):
             if key in node.get('type', {}) and pointer.search(node['type'][key]):
                 node['type'] = dict(node['type'], **{key: as_bytes(node['type'][key])})

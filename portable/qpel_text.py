@@ -151,7 +151,7 @@ class Printer:
         if k == 'Bitcast':
             return f'bitcast<{a["to"]}>({e("operand")})'
         if k == 'View':
-            return f'view<{a["element"]}>({e("base")})'
+            return f'{"view_unaligned" if a.get("unaligned") else "view"}<{a["element"]}>({e("base")})'
         if k == 'Math':
             return f'math.{a["function"]}({args("arguments")})'
         if k in ('Minimum', 'Maximum'):
@@ -654,7 +654,7 @@ class Parser:
                 self.fail('a vector length is 2, 3 or 4')
             return self.add('VectorValue', {'element': element, 'length': int(length)},
                             {'elements': self.arguments()})
-        if value in ('cast', 'bitcast', 'view', 'const'):
+        if value in ('cast', 'bitcast', 'view', 'view_unaligned', 'const'):
             self.take('<')
             target = self.take(kind='name')
             self.take('>')
@@ -665,6 +665,8 @@ class Parser:
                 return self.add('Bitcast', {'to': target}, {'operand': args[0]})
             if value == 'view':
                 return self.add('View', {'element': target}, {'base': args[0]})
+            if value == 'view_unaligned':  # IR version 18
+                return self.add('View', {'element': target, 'unaligned': True}, {'base': args[0]})
             negative = self.graph.nodes[args[0]]
             if negative['kind'] != 'Unary' or negative['attributes']['operator'] != '-':
                 self.fail('const<T>(-n) is for negative constants; write n_T otherwise')

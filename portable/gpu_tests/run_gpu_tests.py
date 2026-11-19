@@ -760,11 +760,24 @@ def run_math_pow(name, host, plan):
     return 1
 
 
+
+def run_unaligned_bytes(name, host, plan):
+    """Unaligned views and a vec<u8, 2> (IR version 18, tests/test_unaligned_bytes.py): packed 7-byte records."""
+    module = test_module('test_unaligned_bytes')
+    case, records = module.case()
+    result = host.run({'records': torch.from_numpy(records).to(DEVICE)}, case.shapes, case.values)
+    got = {k: v.cpu().numpy() for k, v in result.items()}
+    class Check:
+        pass
+    module.check(Check(), {'wide': got['wide'].astype(np.uint32), 'copied': got['copied'].astype(np.uint8)}, records)
+    return 1
+
 TESTS = {**{name: run_u8_pair for name in U8_PAIRS}, 'float32': run_float32, 'fma32': run_fma32,
          'half': run_half, 'reduce': run_reduce, 'workgroup': run_workgroup, 'components': run_components,
          'signed_delta': run_signed_delta, 'scale_offset': run_scale_offset, 'box_sum': run_box_sum,
          'sam2_cc': run_sam2_cc, 'window_sum': run_window_sum, 'int_widths': run_int_widths, 'grid_stride': run_grid_stride, 'math_ops': run_math_ops, 'math_v8': run_math_v8, 'optional_bias': run_optional_bias, 'array_refs': run_array_refs, 'sort_bytes': run_sort_bytes, 'atomics': run_atomics, 'bitcast': run_bitcast,
-         'matrix_tiles': run_matrix_tiles, 'matrix_blocks': run_matrix_tiles, 'matrix_columns': run_matrix_tiles, 'subgroup_barrier': run_subgroup_barrier, 'math_pow': run_math_pow}
+         'matrix_tiles': run_matrix_tiles, 'matrix_blocks': run_matrix_tiles, 'matrix_columns': run_matrix_tiles, 'subgroup_barrier': run_subgroup_barrier, 'math_pow': run_math_pow,
+         'unaligned_bytes': run_unaligned_bytes}
 
 
 def main(argv=None):

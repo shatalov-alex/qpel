@@ -156,7 +156,7 @@ class CudaIdioms(Sources):
                               THRESHOLD_CU.replace('binary[i] =', 'lane(threadIdx); binary[i] ='),
             'call': '__device__ void elsewhere();\n' + THRESHOLD_CU.replace('binary[i] =', 'elsewhere(); binary[i] ='),  # (defined in another unit)
             'buffer-type': THRESHOLD_CU.replace('unsigned int* binary', 'double* binary'),
-            'local-type': THRESHOLD_CU.replace('binary[i] =', 'char4 packed; binary[i] ='),
+            'local-type': THRESHOLD_CU.replace('binary[i] =', 'double2 packed; binary[i] ='),  # (char4 is IR version 18)
             'scalar-kernel-argument': '#include <cuda_bf16.h>\n' + THRESHOLD_CU.replace(
                 'uint3 dimensions', 'uint3 dimensions, __nv_bfloat16 extra'),  # (bool is now a u32 argument)
             'no-extent': THRESHOLD_CU.replace('uint3 dimensions', 'unsigned int n, unsigned int m').replace(

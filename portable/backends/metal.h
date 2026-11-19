@@ -57,6 +57,64 @@ using namespace metal;
 #define QPEL_MAKE_VEC3_F32 float3
 #define QPEL_VEC4_F32 float4
 #define QPEL_MAKE_VEC4_F32 float4
+// IR version 18: an unaligned view's element i, built from its bytes (Metal's loads of a wider type assume
+// that type's alignment and would drop the address's low bits).
+template <int N> struct qpel_bytes;
+template <> struct qpel_bytes<1> {
+  template <class T> static T load(const device uchar* b) { return as_type<T>(b[0]); }
+  template <class T> static void store(device uchar* b, T v) { b[0] = as_type<uchar>(v); }
+};
+template <> struct qpel_bytes<2> {
+  template <class T> static T load(const device uchar* b) { return as_type<T>(uchar2(b[0], b[1])); }
+  template <class T> static void store(device uchar* b, T v) { uchar2 u = as_type<uchar2>(v); b[0] = u.x; b[1] = u.y; }
+};
+template <> struct qpel_bytes<4> {
+  template <class T> static T load(const device uchar* b) { return as_type<T>(uchar4(b[0], b[1], b[2], b[3])); }
+  template <class T> static void store(device uchar* b, T v) {
+    uchar4 u = as_type<uchar4>(v); b[0] = u.x; b[1] = u.y; b[2] = u.z; b[3] = u.w;
+  }
+};
+template <> struct qpel_bytes<8> {
+  template <class T> static T load(const device uchar* b) {
+    return as_type<T>(uint2(as_type<uint>(uchar4(b[0], b[1], b[2], b[3])), as_type<uint>(uchar4(b[4], b[5], b[6], b[7]))));
+  }
+  template <class T> static void store(device uchar* b, T v) {
+    uint2 w = as_type<uint2>(v); qpel_bytes<4>::store<uint>(b, w.x); qpel_bytes<4>::store<uint>(b + 4, w.y);
+  }
+};
+template <class T, class P> inline T qpel_load_unaligned(const device P* p, ulong i) {
+  return qpel_bytes<sizeof(T)>::template load<T>((const device uchar*)p + i * sizeof(T));
+}
+template <class T, class P> inline void qpel_store_unaligned(device P* p, ulong i, T v) {
+  qpel_bytes<sizeof(T)>::template store<T>((device uchar*)p + i * sizeof(T), v);
+}
+#define QPEL_LOAD_UNALIGNED(T, p, i) qpel_load_unaligned<T>((p), (i))
+#define QPEL_STORE_UNALIGNED(T, p, i, v) qpel_store_unaligned<T>((p), (i), (T)(v))
+// IR version 18: vectors of 8- and 16-bit integers (values only, never in shared memory)
+#define QPEL_VEC2_U8 uchar2
+#define QPEL_MAKE_VEC2_U8 uchar2
+#define QPEL_VEC3_U8 uchar3
+#define QPEL_MAKE_VEC3_U8 uchar3
+#define QPEL_VEC4_U8 uchar4
+#define QPEL_MAKE_VEC4_U8 uchar4
+#define QPEL_VEC2_I8 char2
+#define QPEL_MAKE_VEC2_I8 char2
+#define QPEL_VEC3_I8 char3
+#define QPEL_MAKE_VEC3_I8 char3
+#define QPEL_VEC4_I8 char4
+#define QPEL_MAKE_VEC4_I8 char4
+#define QPEL_VEC2_U16 ushort2
+#define QPEL_MAKE_VEC2_U16 ushort2
+#define QPEL_VEC3_U16 ushort3
+#define QPEL_MAKE_VEC3_U16 ushort3
+#define QPEL_VEC4_U16 ushort4
+#define QPEL_MAKE_VEC4_U16 ushort4
+#define QPEL_VEC2_I16 short2
+#define QPEL_MAKE_VEC2_I16 short2
+#define QPEL_VEC3_I16 short3
+#define QPEL_MAKE_VEC3_I16 short3
+#define QPEL_VEC4_I16 short4
+#define QPEL_MAKE_VEC4_I16 short4
 
 // Whole-vector loads (qpel_opt.vector_loads): vec<T, N>(b[N i], ..., b[N i + N - 1]) as one N-wide
 // load when b is aligned to the vector and N i + N - 1 does not wrap i's type; the element loads

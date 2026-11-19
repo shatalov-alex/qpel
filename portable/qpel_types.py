@@ -48,7 +48,10 @@ MAX_ARRAY = 1024
 # IR version 4: a small vector value (CUDA's int4, uint2, float3; Metal's vectors), copied whole,
 # passed to and returned from functions; its elements are read and written as .x .y .z .w.
 VECTOR = re.compile(r'vec<(\w+), ([234])>')
-VECTOR_ELEMENTS = {'i32', 'u32', 'f32'}
+VECTOR_ELEMENTS = {'i32', 'u32', 'f32', 'u8', 'i8', 'u16', 'i16'}
+# IR version 18: vectors of 8- and 16-bit integers (Metal's uchar2, llama.cpp's scale pairs), as values only:
+# not in shared memory, where Metal pads a uchar3 to 4 bytes and CUDA does not.
+WIDE_VECTOR_ELEMENTS = {'i32', 'u32', 'f32'}
 VECTOR_FIELDS = 'xyzw'
 # IR version 4: memory shared by the threads of one group (CUDA __shared__, Metal threadgroup),
 # declared at the top of a Groups kernel; its elements are scalars or vectors.
@@ -145,6 +148,11 @@ def is_vector(t):
     return VECTOR.fullmatch(term(t)) is not None
 
 
+def is_wide_vector(t):
+    """A vector of 32-bit elements, the ones shared memory may hold (IR version 4)."""
+    return is_vector(t) and vector_element(t) in WIDE_VECTOR_ELEMENTS
+
+
 def vector_element(t):
     return VECTOR.fullmatch(term(t)).group(1)
 
@@ -218,11 +226,11 @@ def is_valid(t):
         return m.group(1) in VECTOR_ELEMENTS
     m = SHARED.fullmatch(t)
     if m:
-        return (m.group(1) in SCALAR_TERMS - {'bool'} or is_valid(m.group(1)) and is_vector(m.group(1))) \
+        return (m.group(1) in SCALAR_TERMS - {'bool'} or is_valid(m.group(1)) and is_wide_vector(m.group(1))) \
             and shared_bytes(t) <= MAX_SHARED_BYTES
     m = SHARED_VIEW.fullmatch(t)
     if m:
-        return m.group(1) in SCALAR_TERMS - {'bool'} or is_valid(m.group(1)) and is_vector(m.group(1))
+        return m.group(1) in SCALAR_TERMS - {'bool'} or is_valid(m.group(1)) and is_wide_vector(m.group(1))
     m = BUFFER.fullmatch(t)
     return bool(m) and m.group(1) in SCALAR_TERMS - {'bool'} and (m.group(2) != 'atomic' or m.group(1) in ATOMIC_ELEMENTS)
 
@@ -392,6 +400,13 @@ class TypeChecker:
             base = e('base')
             check(is_buffer(base) and access(base) != 'atomic', 'VIEW', 'A view needs an ordinary buffer')
             check(a['element'] in SCALAR_TERMS - {'bool'}, 'VIEW', 'A view has a scalar element type')
+            if a.get('unaligned'):  # IR version 18: read and written byte by byte, so only indexed directly
+                below, parent = node, self.parents.get(node['id'])  # (moved first: view + i, view - i)
+                while parent is not None and parent['kind'] == 'Binary' and parent['attributes'].get('operator') in ('+', '-') \
+                        and self.child(parent, 'left')['id'] == below['id']:
+                    below, parent = parent, self.parents.get(parent['id'])
+                check(parent is not None and parent['kind'] == 'Index' and self.child(parent, 'base')['id'] == below['id'],
+                      'VIEW', 'An unaligned view is indexed directly (after moving it by + or - if at all)')
             return buffer(a['element'], access(base))
         if k == 'F32Literal':
             return 'f32'

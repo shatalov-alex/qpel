@@ -144,6 +144,14 @@ examples/subgroup_barrier.qpel (neighbouring lanes swap values through shared me
 
 `math.pow(x, y)` (`Math {function: pow}`), a bounded function with its own bound of 9 ulp (NUMERICS.md, math functions): CUDA `powf`, Metal `metal::precise::pow`. examples/math_pow.qpel, tests/test_math_pow.py. A program with `math.pow` is version 17.
 
+## IR version 18
+
+Vectors of 8- and 16-bit integers: `vec<u8, N>`, `vec<i8, N>`, `vec<u16, N>`, `vec<i16, N>` for N of 2 to 4 (CUDA `uchar2`, `char4`, `ushort2`, ...; Metal the same names). As every vector they are values: built (`VectorValue`, each element converted as an assignment converts), read and written by element, copied, passed and returned; qpel has no vector arithmetic. Unlike the 32-bit vectors they are not elements of shared memory or shared views: Metal pads a `uchar3` to 4 bytes and CUDA does not. llama.cpp's `get_scale_min_k4_just2` returns a `uchar2` (the q4_K and q5_K scales).
+
+Unaligned views: `View {element, unaligned: true}` (text `view_unaligned<T>(p)`) reads and writes its elements byte by byte, at any byte address: CUDA copies them with `memcpy` (NVIDIA faults on a misaligned wider load), Metal builds them from `uchar` loads with `as_type` (the Apple GPU's wider loads assume the type's alignment and drop the address's low bits; tests/test_llama_mul_mm_blocks.py found it in llama.cpp's q5_0, whose `uint32_t` quant bits sit at byte 2 of a 22-byte block). An unaligned view is the base of an `Index`, directly or after `+` and `-` (`view_unaligned<u32>(p + 3u)[0u]`, `(v + i)[0u]`); it is not held in a local, where its alignment would be lost. examples/unaligned_bytes.qpel, tests/test_unaligned_bytes.py.
+
+A program with either is version 18.
+
 ## Optimisation passes
 
 `qpel_opt.py` holds passes that read a validated program and tell the lowering how to emit it faster, with the same results; they never change the IR, whose meaning stays the portable one. Kept apart from the portability lowering (ROADMAP, Phase 6):

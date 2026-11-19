@@ -167,6 +167,26 @@ inline float2 make_float2(float x, float y) { return {x, y}; }
 inline float3 make_float3(float x, float y, float z) { return {x, y, z}; }
 inline float4 make_float4(float x, float y, float z, float w) { return {x, y, z, w}; }
 inline char4 make_char4(signed char x, signed char y, signed char z, signed char w) { return {x, y, z, w}; }
+// IR version 18: vectors of 8- and 16-bit integers
+struct uchar2 { unsigned char x, y; };
+inline uchar2 make_uchar2(unsigned char x, unsigned char y) { return {x, y}; }
+struct uchar3 { unsigned char x, y, z; };
+inline uchar3 make_uchar3(unsigned char x, unsigned char y, unsigned char z) { return {x, y, z}; }
+inline uchar4 make_uchar4(unsigned char x, unsigned char y, unsigned char z, unsigned char w) { return {x, y, z, w}; }
+struct char2 { signed char x, y; };
+inline char2 make_char2(signed char x, signed char y) { return {x, y}; }
+struct char3 { signed char x, y, z; };
+inline char3 make_char3(signed char x, signed char y, signed char z) { return {x, y, z}; }
+inline ushort2 make_ushort2(unsigned short x, unsigned short y) { return {x, y}; }
+struct ushort3 { unsigned short x, y, z; };
+inline ushort3 make_ushort3(unsigned short x, unsigned short y, unsigned short z) { return {x, y, z}; }
+struct ushort4 { unsigned short x, y, z, w; };
+inline ushort4 make_ushort4(unsigned short x, unsigned short y, unsigned short z, unsigned short w) { return {x, y, z, w}; }
+inline short2 make_short2(short x, short y) { return {x, y}; }
+struct short3 { short x, y, z; };
+inline short3 make_short3(short x, short y, short z) { return {x, y, z}; }
+struct short4 { short x, y, z, w; };
+inline short4 make_short4(short x, short y, short z, short w) { return {x, y, z, w}; }
 
 [[noreturn]] inline void qpel_simulator_needs_threads(const char* what) {
   std::fprintf(stderr, "qpel simulator: %s needs threads that run together\n", what);
