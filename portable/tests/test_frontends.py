@@ -154,7 +154,7 @@ class CudaIdioms(Sources):
             # (a helper reading threadIdx.x is passed it; the whole builtin as a value is not portable)
             'thread-builtin': '__device__ unsigned int lane(uint3 t) { return t.x; }\n' +
                               THRESHOLD_CU.replace('binary[i] =', 'lane(threadIdx); binary[i] ='),
-            'call': THRESHOLD_CU.replace('binary[i] =', '__syncwarp(); binary[i] ='),
+            'call': '__device__ void elsewhere();\n' + THRESHOLD_CU.replace('binary[i] =', 'elsewhere(); binary[i] ='),  # (defined in another unit)
             'buffer-type': THRESHOLD_CU.replace('unsigned int* binary', 'double* binary'),
             'local-type': THRESHOLD_CU.replace('binary[i] =', 'char4 packed; binary[i] ='),
             'scalar-kernel-argument': '#include <cuda_bf16.h>\n' + THRESHOLD_CU.replace(

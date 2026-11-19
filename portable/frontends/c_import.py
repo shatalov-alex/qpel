@@ -2228,7 +2228,7 @@ class Importer:
         if fragment_of(decl['type']):
             return self.fragment_local(decl, name, fragment_of(decl['type']))
         if matrix_type_of(decl) and not matrix_pointee(decl):
-            return self.matrix_local(decl, name, matrix_type_of(decl))
+            return self.scalar_matrix_local(decl, name, matrix_type_of(decl))
         if matrix_pointee(decl) and 'init' in decl and \
                 not {'threadgroup', 'thread'} & set(decl['type']['qualType'].replace('*', ' ').split()):
             # device const block_q * x = ...: a buffer local of the matrices' scalars (its arithmetic scales by C * R)
@@ -2449,7 +2449,7 @@ class Importer:
 
     STRIP = {'ParenExpr', 'ExprWithCleanups', 'MaterializeTemporaryExpr', 'CXXBindTemporaryExpr', 'ConstantExpr'}
 
-    def matrix_local(self, decl, name, matrix):
+    def scalar_matrix_local(self, decl, name, matrix):
         """`half4x4 temp_a;`: an array of its C * R scalars, column-major, starting at zero (Metal leaves it
         undefined); an initializer is assigned after."""
         element, columns, rows = matrix
