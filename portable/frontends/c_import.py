@@ -3262,6 +3262,9 @@ class Importer:
             return self.wmma_statement(node, decl_name(node['inner'][0]))
         if kind == 'CallExpr' and self.callee(node) in MATRIX_CALLS - {'make_filled_simdgroup_matrix'}:
             return self.matrix_statement(node, self.callee(node))
+        if kind == 'CallExpr' and decl_name(node['inner'][0]) == 'qpel_store_unaligned':  # qpel's own output
+            value = node['inner'][3]
+            return add('Assign', children={'target': self.unaligned_element(node, scalar_of(value)), 'value': self.expr(value)})
         if kind == 'CallExpr' and decl_name(node['inner'][0]) in ('qpel_matrix_store', 'qpel_matrix_store_columns'):  # qpel's own output
             return add('Evaluate', children={'value': self.qpel_matrix_call(node, decl_name(node['inner'][0]))})
         return add('Evaluate', children={'value': self.expr(node, statement=True)})
@@ -3836,6 +3839,13 @@ class Importer:
             return self.graph.add('AtomicLoad', children={'address': self.element_address(node)})
         return self.graph.add('Index', children={'base': self.buffer(base), 'index': self.expr(index)})
 
+    def unaligned_element(self, n, element):
+        """qpel's own qpel_load_unaligned<T>(p, i) or qpel_store_unaligned<T>(p, i, v), read back (IR version 18):
+        element i of an unaligned view of p."""
+        base, index = n['inner'][1:3]
+        view = self.graph.add('View', {'element': element, 'unaligned': True}, {'base': self.expr(base, address=True)})
+        return self.graph.add('Index', children={'base': view, 'index': self.expr(peel(index))})
+
     def note_atomic_access(self, base):
         message = f'{self.current}: plain accesses to atomic buffer {decl_name(base)} became relaxed atomic loads and stores'
         if message not in self.adaptations:
@@ -3939,6 +3949,8 @@ class Importer:
             return self.matrix_value(n)
         if decl_name(n['inner'][0]) in QPEL_MATRIX_CALLS:  # qpel's own output, read back
             return self.qpel_matrix_call(n, decl_name(n['inner'][0]))
+        if decl_name(n['inner'][0]) == 'qpel_load_unaligned':  # qpel's own output, read back
+            return self.unaligned_element(n, scalar_of(n))
         if callee in ('__syncthreads', 'threadgroup_barrier'):  # (Metal's flags: qpel's barrier orders both)
             return add('Barrier')
         if callee in ('__syncwarp', 'simdgroup_barrier'):  # IR version 16: the subgroup's lanes, ordering memory

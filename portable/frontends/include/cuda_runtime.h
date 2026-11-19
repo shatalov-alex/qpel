@@ -41,6 +41,25 @@ inline __host__ __device__ float2 make_float2(float x, float y) { return {x, y};
 inline __host__ __device__ float3 make_float3(float x, float y, float z) { return {x, y, z}; }
 inline __host__ __device__ float4 make_float4(float x, float y, float z, float w) { return {x, y, z, w}; }
 inline __host__ __device__ char4 make_char4(signed char x, signed char y, signed char z, signed char w) { return {x, y, z, w}; }
+// The 8- and 16-bit vectors (IR version 18).
+struct char2 { signed char x, y; };
+struct char3 { signed char x, y, z; };
+struct uchar2 { unsigned char x, y; };
+struct uchar3 { unsigned char x, y, z; };
+struct short3 { short x, y, z; };
+struct short4 { short x, y, z, w; };
+struct ushort3 { unsigned short x, y, z; };
+struct ushort4 { unsigned short x, y, z, w; };
+inline __host__ __device__ char2 make_char2(signed char x, signed char y) { return {x, y}; }
+inline __host__ __device__ char3 make_char3(signed char x, signed char y, signed char z) { return {x, y, z}; }
+inline __host__ __device__ uchar2 make_uchar2(unsigned char x, unsigned char y) { return {x, y}; }
+inline __host__ __device__ uchar3 make_uchar3(unsigned char x, unsigned char y, unsigned char z) { return {x, y, z}; }
+inline __host__ __device__ uchar4 make_uchar4(unsigned char x, unsigned char y, unsigned char z, unsigned char w) { return {x, y, z, w}; }
+inline __host__ __device__ short2 make_short2(short x, short y) { return {x, y}; }
+inline __host__ __device__ short3 make_short3(short x, short y, short z) { return {x, y, z}; }
+inline __host__ __device__ short4 make_short4(short x, short y, short z, short w) { return {x, y, z, w}; }
+inline __host__ __device__ ushort3 make_ushort3(unsigned short x, unsigned short y, unsigned short z) { return {x, y, z}; }
+inline __host__ __device__ ushort4 make_ushort4(unsigned short x, unsigned short y, unsigned short z, unsigned short w) { return {x, y, z, w}; }
 struct dim3 {
   unsigned int x, y, z;
   __host__ __device__ dim3(unsigned int x = 1, unsigned int y = 1, unsigned int z = 1) : x(x), y(y), z(z) {}
@@ -341,7 +360,6 @@ template <class T, class U> __host__ __device__ constexpr T ceil_div(T a, U b) {
 #if __cplusplus < 202002L
 namespace std { template <class T> constexpr int bit_width(T x) { int n = 0; while (x) { x >>= 1; ++n; } return n; } }  // C++20
 #endif
-struct ushort4 { unsigned short x, y, z, w; };
 cudaError_t cudaMallocAsync(void**, size_t, cudaStream_t);
 template <class T> cudaError_t cudaMallocAsync(T**, size_t, cudaStream_t);  // (declarations only: a header with bodies is copied, see simulate.py)
 cudaError_t cudaFreeAsync(void*, cudaStream_t);

@@ -65,21 +65,23 @@ template <> struct qpel_bytes<1> {
   template <class T> static void store(device uchar* b, T v) { b[0] = as_type<uchar>(v); }
 };
 template <> struct qpel_bytes<2> {
-  template <class T> static T load(const device uchar* b) { return as_type<T>(uchar2(b[0], b[1])); }
-  template <class T> static void store(device uchar* b, T v) { uchar2 u = as_type<uchar2>(v); b[0] = u.x; b[1] = u.y; }
+  template <class T> static T load(const device uchar* b) { return as_type<T>(ushort(ushort(b[0]) | ushort(b[1]) << 8)); }
+  template <class T> static void store(device uchar* b, T v) { ushort u = as_type<ushort>(v); b[0] = uchar(u); b[1] = uchar(u >> 8); }
 };
 template <> struct qpel_bytes<4> {
-  template <class T> static T load(const device uchar* b) { return as_type<T>(uchar4(b[0], b[1], b[2], b[3])); }
+  template <class T> static T load(const device uchar* b) {
+    return as_type<T>(uint(b[0]) | uint(b[1]) << 8 | uint(b[2]) << 16 | uint(b[3]) << 24);
+  }
   template <class T> static void store(device uchar* b, T v) {
-    uchar4 u = as_type<uchar4>(v); b[0] = u.x; b[1] = u.y; b[2] = u.z; b[3] = u.w;
+    uint u = as_type<uint>(v); b[0] = uchar(u); b[1] = uchar(u >> 8); b[2] = uchar(u >> 16); b[3] = uchar(u >> 24);
   }
 };
 template <> struct qpel_bytes<8> {
   template <class T> static T load(const device uchar* b) {
-    return as_type<T>(uint2(as_type<uint>(uchar4(b[0], b[1], b[2], b[3])), as_type<uint>(uchar4(b[4], b[5], b[6], b[7]))));
+    return as_type<T>(ulong(qpel_bytes<4>::load<uint>(b)) | ulong(qpel_bytes<4>::load<uint>(b + 4)) << 32);
   }
   template <class T> static void store(device uchar* b, T v) {
-    uint2 w = as_type<uint2>(v); qpel_bytes<4>::store<uint>(b, w.x); qpel_bytes<4>::store<uint>(b + 4, w.y);
+    ulong w = as_type<ulong>(v); qpel_bytes<4>::store<uint>(b, uint(w)); qpel_bytes<4>::store<uint>(b + 4, uint(w >> 32));
   }
 };
 template <class T, class P> inline T qpel_load_unaligned(const device P* p, ulong i) {
