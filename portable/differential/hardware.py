@@ -255,6 +255,8 @@ def main(argv=None):
     where = parser.add_mutually_exclusive_group(required=True)
     where.add_argument('--kaggle', action='store_true', help='run on a Kaggle T4 through the Kaggle CLI')
     where.add_argument('--bundle-only', type=Path, metavar='OUT', help='write OUT/bundle.tar.gz and stop')
+    where.add_argument('--results', type=Path, metavar='TAR',
+                       help="check the results.tar.gz an earlier run downloaded (its rows are prepared again)")
     parser.add_argument('--cupy-only', action='store_true',
                         help='only the self-test and the CuPy host fixture tests (no behaviour rows)')
     parser.add_argument('--kaggle-cli', default=shutil.which('kaggle') or 'kaggle')
@@ -270,6 +272,17 @@ def main(argv=None):
     details = {}
 
     def execute(root):
+        if args.results:  # results.tar.gz of an earlier run: the same rows prepared again (fixed seeds), not built
+            unpack_results(root, args.results.resolve())
+            ran = (root/'ran_bundle_id.txt').read_text().strip() if (root/'ran_bundle_id.txt').exists() else 'none'
+            print(f'checking {args.results} (bundle {ran}) against the rows prepared again', flush=True)
+            for name in ('gpu.txt', 'timing.txt', 'selftest.log', 'selftest.status', 'cupy_host.log', 'cupy_host.status',
+                         'bench.log', 'bench.status', 'bench_cuda.json'):
+                for folder in (root, args.results.resolve().parent):
+                    if (folder/name).exists():
+                        details[name] = (folder/name).read_text(errors='replace').strip()
+                        break
+            return
         started = time.time()
         build(root)
         if args.no_cupy and (root/'bench.json').exists():
