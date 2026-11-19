@@ -29,7 +29,7 @@ WORKDIR /opt/gpgpu-sim
 # duplicate of the function's own and skipped, so the block wrote the function's register. nvcc writes
 # __syncthreads_count as { .reg .pred %p1; ... bar.red.popc ... %p1; }: gsplat's rasterizer lost a live
 # predicate and rendered wrong pixels.
-# qpel-wmma.patch (2026-11-18, local so far): WMMA's wmma.mma with f16 inputs read each input's 16 bits as an
+# qpel-wmma.patch (2026-11-18, upstream as accel-sim PR #160, its exact diff): WMMA's wmma.mma with f16 inputs read each input's 16 bits as an
 # address (*(reinterpret_cast<half *>(hex_val))), so every f16 WMMA crashed the simulator (SIGSEGV in mma_impl);
 # and it summed the products in f16, rounding each product and partial sum, where tensor cores add exact
 # products in f32: D = C + the products in k order, in f32.

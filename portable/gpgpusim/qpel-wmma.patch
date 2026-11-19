@@ -1,6 +1,16 @@
+diff --git a/src/cuda-sim/instructions.cc b/src/cuda-sim/instructions.cc
+index f6324fb..0f5cad2 100644
 --- a/src/cuda-sim/instructions.cc
 +++ b/src/cuda-sim/instructions.cc
-@@ -1968,7 +1968,11 @@
+@@ -1922,7 +1922,6 @@ void mma_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
+   else
+     tid = inst.warp_id() * core->get_warp_size();
+   float temp;
+-  half temp2;
+ 
+   for (thrd = 0; thrd < core->get_warp_size(); thrd++) {
+     thread = core->get_thread_info()[tid + thrd];
+@@ -1949,7 +1948,11 @@ void mma_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
              hex_val = (v[k / 2].s64 & 0xffff);
            else
              hex_val = ((v[k / 2].s64 & 0xffff0000) >> 16);
@@ -13,12 +23,13 @@
          }
        }
        if (!((operand_num == 3) && (type2 == F32_TYPE))) {
-@@ -2053,33 +2057,17 @@
+@@ -2034,33 +2037,19 @@ void mma_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
        printf("\n");
      }
    }
-+  // Tensor cores multiply f16 inputs exactly and add the products in at least f32 (summing them in f16,
-+  // as this did, rounded every product and partial sum to 11 bits). D = C + the products in k order.
++  // Tensor cores multiply f16 inputs exactly and add the products in at least
++  // f32 (summing them in f16, as this did, rounded every product and partial
++  // sum to 11 bits). D = C + the products in k order.
    for (i = 0; i < 16; i++) {
      for (j = 0; j < 16; j++) {
 -      matrix_d[i][j].f16 = 0;
@@ -46,7 +57,8 @@
 -        temp += matrix_c[i][j].f32;
 -        matrix_d[i][j].f32 = temp;
 -      }
-+      float sum = (type2 == F16_TYPE) ? (float)matrix_c[i][j].f16 : matrix_c[i][j].f32;
++      float sum =
++          (type2 == F16_TYPE) ? (float)matrix_c[i][j].f16 : matrix_c[i][j].f32;
 +      for (k = 0; k < 16; k++)
 +        sum += (float)matrix_a[i][k].f16 * (float)matrix_b[k][j].f16;
 +      if (type == F16_TYPE)

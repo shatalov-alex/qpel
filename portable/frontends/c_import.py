@@ -4129,20 +4129,28 @@ class Importer:
             for r in plan['resources']:
                 if r['name'] in getattr(self, 'resource_kinds', {}):
                     r['kind'] = self.resource_kinds[r['name']]
-            zeroed = self.read_first(module, self.dispatch(module, plan), plan)
+            fixed = set(getattr(self, 'resource_kinds', {})) | set(self.struct_fields)
+            zeroed, roles = self.read_first(module, self.dispatch(module, plan), plan, fixed)
             for r in plan['resources']:
                 if r['name'] in zeroed:
                     r['kind'] = 'zeroed'
                     self.adaptations.append(f'{r["name"]} is updated atomically before anything writes it, '
                                             'so it starts as zeros (pass a plan if the host fills it)')
+                elif r['name'] in roles:
+                    r['kind'] = roles[r['name']]
         return self.dispatch(module, plan)
 
-    def read_first(self, module, pipeline, plan):
-        """Atomic scratch resources that a stage reads before any stage writes them."""
+    def read_first(self, module, pipeline, plan, fixed=()):
+        """(atomic scratch resources a stage reads before any stage writes them, {buffer: role}) with the
+        validator's own reads and writes (through the functions a kernel calls), for the writable buffers
+        the plan made without one: 'inout' when a stage reads it before any writes it (it arrives with the
+        caller's data), 'output' when written, else 'input' when only read and 'inout' when not touched."""
         from qpel_pipeline import PipelineChecker, READ, WRITE
         checker = PipelineChecker(self.graph.program(module, pipeline))
         kinds = {r['name']: r['kind'] for r in plan['resources']}
-        ready, found = {n for n, k in kinds.items() if k != 'scratch' and k != 'output'}, set()
+        ready, found = {n for n, k in kinds.items() if k != 'scratch' and k not in ('output', 'inout')}, set()
+        open_ = {n for n, k in kinds.items() if k in ('output', 'inout') and n not in fixed}
+        read_early, read_any, written_any = set(), set(), set()
         for stage in checker.children(checker.pipeline, 'stages'):
             kernel = checker.target(stage, 'kernel')
             effects = checker.effects(kernel)
@@ -4152,10 +4160,17 @@ class Importer:
                 flags = effects.get(binding['links']['parameter'], 0)
                 if flags & READ and name not in ready and kinds[name] == 'scratch':
                     found.add(name)
+                if flags & READ and name not in ready and name in open_:
+                    read_early.add(name)
+                if flags & READ:
+                    read_any.add(name)
                 if flags & WRITE:
                     written.add(name)
+                    written_any.add(name)
             ready |= written | found
-        return found
+        roles = {n: 'inout' if n in read_early else 'output' if n in written_any else 'input' if n in read_any else 'inout'
+                 for n in open_}
+        return found, roles
 
     def dispatch(self, module, plan):
         add = self.graph.add

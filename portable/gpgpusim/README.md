@@ -13,7 +13,7 @@ python3 -m fuzz --nvidia                    # random programs, also on GPGPU-Sim
 python3 check_all.py --gpu --nvidia         # all of it, with the other checks
 ```
 
-The image (`qpel/gpgpu-sim:dev-4195dd4-qpel18`, from this folder's Dockerfile on the
+The image (`qpel/gpgpu-sim:dev-4195dd4-qpel19`, from this folder's Dockerfile on the
 CUDA 12.6 devel image `nvcc_check.py` uses) is built on first use and takes about a
 minute. It is built and tested natively on arm64 (Apple silicon, Docker Desktop). On
 x86-64 the upstream build flags are kept, but that build is untested. Change the tag in
@@ -148,7 +148,7 @@ rasterizer lost a live predicate and rendered wrong pixels on GPGPU-Sim (qpel's 
 only because its `%p1` was not live there). A nested block's declarations are now checked against
 that block only. The self-test checks a shadowing `.reg` in inline assembly.
 
-**Fixed (2026-11-18), `qpel-wmma.patch`, image `qpel18` (local so far):** two bugs in `mma_impl`, WMMA's
+**Fixed (2026-11-18), `qpel-wmma.patch`, image `qpel19` (submitted upstream as accel-sim PR #160, its exact diff):** two bugs in `mma_impl`, WMMA's
 `wmma.mma` (16 x 16 x 16). With f16 inputs it read each input's 16 bits as an address
 (`*(reinterpret_cast<half *>(hex_val))`), so every f16 WMMA crashed the simulator with SIGSEGV; and it
 summed the 16 products in f16, rounding every product and partial sum to 11 bits, where tensor cores
