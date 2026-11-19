@@ -371,12 +371,20 @@ __device__ __forceinline__ void block_store(Output output, T (&items)[ITEMS], in
 // The transposing algorithms (BLOCK_LOAD/STORE_TRANSPOSE and _WARP_TRANSPOSE): the same arrangement,
 // moved through shared memory so that global memory is read and written in consecutive runs, as CUB
 // does. Each group of G threads (a warp, or the whole block for TRANSPOSE) owns G * ITEMS consecutive
-// elements; element e of the tile sits at storage[e + e / 32] (padding against bank conflicts).
+// elements; element e of the tile sits at storage[e + e / 32] when CUB pads (more than 4 items, a power
+// of two: against bank conflicts), else at storage[e]. A warp's exchange orders only the warp's lanes
+// (__syncwarp, CUB's WARP_SYNC); the block's, the whole block.
 template <int THREADS, int ITEMS>
 struct transposed {
-  static constexpr int SIZE = THREADS * ITEMS + (THREADS * ITEMS) / 32;
-  static __device__ __forceinline__ int at(int e) { return e + e / 32; }
+  static constexpr bool PADDED = ITEMS > 4 && (ITEMS & (ITEMS - 1)) == 0;
+  static constexpr int SIZE = THREADS * ITEMS + (PADDED ? (THREADS * ITEMS) / 32 : 0);
 };
+template <int THREADS, int ITEMS> __device__ __forceinline__ int transposed_at(int e) {
+  return transposed<THREADS, ITEMS>::PADDED ? e + e / 32 : e;
+}
+
+template <int G> __device__ __forceinline__ void group_sync() { __syncthreads(); }
+template <> __device__ __forceinline__ void group_sync<32>() { __syncwarp(); }
 
 template <typename T, int THREADS, int ITEMS, int G, bool FILL, typename Input>
 __device__ __forceinline__ void block_load_transposed(qpel_shared_view<T> storage, Input input, T (&items)[ITEMS],
@@ -386,19 +394,19 @@ __device__ __forceinline__ void block_load_transposed(qpel_shared_view<T> storag
   for (int k = 0; k < ITEMS; ++k) {
     const int index = base + lane + k * G;  // consecutive in the group: coalesced
     if (index < valid) {
-      storage[index + index / 32] = input[index];
+      storage[transposed_at<THREADS, ITEMS>(index)] = input[index];
     }
   }
-  __syncthreads();
+  group_sync<G>();
   for (int k = 0; k < ITEMS; ++k) {
     const int index = base + lane * ITEMS + k;  // this thread's blocked items
     if (index < valid) {
-      items[k] = storage[index + index / 32];
+      items[k] = storage[transposed_at<THREADS, ITEMS>(index)];
     } else if (FILL) {
       items[k] = fill;
     }
   }
-  __syncthreads();  // (the storage is free again)
+  group_sync<G>();  // (the storage is free again)
 }
 
 template <typename T, int THREADS, int ITEMS, int G, typename Output>
@@ -408,16 +416,16 @@ __device__ __forceinline__ void block_store_transposed(qpel_shared_view<T> stora
   const int base = (tid / G) * G * ITEMS, lane = tid % G;
   for (int k = 0; k < ITEMS; ++k) {
     const int index = base + lane * ITEMS + k;
-    storage[index + index / 32] = items[k];
+    storage[transposed_at<THREADS, ITEMS>(index)] = items[k];
   }
-  __syncthreads();
+  group_sync<G>();
   for (int k = 0; k < ITEMS; ++k) {
     const int index = base + lane + k * G;
     if (index < valid) {
-      output[index] = storage[index + index / 32];
+      output[index] = storage[transposed_at<THREADS, ITEMS>(index)];
     }
   }
-  __syncthreads();
+  group_sync<G>();
 }
 
 // One entry per direction for the facades below: transposing algorithms through shared memory, the

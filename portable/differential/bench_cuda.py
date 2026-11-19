@@ -7,8 +7,11 @@ benchmark size, with the program's own value rules (cases.scaled_case), so no la
 travel with the bundle. Then it runs both programs on that case. Each program runs the case once
 (its outputs are kept for the comparison), then times its launches between CUDA events, with
 the inout buffers restored and the outputs cleared before each repetition (GpuProgram.program).
-Both sides' outputs are compared, and bench_cuda.json gets the median times, their ratio and
-the differences.
+The two sides run alternately, ROUNDS times each (original first, then qpel first, ...), and
+each side's fastest median counts: one run per side measured the T4's clock and thermal state as
+much as the code (run 6: llama.cpp's elementwise kernels, the same SASS on both sides, spread from
+x0.85 to x1.30). Both sides' outputs (of the first run) are compared, and bench_cuda.json gets the
+times, their ratio, every round's median and the differences.
 
     python3 -m differential.bench_cuda run ROOT     # on the GPU machine (run.sh does this)
     python3 -m differential.bench_cuda report FILE  # here: the table and the summary
@@ -32,6 +35,8 @@ import numpy as np  # noqa: E402
 
 from . import cases  # noqa: E402
 from .simulate import Program  # noqa: E402
+
+ROUNDS = 3  # the sides alternate (original first, then qpel first, ...); each side's fastest median counts
 
 
 def stub(entry, side):
@@ -85,8 +90,8 @@ def run(root):
         if case is None:
             result.setdefault('skipped', "inputs depend on the program's own sizes; not scaled")
             continue
-        times, outputs = {}, {}
-        for side in ('original', 'qpel'):
+        times, outputs = {'original': [], 'qpel': []}, {}
+        for side in [side for r in range(ROUNDS) for side in (('original', 'qpel') if r % 2 == 0 else ('qpel', 'original'))]:
             folder = root/entry['programs'][side]['dir']
             work = folder/'bench'
             work.mkdir(exist_ok=True)
@@ -100,8 +105,9 @@ def run(root):
                 if done.returncode:
                     raise RuntimeError(f'exit {done.returncode}: {done.stderr[-500:]}')
                 ms, reps = (work/'time.txt').read_text().split()
-                times[side] = (float(ms), int(reps))
-                outputs[side] = Program.read_outputs(program, work)
+                times[side].append((float(ms), int(reps)))
+                if side not in outputs:
+                    outputs[side] = Program.read_outputs(program, work)
             except Exception as error:
                 result['skipped'] = f'{side}: {type(error).__name__}: {str(error)[:300]}'
                 break
@@ -111,12 +117,13 @@ def run(root):
             continue
         differ, worst = differences(entry, case, outputs['original'], outputs['qpel'])
         shape = case.shapes[entry['plan']['stages'][0]['grid']]
+        best = {side: min(ms for ms, _ in runs) for side, runs in times.items()}
         result.update({'shape': list(shape), 'stages': len(entry['plan']['stages']),
-                       'original_ms': round(times['original'][0], 5), 'qpel_ms': round(times['qpel'][0], 5),
-                       'ratio': round(times['qpel'][0] / times['original'][0], 3) if times['original'][0] else None,
-                       'reps': min(times['original'][1], times['qpel'][1]), 'differ': differ, 'max_ulp': worst})
-        print(f'{entry["name"]:<40} original {times["original"][0]:9.4f} ms   qpel {times["qpel"][0]:9.4f} ms',
-              flush=True)
+                       'original_ms': round(best['original'], 5), 'qpel_ms': round(best['qpel'], 5),
+                       'ratio': round(best['qpel'] / best['original'], 3) if best['original'] else None,
+                       'reps': min(reps for runs in times.values() for _, reps in runs), 'differ': differ, 'max_ulp': worst,
+                       'rounds': {side: [round(ms, 5) for ms, _ in runs] for side, runs in times.items()}})
+        print(f'{entry["name"]:<40} original {best["original"]:9.4f} ms   qpel {best["qpel"]:9.4f} ms', flush=True)
     (root/'bench_cuda.json').write_text(json.dumps(results, indent=1) + '\n')
     return results
 
