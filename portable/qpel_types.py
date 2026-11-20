@@ -30,7 +30,7 @@ ATOMIC_OPERATIONS['i32'] = ATOMIC_OPERATIONS['u32']
 ATOMIC_STATEMENTS = {'u64'}  # elements whose atomic operations give no value
 ATOMIC_KINDS = set().union(*ATOMIC_OPERATIONS.values())
 # IR version 6 bitcasts: a 32-bit float's bits as an integer and back.
-BITCASTS = {('f32', 'u32'), ('f32', 'i32'), ('u32', 'f32'), ('i32', 'f32')}
+BITCASTS = {('f32', 'u32'), ('f32', 'i32'), ('u32', 'f32'), ('i32', 'f32'), ('f16', 'u16'), ('u16', 'f16')}  # f16: IR version 19
 VALUE_TERMS = INTEGER_TERMS | {'f32', 'f16'}   # scalar kernel arguments
 LEGACY = {'VoidType': 'void', 'BoolType': 'bool', 'U8Type': 'u8', 'U32Type': 'u32', 'I32Type': 'i32',
           'F32Type': 'f32', 'F16Type': 'f16', 'Shape3DType': 'shape3',
@@ -512,7 +512,7 @@ class TypeChecker:
             return 'void' if k == 'AtomicStore' or item in ATOMIC_STATEMENTS else item
         if k == 'Bitcast':
             source = e('operand')
-            check((source, a['to']) in BITCASTS, 'BITCAST', f"bitcast from {source} to {a['to']}: bitcasts are between f32 and u32 or i32")
+            check((source, a['to']) in BITCASTS, 'BITCAST', f"bitcast from {source} to {a['to']}: bitcasts are between f32 and u32 or i32, and f16 and u16")
             return a['to']
         if k == 'Unary':
             operand = e('operand')

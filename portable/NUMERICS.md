@@ -176,6 +176,8 @@ each element has the operations both platforms give it:
 - **Bitcasts** (`Bitcast {to}`, text `bitcast<T>(e)`) read the bits of an `f32` as `u32` or `i32`
   and back, exactly: NaN payloads and the sign of zero are kept (CUDA `__float_as_uint` and the
   others, Metal `as_type<T>`). They are how library code stores a float in an integer atomic.
+  IR version 19 adds an `f16`'s bits as `u16` and back (CUDA `__half_as_ushort`, `__ushort_as_half`),
+  as llama.cpp's iq1_m builds its half scale from bits in a union.
 - **Metal compare-exchange loops.** `atomic_compare_exchange_weak_explicit(p, &expected, desired,
   ...)` imports as qpel's compare-and-swap: before its statement,
   `found = cas(p, expected, desired); exchanged = found == expected; expected = found;`, and the

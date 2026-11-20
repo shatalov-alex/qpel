@@ -382,6 +382,8 @@ inline void qpel_add_u64(device atomic_ulong* address, ulong value) {
 #define QPEL_BITCAST_U32(x) as_type<uint>((x))
 #define QPEL_BITCAST_I32(x) as_type<int>((x))
 #define QPEL_BITCAST_F32(x) as_type<float>((x))
+#define QPEL_BITCAST_U16(x) as_type<ushort>((x))  // IR version 19
+#define QPEL_BITCAST_F16(x) as_type<half>((x))
 #endif
 
 #ifdef QPEL_SUBGROUPS_ENABLED

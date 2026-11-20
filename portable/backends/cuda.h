@@ -337,6 +337,9 @@ __device__ __forceinline__ float qpel_bits_as_f32(int x) { return __int_as_float
 #define QPEL_BITCAST_U32(x) __float_as_uint((x))
 #define QPEL_BITCAST_I32(x) __float_as_int((x))
 #define QPEL_BITCAST_F32(x) qpel_bits_as_f32((x))
+// IR version 19: a half's bits as a 16-bit unsigned integer and back.
+#define QPEL_BITCAST_U16(x) __half_as_ushort((x))
+#define QPEL_BITCAST_F16(x) __ushort_as_half((x))
 #endif
 
 #ifdef QPEL_SUBGROUPS_ENABLED

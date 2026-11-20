@@ -152,6 +152,14 @@ Unaligned views: `View {element, unaligned: true}` (text `view_unaligned<T>(p)`)
 
 A program with either is version 18.
 
+## IR version 19
+
+Bitcasts between `f16` and `u16`: `Bitcast {to: u16}` of an f16 and `Bitcast {to: f16}` of a u16 (text `bitcast<u16>(h)`, `bitcast<f16>(b)`) read the 16 bits exactly as the other type (CUDA `__half_as_ushort`, `__ushort_as_half`; Metal `as_type<ushort>`, `as_type<half>`). The importer reads a local union of a half and a 16-bit integer through them (llama.cpp's iq1m_scale_t; IMPORT.md, Unions).
+
+Module constants of more than 1024 elements: a `ConstantDecl`'s array of scalars may hold up to 65536 bytes (local arrays stay at 1024 elements). Both backends keep such a table out of the small constant banks: CUDA `__device__ const` is global memory, Metal's program-scope `constant` the constant address space. llama.cpp's `iq1s_grid_gpu` has 2048 u32.
+
+A program with either is version 19.
+
 ## Optimisation passes
 
 `qpel_opt.py` holds passes that read a validated program and tell the lowering how to emit it faster, with the same results; they never change the IR, whose meaning stays the portable one. Kept apart from the portability lowering (ROADMAP, Phase 6):

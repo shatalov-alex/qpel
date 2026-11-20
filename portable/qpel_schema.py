@@ -233,7 +233,15 @@ def validate_envelope(program):
             raise ValueError('IR children must be lists of string references')
 
 
+MAX_CONSTANT_BYTES = 65536  # a module constant table (IR version 19: more than 1024 elements; CUDA __device__ const)
+
+
+def scalar_bytes(scalar):
+    return {'f32': 4, 'f16': 2, 'bf16': 2}.get(scalar) or INTEGERS_BITS[scalar][0] // 8
+
+
 def validate_structure(nodes):
+    constant_types = {t for n in nodes.values() if n['kind'] == 'ConstantDecl' for t in n['children'].get('type', ())}
     for n in nodes.values():
         kind = n['kind']
         def fail(message):
@@ -291,8 +299,12 @@ def validate_structure(nodes):
             fail(f"Invalid buffer type buffer<{a['element']}, {a['access']}>")
         if kind in ('MatrixType', 'MatrixFill') and a.get('element') not in ('f32', 'f16'):
             fail(f"Invalid matrix element {a.get('element')}: f32 or f16")
-        if kind == 'ArrayType' and not is_valid(array(a['element'], a['length'])):
-            fail(f"Invalid array type array<{a['element']}, {a['length']}>: a scalar or vector element and 1 to 1024 of them")
+        if kind == 'ArrayType' and n['id'] in constant_types and a['element'] in SCALAR_TERMS - {'bool'} and \
+                isinstance(a['length'], int) and 1024 < a['length'] and a['length'] * scalar_bytes(a['element']) <= MAX_CONSTANT_BYTES:
+            pass  # a large lookup table (llama.cpp's iq1s_grid_gpu: 2048 u32)
+        elif kind == 'ArrayType' and not is_valid(array(a['element'], a['length'])):
+            fail(f"Invalid array type array<{a['element']}, {a['length']}>: a scalar or vector element and 1 to 1024 of them "
+                 f"(a module constant: scalars, at most {MAX_CONSTANT_BYTES} bytes)")
         if kind == 'SharedType' and not is_valid(shared(a['element'], a['length'])):
             fail(f"Invalid shared type shared<{a['element']}, {a['length']}>: scalars or vectors, at most 16384 bytes")
         if kind == 'SharedViewType' and not is_valid(shared_view(a['element'])):

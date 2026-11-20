@@ -574,7 +574,7 @@ def params_of(decl):
 
 
 BITCAST_CALLS = {'__float_as_uint': 'u32', '__float_as_int': 'i32', '__uint_as_float': 'f32', '__int_as_float': 'f32',
-                 'qpel_bits_as_f32': 'f32'}
+                 'qpel_bits_as_f32': 'f32', '__half_as_ushort': 'u16', '__ushort_as_half': 'f16'}  # (f16: IR version 19)
 METAL_EXCHANGES = {'atomic_compare_exchange_weak_explicit'}  # Metal has no strong one
 
 
@@ -2306,6 +2306,8 @@ class Importer:
             return []
         self.scope[decl['id']] = ('untyped', name)  # until it is read, so later uses are not reported again
         t = describe(view_spelling(decl))
+        if t[0] == 'pointer' and 'init' in decl and self.byte_view(decl['inner'][0], t[2]):
+            return self.byte_view_local(decl, name, t[2])
         if t[0] == 'pointer' and self.into_shared(decl):
             return self.shared_view_local(decl, name, t[2])
         if t[0] == 'pointer' and is_vector(t[2]) and self.kernel and 'init' in decl:
@@ -2330,6 +2332,8 @@ class Importer:
             out = self.shared_local(decl, name, t, 1)
             self.scope[decl['id']] = ('shared-scalar', self.scope[decl['id']][1], t[1])
             return out
+        if t[0] == 'scalar' and t[1] in self.records and union_word(self.records[t[1]]):
+            return self.union_local(decl, name, union_word(self.records[t[1]]))
         if t[0] == 'scalar' and t[1] in self.records:
             raise Unsupported(decl, 'local-type', f'local {name}: struct locals are not in qpel yet')
         if t[0] != 'scalar' or t[1] not in SCALAR_TERMS:
@@ -3097,6 +3101,120 @@ class Importer:
             if message not in self.adaptations:
                 self.adaptations.append(message)
 
+    def union_local(self, decl, name, layout):
+        """A local union of scalars of one width (llama.cpp's iq1m_scale_t: half f16 and uint16_t u16): one unsigned
+        word of that width, each member read and written through it (a bitcast for a float member, IR version 19)."""
+        storage, members = layout
+        init = decl['inner'][0] if 'init' in decl and decl.get('inner') else None
+        if init is not None and not (init.get('kind') == 'CXXConstructExpr' and not init.get('inner')):
+            raise Unsupported(decl, 'local-type', f'local union {name} with an initializer is not in qpel yet')
+        name = self.unique_name(name)
+        ir = self.graph.add('Variable', {'name': name}, {'type': self.type_node(storage),
+                                                         'value': self.graph.add('Constant', {'scalar': storage, 'value': '0'})})
+        self.scope[decl['id']] = ('union-local', ir, storage, members)
+        message = f'{self.current}: union {name} is one {storage}, its members read and written as its bits'
+        if message not in self.adaptations:
+            self.adaptations.append(message)
+        return [ir]
+
+    def union_member(self, node):
+        """(scope entry, member term) of `u.m` for a union local u, else None."""
+        core = strip_parens(node)
+        if core.get('kind') != 'MemberExpr':
+            return None
+        base = peel(core['inner'][0])
+        entry = self.scope.get(base.get('referencedDecl', {}).get('id')) if base.get('kind') == 'DeclRefExpr' else None
+        if not entry or entry[0] != 'union-local':
+            return None
+        field = member_name(core, self.source)
+        if field not in entry[3]:
+            raise Unsupported(node, 'member', f'{field} is not a member of the union')
+        return entry, entry[3][field]
+
+    def union_bits(self, value, source, target, node):
+        """The bits of a value of one union member read as another (same width)."""
+        if source == target:
+            return value
+        if source in ('f16', 'f32') or target in ('f16', 'f32'):
+            return self.graph.add('Bitcast', {'to': target}, {'operand': value})
+        return self.convert_types(value, source, target, node)
+
+    def byte_view(self, init, element):
+        """The word a pointer to narrower unsigned integers reads the bytes of, else None:
+        ('local', entry) for `(thread const uint8_t *)&aux32` (a local), ('table', ident, index node)
+        for `(constant uint8_t *)(iq2xxs_grid + i)` (element i of a program-scope table; llama.cpp's iq formats)."""
+        if element not in ('u8', 'u16'):
+            return None
+        core = init
+        while core.get('kind') in EXPLICIT_CASTS | {'ImplicitCastExpr', 'ParenExpr'} and core.get('inner') \
+                and (core['kind'] == 'ParenExpr' or core.get('castKind') in ('BitCast', 'NoOp', 'LValueToRValue', None)):
+            core = core['inner'][0]
+        wider = lambda scalar: scalar in ('u16', 'u32', 'u64') and type_bits(scalar) > type_bits(element)
+        if core.get('kind') == 'UnaryOperator' and core.get('opcode') == '&':
+            target = strip_parens(core['inner'][0])
+            entry = self.scope.get(target.get('referencedDecl', {}).get('id')) if target.get('kind') == 'DeclRefExpr' else None
+            return ('local', entry) if entry and entry[0] == 'local' and wider(entry[2]) else None
+        if core.get('kind') == 'BinaryOperator' and core.get('opcode') == '+':
+            table = peel(core['inner'][0])
+            ident = table.get('referencedDecl', {}).get('id') if table.get('kind') == 'DeclRefExpr' else None
+            if ident in self.tables and self.scope.get(ident) is None and wider(self.table_scalar(ident)):
+                return ('table', ident, core['inner'][1])
+        return None
+
+    def table_scalar(self, ident):
+        array = LOCAL_ARRAY.fullmatch(' '.join(w for w in self.tables[ident]['type']['qualType'].split()
+                                               if w not in ('const', 'static', 'constant')))
+        element = describe(array.group(1)) if array else ('other',)
+        return element[1] if element[0] == 'scalar' else None
+
+    def byte_view_local(self, decl, name, element):
+        """A byte view (see byte_view): of a local, read as shifts of its current value; of a table, a u32
+        local holding the element index, which `grid = (constant uint8_t *)(table + j)` sets again."""
+        view = self.byte_view(decl['inner'][0], element)
+        if view[0] == 'local':
+            self.scope[decl['id']] = ('byte-view', view[1], element)
+            return []
+        name = self.unique_name(name)
+        ir = self.graph.add('Variable', {'name': name}, {'type': self.type_node('u32'), 'value': self.table_position(view[2])})
+        self.scope[decl['id']] = ('table-view', ir, element, view[1])
+        message = f'{self.current}: {decl["name"]} reads the bytes of table elements; qpel keeps the element index and shifts'
+        if message not in self.adaptations:
+            self.adaptations.append(message)
+        return [ir]
+
+    def table_position(self, index):
+        value, scalar = self.offset(index), scalar_of(index)
+        return self.convert_types(value, scalar, 'u32', index) if scalar not in ('i32', 'u32') else value
+
+    def byte_view_entry(self, base):
+        core = strip_parens(base)
+        while core.get('kind') == 'ImplicitCastExpr' and core.get('inner'):
+            core = strip_parens(core['inner'][0])
+        if core.get('kind') != 'DeclRefExpr':
+            return None
+        entry = self.scope.get(core['referencedDecl']['id'])
+        return entry if entry and entry[0] in ('byte-view', 'table-view') else None
+
+    def view_byte(self, entry, index, node):
+        """Element `index` of a byte view: (word >> (bits * k)) converted to the element type, the word
+        being the local or the table element `index / per` past the view's (little-endian, as both backends are)."""
+        add = self.graph.add
+        element = entry[2]
+        at = self.table_position(index)
+        if entry[0] == 'byte-view':
+            source = entry[1][2]
+            word = self.name(entry[1][1])
+            position = at
+        else:
+            source = self.table_scalar(entry[3])
+            per = type_bits(source) // type_bits(element)
+            row = add('Binary', {'operator': '+'}, {'left': self.name(entry[1]), 'right': add('Binary', {'operator': '/'}, {
+                'left': at, 'right': self.int_value('u32', per)})})
+            word = add('Index', children={'base': self.name(self.constant_table(entry[3], node)), 'index': row})
+            position = add('Binary', {'operator': '%'}, {'left': self.table_position(index), 'right': self.int_value('u32', per)})
+        shift = add('Binary', {'operator': '*'}, {'left': position, 'right': self.int_value('u32', type_bits(element))})
+        return self.convert_types(add('Binary', {'operator': '>>'}, {'left': word, 'right': shift}), source, element, node)
+
     def local_array(self, base):
         """The qpel Variable of a local array that `base` names (or a module constant table), or None."""
         core = base
@@ -3195,6 +3313,20 @@ class Importer:
 
     def buffer_local(self, decl, name, kind):
         """A pointer local into a device buffer (a view): `device float* row = (device float*)(dst + off)`."""
+        if 'init' in decl and any(x.get('qpelUnaligned') for x in walk(decl['inner'][0])):
+            # `device const uint32_t * q4 = (device const uint32_t *)xb->qs + 4*ib32` (llama.cpp's iq4_xs): an
+            # unaligned view is not held in a local (CORE.md, IR version 18), so each use reads the initializer again
+            init = decl['inner'][0]
+            changed = [x['referencedDecl'].get('name', '?') for x in walk(init) if x.get('kind') == 'DeclRefExpr'
+                       and x.get('referencedDecl', {}).get('id') in self.assigned]
+            if decl['id'] in self.assigned or changed:
+                raise Unsupported(decl, 'pointer', f'{name} is an unaligned view; qpel reads it again at each use, '
+                                                   f'so neither it nor what it is made of ({", ".join(changed) or name}) may change')
+            self.scope[decl['id']] = ('view-alias', init, kind)
+            message = f'{self.current}: {name} is an unaligned view, its initializer read again at each use'
+            if message not in self.adaptations:
+                self.adaptations.append(message)
+            return []
         children = {'type': self.type_node(kind)}
         if 'init' in decl:
             children['value'] = self.expr(decl['inner'][0], address=True)
@@ -3223,6 +3355,16 @@ class Importer:
         kind = node['kind']
         if kind == 'BinaryOperator' and node['opcode'] == ',':  # `a = x, b = y;`: one statement after the other
             return add('Block', children={'statements': [self.expression_statement(x) for x in node['inner']]})
+        if kind == 'BinaryOperator' and node['opcode'] == '=' and self.union_member(node['inner'][0]):
+            (entry, term), value = self.union_member(node['inner'][0]), node['inner'][1]
+            converted = self.convert_types(self.expr(value), scalar_of(value), term, node)
+            return add('Assign', children={'target': self.name(entry[1]), 'value': self.union_bits(converted, term, entry[2], node)})
+        if kind == 'BinaryOperator' and node['opcode'] == '=' and self.byte_view_entry(node['inner'][0]):
+            entry = self.byte_view_entry(node['inner'][0])
+            view = self.byte_view(node['inner'][1], entry[2])
+            if entry[0] != 'table-view' or not view or view[0] != 'table' or view[1] != entry[3]:
+                raise Unsupported(node, 'assign-target', 'a byte view is set again only to another element of its table')
+            return add('Assign', children={'target': self.name(entry[1]), 'value': self.table_position(view[2])})
         if kind == 'BinaryOperator' and node['opcode'] == '=':
             inner = node['inner'][1]
             while inner['kind'] in ('ImplicitCastExpr', 'ParenExpr') and inner.get('inner') and \
@@ -3319,6 +3461,10 @@ class Importer:
             raise Unsupported(node, 'assign-target', 'cannot assign to ' + core['referencedDecl'].get('name', '?'))
         if core['kind'] == 'ArraySubscriptExpr' and matrix_column(core) is not None:
             return self.expr(core)  # m[i][j] = v of a Metal matrix: element i R + j of its array
+        if self.union_member(core):
+            raise Unsupported(node, 'assign-target', 'a union member is only assigned with =')
+        if core['kind'] == 'ArraySubscriptExpr' and self.byte_view_entry(core['inner'][0]):
+            raise Unsupported(node, 'assign-target', 'qpel reads the bytes of a word through a byte view, but does not write them')
         if core['kind'] == 'ArraySubscriptExpr':
             if self.vector_element_ref(core):
                 raise Unsupported(node, 'vector-buffer', 'a whole vector buffer element is stored by `p[i] = v;`')
@@ -3560,6 +3706,8 @@ class Importer:
         if kind == 'DeclRefExpr':
             ref = n['referencedDecl']
             entry = self.typed(self.scope.get(ref['id']), n)
+            if entry and entry[0] == 'view-alias':
+                return self.expr(entry[1], address=True)
             if entry is None and ref['id'] in self.function_constants:
                 return self.constant_value(self.function_constants[ref['id']], scalar_of(n), n)
             if entry is None and ref['id'] in self.global_values:
@@ -3773,6 +3921,9 @@ class Importer:
             return add('Member', {'member': VECTOR_FIELDS[at]}, {'base': self.vector_value(n['inner'][0], vtype)})
         if kind == 'ArraySubscriptExpr':
             return self.index(n)
+        if kind == 'MemberExpr' and self.union_member(n):
+            entry, term = self.union_member(n)
+            return self.union_bits(self.name(entry[1]), entry[2], term, n)
         if kind in ('MemberExpr', 'ExtVectorElementExpr'):
             field = member_name(n, self.source)
             base = peel(n['inner'][0])
@@ -3839,6 +3990,8 @@ class Importer:
             target = describe(core['type']['qualType'])  # ((uint*)(depths + i))[0]: a view, as qpel writes it
             if target[2] in SCALAR_TERMS - {'bool'}:
                 return type_buffer(target[2], 'read' if target[1] else 'write')
+        if entry and entry[0] == 'view-alias':
+            return entry[2]
         if core['kind'] != 'DeclRefExpr' and scalar_of(core) == 'pointer':
             raise Unsupported(node, 'buffer', 'index a buffer or a buffer local, not a pointer expression')
         if not entry or entry[0] not in ('param', 'local') or not type_is_buffer(entry[2]):
@@ -3850,7 +4003,8 @@ class Importer:
         core = peel(node)
         if core.get('castKind') == 'BitCast':
             return self.core(core, False, True)  # a view (see buffer_kind)
-        return self.name(self.scope[core['referencedDecl']['id']][1])
+        entry = self.scope[core['referencedDecl']['id']]
+        return self.expr(entry[1], address=True) if entry[0] == 'view-alias' else self.name(entry[1])
 
     def offset(self, node):
         """A pointer offset, which qpel takes unsigned. A negative int offset from a buffer's
@@ -3865,10 +4019,22 @@ class Importer:
     def is_atomic_element(self, node):
         node = peel(node)
         return node['kind'] == 'ArraySubscriptExpr' and self.local_array(node['inner'][0]) is None and \
+            self.byte_view_entry(node['inner'][0]) is None and \
             matrix_column(node) is None and type_access(self.buffer_kind(node['inner'][0])) == 'atomic'
 
     def index(self, node):
+        # a subscript is its own expression: C's promotions of the expression around it (as_unsigned) do not reach it
+        saved, self.unsigned = self.unsigned, 0
+        try:
+            return self.subscript(node)
+        finally:
+            self.unsigned = saved
+
+    def subscript(self, node):
         base, index = node['inner']
+        view = self.byte_view_entry(base)
+        if view is not None:
+            return self.view_byte(view, index, node)
         array = self.local_array(base)
         if array is not None:
             return self.graph.add('Index', children={'base': self.name(array), 'index': self.expr(index)})
@@ -4540,6 +4706,22 @@ def records(unit):
 BLOCK_FIELD = re.compile(r'(?:const\s+)?(?:device\s+|constant\s+|threadgroup\s+)?(.+?)\s*(?:\[(\d+)\])?')
 
 
+def union_word(record):
+    """(unsigned term, {member: scalar term}) of a union of scalars all of one width of 16 or 32 bits
+    whose bits qpel can read as each other (u16 and i16 with f16; u32 and i32 with f32), else None."""
+    if record.get('tagUsed') != 'union':
+        return None
+    layout = block_layout(record)
+    if layout is None or not layout[2]:
+        return None
+    size, _, fields = layout
+    storage = {2: 'u16', 4: 'u32'}.get(size)
+    allowed = {'u16': {'u16', 'i16', 'f16'}, 'u32': {'u32', 'i32', 'f32'}}.get(storage, set())
+    if any(at != 0 or count is not None or term not in allowed for at, term, count in fields.values()):
+        return None
+    return storage, {name: term for name, (at, term, count) in fields.items()}
+
+
 def block_layout(record):
     """(size, align, {field: (offset, scalar term or None, count or None)}) of a struct of scalars, arrays of
     scalars and anonymous unions and structs of them (llama.cpp's block_q8_0: a half scale, then 32 int8 quants;
@@ -5119,8 +5301,9 @@ def constant_tables(unit):
                 core = arg
                 while core.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and core.get('inner'):
                     core = core['inner'][0]
-                if core.get('kind') == 'DeclRefExpr':
-                    found.pop(core.get('referencedDecl', {}).get('id'), None)  # passed on whole
+                ident = core.get('referencedDecl', {}).get('id') if core.get('kind') == 'DeclRefExpr' else None
+                if ident in found and not {'const', 'constant'} & set(found[ident]['type']['qualType'].split()):
+                    found.pop(ident)  # passed on whole, and not const: the callee may write it
         while target is not None and target.get('kind') in ('ImplicitCastExpr', 'ParenExpr', 'ArraySubscriptExpr') and target.get('inner'):
             target = target['inner'][0]
         if target is not None and target.get('kind') == 'DeclRefExpr':

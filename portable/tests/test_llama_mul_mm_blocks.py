@@ -1,6 +1,7 @@
 """llama.cpp's Metal kernel_mul_mm for every block format qpel reads (q1_0, q2_0, q4_0, q4_1, q5_0, q5_1, q8_0,
-mxfp4, q2_K to q6_K), unmodified: the weights are blocks of bytes, read through pointers to llama.cpp's block
-structs (IMPORT.md, Pointers to blocks of bytes), dequantised by each format's own function. The blocks are
+mxfp4, q2_K to q6_K, and the iq formats iq1_s to iq4_xs), unmodified: the weights are blocks of bytes, read
+through pointers to llama.cpp's block structs (IMPORT.md, Pointers to blocks of bytes, Byte views),
+dequantised by each format's own function. The blocks are
 random bytes with sane scales. With B the identity (N = K) the kernel writes the dequantised weights themselves,
 C[k][m] = A[m][k] exactly (one product by 1, the rest zeros), so the original dequantises its own weights for
 the oracle of the other cases: qpel's Metal agrees with the original bit for bit on the Apple GPU, and qpel's
@@ -28,7 +29,12 @@ FORMATS = {
     'q8_0': (34, 32, (0,), None), 'mxfp4': (17, 32, (), 0), 'q2_K': (84, 256, (80, 82), None),
     'q3_K': (110, 256, (108,), None), 'q4_K': (144, 256, (0, 2), None), 'q5_K': (176, 256, (0, 2), None),
     'q6_K': (210, 256, (208,), None),
+    # the iq formats: weights from constant grids (byte views of table elements), iq1_m's scale through a union
+    'iq2_xxs': (66, 256, (0,), None), 'iq2_xs': (74, 256, (0,), None), 'iq2_s': (82, 256, (0,), None),
+    'iq3_xxs': (98, 256, (0,), None), 'iq3_s': (110, 256, (0,), None), 'iq1_s': (50, 256, (0,), None),
+    'iq1_m': (56, 256, (), None), 'iq4_nl': (18, 32, (0,), None), 'iq4_xs': (136, 256, (0,), None),
 }
+IQ1_M_SCALES = 48  # iq1_m's half scale: the top 4 bits of each of the 4 uint16_t at this byte offset
 M, K = 128, 256
 SHAPES = ((M, K), (M, 32), (64, 64))  # (M, N): the identity first (N = K), then random B
 
@@ -43,6 +49,11 @@ def weights(fmt):
         blocks[:, at:at + 2] = rng.uniform(0.01, 0.1, len(blocks)).astype(np.float16).view(np.uint8).reshape(-1, 2)
     if exponent is not None:
         blocks[:, exponent] = rng.integers(120, 129, len(blocks))
+    if fmt == 'iq1_m':
+        bits = rng.uniform(0.01, 0.1, len(blocks)).astype(np.float16).view(np.uint16)
+        for j in range(4):
+            high = IQ1_M_SCALES + 2 * j + 1
+            blocks[:, high] = (blocks[:, high] & 0x0f) | (((bits >> (4 * j)) & 0xf) << 4).astype(np.uint8)
     return blocks.reshape(-1).view(np.int8), size * K // per
 
 
