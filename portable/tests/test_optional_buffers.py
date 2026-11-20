@@ -94,7 +94,7 @@ class Backends(unittest.TestCase):
     def test_spellings(self):
         cuda = (self.generated/'optional_bias.cu').read_text()
         metal = (self.generated/'optional_bias.metal').read_text()
-        self.assertIn('QPEL_OPTIONAL_PARAM(QPEL_READ_F32, bias, 1, 6)', cuda)
+        self.assertIn('QPEL_OPTIONAL_READ_PARAM(QPEL_READ_F32, bias, 1, 6)', cuda)
         self.assertIn('#define QPEL_PRESENT(name) ((name) != nullptr)', cuda)
         self.assertIn('constant uint& qpel_present_##name [[buffer(presence)]]', metal)
 

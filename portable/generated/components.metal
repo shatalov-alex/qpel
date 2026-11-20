@@ -4,6 +4,8 @@
 using namespace metal;
 // f32-strict-v1: every float32 operation rounds on its own; only QPEL_FMA_F32 fuses.
 #pragma clang fp contract(off)
+// Generated conditions keep their own parentheses: `if ((a == b))` is intended.
+#pragma clang diagnostic ignored "-Wparentheses-equality"
 #define QPEL_KERNEL kernel
 #define QPEL_DEVICE
 #define QPEL_U8 uchar
@@ -12,7 +14,21 @@ using namespace metal;
 #define QPEL_ATOMIC_U32 device atomic_uint*
 #define QPEL_WRITE_U32 device uint*
 #define QPEL_SHAPE constant uint3&
+#define QPEL_SHAPE_VOLUME(s, product) (product)  // (Metal's uint3 shape has no volume word)
 #define QPEL_PARAM(type, name, binding) type name [[buffer(binding)]]
+#define QPEL_READ_PARAM(type, name, binding) type name [[buffer(binding)]]
+// An optional buffer (IR version 9): Metal cannot ask whether a buffer is bound, so the host
+// passes a presence flag after all of the kernel's parameters (a placeholder buffer when absent).
+#define QPEL_OPTIONAL_PARAM(type, name, binding, presence) type name [[buffer(binding)]], constant uint& qpel_present_##name [[buffer(presence)]]
+#define QPEL_OPTIONAL_READ_PARAM(type, name, binding, presence) QPEL_OPTIONAL_PARAM(type, name, binding, presence)
+#define QPEL_PRESENT(name) (qpel_present_##name != 0u)
+// IR version 12: module-level constant tables, and the leading zero bits of an integer.
+#define QPEL_CONSTANT_ARRAY(T, name, length) constant T name[length]
+#define QPEL_CONSTANT(T, name) constant T name
+#define QPEL_CLZ_U32(x) clz((uint)(x))
+#define QPEL_CLZ_I32(x) clz((int)(x))
+#define QPEL_CLZ_U64(x) clz((ulong)(x))
+#define QPEL_CLZ_I64(x) clz((long)(x))
 #define QPEL_GRID_PARAM(name) , uint name [[thread_position_in_grid]]
 #define QPEL_GRID_LOCAL(name)
 #define QPEL_LOAD(address) atomic_load_explicit((address), memory_order_relaxed)
@@ -21,6 +37,101 @@ using namespace metal;
 #define QPEL_MIN(address, value) atomic_fetch_min_explicit((address), (value), memory_order_relaxed)
 
 #define QPEL_F32 float
+// IR version 4 reference parameters: the caller's local, read and written in place.
+#define QPEL_REF(T) thread T&
+#define QPEL_REF_ARRAY(T, name, length) thread T (&name)[length]  // an array passed by reference (IR version 10)
+#define QPEL_SHARED_VIEW(T) threadgroup T*  // a view into shared memory (IR version 5)
+// IR version 4 vectors: vec<T, N> is the platform vector type, built by its constructor.
+#define QPEL_VEC2_I32 int2
+#define QPEL_MAKE_VEC2_I32 int2
+#define QPEL_VEC3_I32 int3
+#define QPEL_MAKE_VEC3_I32 int3
+#define QPEL_VEC4_I32 int4
+#define QPEL_MAKE_VEC4_I32 int4
+#define QPEL_VEC2_U32 uint2
+#define QPEL_MAKE_VEC2_U32 uint2
+#define QPEL_VEC3_U32 uint3
+#define QPEL_MAKE_VEC3_U32 uint3
+#define QPEL_VEC4_U32 uint4
+#define QPEL_MAKE_VEC4_U32 uint4
+#define QPEL_VEC2_F32 float2
+#define QPEL_MAKE_VEC2_F32 float2
+#define QPEL_VEC3_F32 float3
+#define QPEL_MAKE_VEC3_F32 float3
+#define QPEL_VEC4_F32 float4
+#define QPEL_MAKE_VEC4_F32 float4
+// IR version 18: an unaligned view's element i, built from its bytes (Metal's loads of a wider type assume
+// that type's alignment and would drop the address's low bits).
+template <int N> struct qpel_bytes;
+template <> struct qpel_bytes<1> {
+  template <class T> static T load(const device uchar* b) { return as_type<T>(b[0]); }
+  template <class T> static void store(device uchar* b, T v) { b[0] = as_type<uchar>(v); }
+};
+template <> struct qpel_bytes<2> {
+  template <class T> static T load(const device uchar* b) { return as_type<T>(ushort(ushort(b[0]) | ushort(b[1]) << 8)); }
+  template <class T> static void store(device uchar* b, T v) { ushort u = as_type<ushort>(v); b[0] = uchar(u); b[1] = uchar(u >> 8); }
+};
+template <> struct qpel_bytes<4> {
+  template <class T> static T load(const device uchar* b) {
+    return as_type<T>(uint(b[0]) | uint(b[1]) << 8 | uint(b[2]) << 16 | uint(b[3]) << 24);
+  }
+  template <class T> static void store(device uchar* b, T v) {
+    uint u = as_type<uint>(v); b[0] = uchar(u); b[1] = uchar(u >> 8); b[2] = uchar(u >> 16); b[3] = uchar(u >> 24);
+  }
+};
+template <> struct qpel_bytes<8> {
+  template <class T> static T load(const device uchar* b) {
+    return as_type<T>(ulong(qpel_bytes<4>::load<uint>(b)) | ulong(qpel_bytes<4>::load<uint>(b + 4)) << 32);
+  }
+  template <class T> static void store(device uchar* b, T v) {
+    ulong w = as_type<ulong>(v); qpel_bytes<4>::store<uint>(b, uint(w)); qpel_bytes<4>::store<uint>(b + 4, uint(w >> 32));
+  }
+};
+template <class T, class P> inline T qpel_load_unaligned(const device P* p, ulong i) {
+  return qpel_bytes<sizeof(T)>::template load<T>((const device uchar*)p + i * sizeof(T));
+}
+template <class T, class P> inline void qpel_store_unaligned(device P* p, ulong i, T v) {
+  qpel_bytes<sizeof(T)>::template store<T>((device uchar*)p + i * sizeof(T), v);
+}
+#define QPEL_LOAD_UNALIGNED(T, p, i) qpel_load_unaligned<T>((p), (i))
+#define QPEL_STORE_UNALIGNED(T, p, i, v) qpel_store_unaligned<T>((p), (i), (T)(v))
+// IR version 18: vectors of 8- and 16-bit integers (values only, never in shared memory)
+#define QPEL_VEC2_U8 uchar2
+#define QPEL_MAKE_VEC2_U8 uchar2
+#define QPEL_VEC3_U8 uchar3
+#define QPEL_MAKE_VEC3_U8 uchar3
+#define QPEL_VEC4_U8 uchar4
+#define QPEL_MAKE_VEC4_U8 uchar4
+#define QPEL_VEC2_I8 char2
+#define QPEL_MAKE_VEC2_I8 char2
+#define QPEL_VEC3_I8 char3
+#define QPEL_MAKE_VEC3_I8 char3
+#define QPEL_VEC4_I8 char4
+#define QPEL_MAKE_VEC4_I8 char4
+#define QPEL_VEC2_U16 ushort2
+#define QPEL_MAKE_VEC2_U16 ushort2
+#define QPEL_VEC3_U16 ushort3
+#define QPEL_MAKE_VEC3_U16 ushort3
+#define QPEL_VEC4_U16 ushort4
+#define QPEL_MAKE_VEC4_U16 ushort4
+#define QPEL_VEC2_I16 short2
+#define QPEL_MAKE_VEC2_I16 short2
+#define QPEL_VEC3_I16 short3
+#define QPEL_MAKE_VEC3_I16 short3
+#define QPEL_VEC4_I16 short4
+#define QPEL_MAKE_VEC4_I16 short4
+
+// Whole-vector loads (qpel_opt.vector_loads): vec<T, N>(b[N i], ..., b[N i + N - 1]) as one N-wide
+// load when b is aligned to the vector and N i + N - 1 does not wrap i's type; the element loads
+// otherwise. Both read the same elements.
+#define QPEL_VECTOR_ALIGNED(p, V) ((reinterpret_cast<ulong>(p) & (sizeof(V) - 1)) == 0)
+#define QPEL_VECTOR_AT(V, p, i) (reinterpret_cast<device const V*>(p)[(i)])
+// Whole-vector stores (qpel_opt.vector_stores): b[N i + k] = v_k for k < N as one N-wide store, the same condition.
+#define QPEL_VECTOR_STORE(V, p, i, v) (reinterpret_cast<device V*>(p)[(i)] = (v))
+template <int N> inline bool qpel_vector_fits(uint i) { return i <= (0xffffffffu - (N - 1)) / N; }
+template <int N> inline bool qpel_vector_fits(int i) { return i >= 0 && i <= (0x7fffffff - (N - 1)) / N; }
+template <int N> inline bool qpel_vector_fits(ulong i) { return i <= (~0ul - (N - 1)) / N; }
+template <int N> inline bool qpel_vector_fits(long i) { return i >= 0 && i <= (0x7fffffffffffffffl - (N - 1)) / N; }
 #define QPEL_READ_F32 device const float*
 #define QPEL_WRITE_F32 device float*
 
@@ -150,6 +261,22 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long, -9223372036854775808.0f, 9223372
 #define QPEL_GROUP_SIZE(axis) qpel_group_size.axis
 #define QPEL_GROUP_COUNT(axis) qpel_group_count.axis
 #define QPEL_GROUPS_THREAD_INDEX(axis) (qpel_group.axis * qpel_group_size.axis + qpel_local.axis)
+// IR version 4 shared memory and barriers (Groups kernels). A barrier orders device and
+// threadgroup memory, as __syncthreads does; barrier_count counts with a threadgroup atomic.
+#define QPEL_SHARED(T, name, n) threadgroup T name[n]
+#define QPEL_BARRIER() threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup)
+#define QPEL_SUBGROUP_BARRIER() simdgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup)  // IR version 16
+#define QPEL_BARRIER_COUNT_SCRATCH threadgroup atomic_int qpel_barrier_counter;
+inline int qpel_barrier_count(bool p, threadgroup atomic_int* counter, uint rank) {
+    if (rank == 0) atomic_store_explicit(counter, 0, memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+    if (p) atomic_fetch_add_explicit(counter, 1, memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    int count = atomic_load_explicit(counter, memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    return count;
+}
+#define QPEL_BARRIER_COUNT(p) qpel_barrier_count((p) != 0, &qpel_barrier_counter, qpel_local.x + qpel_group_size.x * (qpel_local.y + qpel_group_size.y * qpel_local.z))
 #endif
 
 #ifdef QPEL_MATH_ENABLED
@@ -170,14 +297,166 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long, -9223372036854775808.0f, 9223372
 #define QPEL_MATH_SIN(x) metal::precise::sin((x))
 #define QPEL_MATH_COS(x) metal::precise::cos((x))
 #define QPEL_MATH_TANH(x) metal::precise::tanh((x))
+#define QPEL_MATH_POW(a, b) metal::precise::pow((a), (b))  // IR version 17 (C's special cases, measured)
+// erf, expm1 and log1p, which Metal does not have (IR version 8; NUMERICS.md, Math functions):
+// polynomials fitted for these ranges (backends/math_fit.py prints this code), evaluated with fma,
+// and Metal's precise exp and log. Apple GPU, 2^20 inputs: erf 1, expm1 3, log1p 3 ulp at most.
+inline float qpel_erf(float x) {
+    float a = metal::fabs(x);
+    if (a < 1.0f) {
+        float t = a * a;
+        float r = x * metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(-1.0521326032630895e-07f, t, 1.5330498399634962e-06f), t, -1.479969887441257e-05f), t, 0.00012046751362504438f), t, -0.0008547963807359338f), t, 0.005223968531936407f), t, -0.026866169646382332f), t, 0.11283791810274124f), t, -0.37612637877464294f), t, -5.8635389876826594e-08f);
+        return metal::fma(x, 1.128379225730896f, r);  // 2/sqrt(pi) split off: x * (c0 + R(x^2))
+    }
+    if (a < 3.92f) {  // erf = 1 - exp(-x^2) * erfcx(x), erfcx fitted on [1, 2] and [2, 3.92]
+        float q = a < 2.0f ? metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(2.3998281903914176e-05f, (a - 1.5f), -7.76194574427791e-05f), (a - 1.5f), 0.00022314851230476052f), (a - 1.5f), -0.0006606808747164905f), (a - 1.5f), 0.0018861298449337482f), (a - 1.5f), -0.005146094132214785f), (a - 1.5f), 0.01337734330445528f), (a - 1.5f), -0.032930899411439896f), (a - 1.5f), 0.076151043176651f), (a - 1.5f), -0.1636229157447815f), (a - 1.5f), 0.32158541679382324f)
+                           : metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(3.585280126117141e-07f, (a - 2.9600000381469727f), -1.5581474599457579e-06f), (a - 2.9600000381469727f), 5.586210136243608e-06f), (a - 2.9600000381469727f), -2.2518788682646118e-05f), (a - 2.9600000381469727f), 8.96720594028011e-05f), (a - 2.9600000381469727f), -0.00034497989690862596f), (a - 2.9600000381469727f), 0.0012899191351607442f), (a - 2.9600000381469727f), -0.004680399317294359f), (a - 2.9600000381469727f), 0.016433853656053543f), (a - 2.9600000381469727f), -0.05566482990980148f), (a - 2.9600000381469727f), 0.1812017410993576f);
+        float r = 1.0f - metal::precise::exp(-(a * a)) * q;
+        return metal::copysign(r, x);
+    }
+    return metal::isnan(x) ? x : metal::copysign(1.0f, x);  // erf rounds to 1 in float32 from 3.92 on
+}
+inline float qpel_expm1(float x) {
+    if (metal::fabs(x) < 1.0f) return x * metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(2.0849264537048384e-09f, x, 2.5532418845841676e-08f), x, 2.756363812750351e-07f), x, 2.755197783699259e-06f), x, 2.4801505787763745e-05f), x, 0.00019841297762468457f), x, 0.0013888889225199819f), x, 0.00833333283662796f), x, 0.0416666679084301f), x, 0.1666666716337204f), x, 0.5f), x, 1.0f);
+    return metal::precise::exp(x) - 1.0f;  // (NaN, infinities and |x| >= 1: little cancellation)
+}
+inline float qpel_log1p(float x) {
+    if (metal::fabs(x) < 0.5f) return x * metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(metal::fma(-0.1658092886209488f, x, 0.17766889929771423f), x, -0.045648183673620224f), x, 0.05051194131374359f), x, -0.10686452686786652f), x, 0.11852062493562698f), x, -0.12438149005174637f), x, 0.14218182861804962f), x, -0.16669248044490814f), x, 0.20002880692481995f), x, -0.24999961256980896f), x, 0.3333328664302826f), x, -0.5f), x, 1.0f);
+    return metal::precise::log(1.0f + x);
+}
+#define QPEL_MATH_ERF(x) qpel_erf((x))
+#define QPEL_MATH_EXPM1(x) qpel_expm1((x))
+#define QPEL_MATH_LOG1P(x) qpel_log1p((x))
+#endif
+
+#ifdef QPEL_CAS_ENABLED
+// Compare-and-swap (IR version 4) with CUDA's atomicCAS result: the value found. Metal's
+// exchange is weak (it may fail although the value found is the expected one), so it is
+// retried until it either succeeds or finds another value.
+inline uint qpel_atomic_cas(device atomic_uint* address, uint expected, uint value) {
+    uint found = expected;
+    while (!atomic_compare_exchange_weak_explicit(address, &found, value, memory_order_relaxed, memory_order_relaxed)) {
+        if (found != expected) return found;
+        found = expected;
+    }
+    return expected;
+}
+inline int qpel_atomic_cas(device atomic_int* address, int expected, int value) {
+    int found = expected;
+    while (!atomic_compare_exchange_weak_explicit(address, &found, value, memory_order_relaxed, memory_order_relaxed)) {
+        if (found != expected) return found;
+        found = expected;
+    }
+    return expected;
+}
+#define QPEL_CAS(address, expected, value) qpel_atomic_cas((address), (expected), (value))
+#endif
+
+#ifdef QPEL_ATOMICS_ENABLED
+// IR version 6 atomics (NUMERICS.md, Atomics), relaxed at device scope like the others.
+#define QPEL_ATOMIC_F32 device atomic_float*
+#define QPEL_ATOMIC_U64 device atomic_ulong*
+#define QPEL_MAX(address, value) atomic_fetch_max_explicit((address), (value), memory_order_relaxed)
+#define QPEL_AND(address, value) atomic_fetch_and_explicit((address), (value), memory_order_relaxed)
+#define QPEL_OR(address, value) atomic_fetch_or_explicit((address), (value), memory_order_relaxed)
+#define QPEL_XOR(address, value) atomic_fetch_xor_explicit((address), (value), memory_order_relaxed)
+#define QPEL_EXCHANGE(address, value) atomic_exchange_explicit((address), (value), memory_order_relaxed)
+#define QPEL_LOAD_F32(address) atomic_load_explicit((address), memory_order_relaxed)
+// Metal's 64-bit atomics are min and max (Apple GPU family 8 and later) without a result. It has no
+// 64-bit add, so the value is added in two 32-bit halves, the low half's carry going to the high
+// half. Once every addition is done the sum is exact (modulo 2^64); a kernel that adds to 64-bit
+// atomics takes no min or max of them (qpel_types.py), which would see the halves apart.
+inline void qpel_add_u64(device atomic_ulong* address, ulong value) {
+    device atomic_uint* halves = (device atomic_uint*)address;
+    uint low = (uint)value, high = (uint)(value >> 32);
+    uint before = atomic_fetch_add_explicit(halves, low, memory_order_relaxed);
+    high += (uint)(before + low < before);
+    if (high != 0u) atomic_fetch_add_explicit(halves + 1, high, memory_order_relaxed);
+}
+#define QPEL_ADD_U64(address, value) qpel_add_u64((address), (value))
+#define QPEL_MIN_U64(address, value) atomic_min_explicit((address), (value), memory_order_relaxed)
+#define QPEL_MAX_U64(address, value) atomic_max_explicit((address), (value), memory_order_relaxed)
+#endif
+
+#ifdef QPEL_BITCAST_ENABLED
+// IR version 6: a 32-bit value's bits read as another 32-bit type.
+#define QPEL_BITCAST_U32(x) as_type<uint>((x))
+#define QPEL_BITCAST_I32(x) as_type<int>((x))
+#define QPEL_BITCAST_F32(x) as_type<float>((x))
+#endif
+
+#ifdef QPEL_SUBGROUPS_ENABLED
+// SIMD-group operations, IR version 5 (NUMERICS.md, Subgroups): the same definitions as
+// backends/cuda.h. Apple forms SIMD-groups of 32 from consecutive linear thread indices.
+#undef QPEL_GROUPS_PARAM
+#define QPEL_GROUPS_PARAM , uint3 qpel_group [[threadgroup_position_in_grid]], uint3 qpel_local [[thread_position_in_threadgroup]], uint3 qpel_group_size [[threads_per_threadgroup]], uint3 qpel_group_count [[threadgroups_per_grid]], uint qpel_simd_lane [[thread_index_in_simdgroup]], uint qpel_simd_group [[simdgroup_index_in_threadgroup]]
+#define QPEL_SUBGROUP_LANE() qpel_simd_lane
+#define QPEL_SUBGROUP_INDEX() qpel_simd_group
+inline uint qpel_subgroup_size() { return 32u; }
+#define QPEL_SUBGROUP_SIZE() qpel_subgroup_size()
+template <class T> inline T qpel_shuffle_index(T v, uint lane) { return simd_shuffle(v, (ushort)(lane & 31u)); }
+template <class T> inline T qpel_shuffle_xor(T v, uint m) { T r = simd_shuffle_xor(v, (ushort)(m & 31u)); return m < 32u ? r : v; }
+template <class T> inline T qpel_shuffle_down(T v, uint d) { T r = simd_shuffle_down(v, (ushort)(d & 31u)); return d < 32u ? r : v; }
+template <class T> inline T qpel_shuffle_up(T v, uint d) { T r = simd_shuffle_up(v, (ushort)(d & 31u)); return d < 32u ? r : v; }
+inline uint qpel_combine_add(uint a, uint b) { return a + b; }
+inline int qpel_combine_add(int a, int b) { return (int)((uint)a + (uint)b); }
+inline float qpel_combine_add(float a, float b) { return a + b; }
+inline uint qpel_combine_min(uint a, uint b) { return b < a ? b : a; }
+inline int qpel_combine_min(int a, int b) { return b < a ? b : a; }
+inline float qpel_combine_min(float a, float b) { return metal::fmin(a, b); }
+inline uint qpel_combine_max(uint a, uint b) { return a < b ? b : a; }
+inline int qpel_combine_max(int a, int b) { return a < b ? b : a; }
+inline float qpel_combine_max(float a, float b) { return metal::fmax(a, b); }
+template <class T> inline T qpel_combine_and(T a, T b) { return a & b; }
+template <class T> inline T qpel_combine_or(T a, T b) { return a | b; }
+template <class T> inline T qpel_combine_xor(T a, T b) { return a ^ b; }
+#define QPEL_SUBGROUP_REDUCE(op) \
+  template <class T> inline T qpel_subgroup_##op(T v) { \
+    for (ushort m = 16; m > 0; m >>= 1) v = qpel_combine_##op(v, simd_shuffle_xor(v, m)); \
+    return v; }
+QPEL_SUBGROUP_REDUCE(add) QPEL_SUBGROUP_REDUCE(min) QPEL_SUBGROUP_REDUCE(max)
+QPEL_SUBGROUP_REDUCE(and) QPEL_SUBGROUP_REDUCE(or) QPEL_SUBGROUP_REDUCE(xor)
+#endif
+
+#ifdef QPEL_MATRIX_ENABLED
+// IR version 13: an 8x8 matrix held by a simdgroup (NUMERICS.md, Matrices): Apple's simdgroup_matrix,
+// loaded and stored row by row (elements_per_row = the stride), c + a b by simdgroup_multiply_accumulate.
+#include <metal_simdgroup_matrix>
+#define QPEL_MATRIX_F32 simdgroup_float8x8
+#define QPEL_MATRIX_F16 simdgroup_half8x8
+#define QPEL_MATRIX_FILL_F32(x) make_filled_simdgroup_matrix<float, 8, 8>((x))
+#define QPEL_MATRIX_FILL_F16(x) make_filled_simdgroup_matrix<half, 8, 8>((half)(x))
+template <class M, class P> inline M qpel_matrix_load(P base, uint offset, uint stride) {
+  M m; simdgroup_load(m, base + offset, (ulong)stride); return m; }
+template <class M, class P> inline void qpel_matrix_store(M m, P base, uint offset, uint stride) {
+  simdgroup_store(m, base + offset, (ulong)stride); }
+#define QPEL_MATRIX_LOAD_F32(base, offset, stride) qpel_matrix_load<simdgroup_float8x8>((base), (offset), (stride))
+#define QPEL_MATRIX_LOAD_F16(base, offset, stride) qpel_matrix_load<simdgroup_half8x8>((base), (offset), (stride))
+#define QPEL_MATRIX_STORE_F32(m, base, offset, stride) qpel_matrix_store((m), (base), (offset), (stride))
+#define QPEL_MATRIX_STORE_F16(m, base, offset, stride) qpel_matrix_store((m), (base), (offset), (stride))
+// IR version 15: column-major memory (Metal's transposed load and store)
+template <class M, class P> inline M qpel_matrix_load_columns(P base, uint offset, uint stride) {
+  M m; simdgroup_load(m, base + offset, (ulong)stride, ulong2(0), true); return m; }
+template <class M, class P> inline void qpel_matrix_store_columns(M m, P base, uint offset, uint stride) {
+  simdgroup_store(m, base + offset, (ulong)stride, ulong2(0), true); }
+#define QPEL_MATRIX_LOAD_COLUMNS_F32(base, offset, stride) qpel_matrix_load_columns<simdgroup_float8x8>((base), (offset), (stride))
+#define QPEL_MATRIX_LOAD_COLUMNS_F16(base, offset, stride) qpel_matrix_load_columns<simdgroup_half8x8>((base), (offset), (stride))
+#define QPEL_MATRIX_STORE_COLUMNS_F32(m, base, offset, stride) qpel_matrix_store_columns((m), (base), (offset), (stride))
+#define QPEL_MATRIX_STORE_COLUMNS_F16(m, base, offset, stride) qpel_matrix_store_columns((m), (base), (offset), (stride))
+inline simdgroup_float8x8 qpel_matrix_mma_f32(simdgroup_float8x8 a, simdgroup_float8x8 b, simdgroup_float8x8 c) {
+  simdgroup_float8x8 d; simdgroup_multiply_accumulate(d, a, b, c); return d; }
+inline simdgroup_float8x8 qpel_matrix_mma_f16(simdgroup_half8x8 a, simdgroup_half8x8 b, simdgroup_float8x8 c) {
+  simdgroup_float8x8 d; simdgroup_multiply_accumulate(d, a, b, c); return d; }
+#define QPEL_MATRIX_MMA_F32(a, b, c) qpel_matrix_mma_f32((a), (b), (c))
+#define QPEL_MATRIX_MMA_F16(a, b, c) qpel_matrix_mma_f16((a), (b), (c))
 #endif
 
 // Generated from qpel IR. Do not edit.
 // qpel numeric contract: u32-modulo-v1
-QPEL_KERNEL void initialize(QPEL_PARAM(QPEL_READ_U8, mask, 0), QPEL_PARAM(QPEL_ATOMIC_U32, parent, 1), QPEL_PARAM(QPEL_ATOMIC_U32, counts, 2), QPEL_PARAM(QPEL_SHAPE, shape, 3) QPEL_GRID_PARAM(qpel_index)) {
+QPEL_KERNEL void initialize(QPEL_READ_PARAM(QPEL_READ_U8, mask, 0), QPEL_PARAM(QPEL_ATOMIC_U32, parent, 1), QPEL_PARAM(QPEL_ATOMIC_U32, counts, 2), QPEL_PARAM(QPEL_SHAPE, shape, 3) QPEL_GRID_PARAM(qpel_index)) {
 QPEL_GRID_LOCAL(qpel_index)
 {
-if (((QPEL_U32)(qpel_index) >= (QPEL_U32)(((QPEL_U32)(((QPEL_U32)(shape.x) * (QPEL_U32)(shape.y))) * (QPEL_U32)(shape.z))))) {
+if (((QPEL_U32)(qpel_index) >= (QPEL_U32)(QPEL_SHAPE_VOLUME(shape, ((QPEL_U32)(((QPEL_U32)(shape.x) * (QPEL_U32)(shape.y))) * (QPEL_U32)(shape.z)))))) {
 return ;
  }
 QPEL_STORE((parent + (QPEL_U32)(qpel_index)), qpel_index);
@@ -216,7 +495,7 @@ b = lo;
  }
 }
 
-QPEL_KERNEL void merge(QPEL_PARAM(QPEL_READ_U8, mask, 0), QPEL_PARAM(QPEL_ATOMIC_U32, parent, 1), QPEL_PARAM(QPEL_ATOMIC_U32, counts, 2), QPEL_PARAM(QPEL_SHAPE, shape, 3) QPEL_GRID_PARAM(qpel_index)) {
+QPEL_KERNEL void merge(QPEL_READ_PARAM(QPEL_READ_U8, mask, 0), QPEL_PARAM(QPEL_ATOMIC_U32, parent, 1), QPEL_PARAM(QPEL_ATOMIC_U32, counts, 2), QPEL_PARAM(QPEL_SHAPE, shape, 3) QPEL_GRID_PARAM(qpel_index)) {
 QPEL_GRID_LOCAL(qpel_index)
 {
 QPEL_U32 w = shape.x;
@@ -243,10 +522,10 @@ unite(parent, qpel_index, ((QPEL_U32)(((QPEL_U32)(qpel_index) - (QPEL_U32)(w))) 
  }
 }
 
-QPEL_KERNEL void label_count(QPEL_PARAM(QPEL_READ_U8, mask, 0), QPEL_PARAM(QPEL_ATOMIC_U32, parent, 1), QPEL_PARAM(QPEL_ATOMIC_U32, counts, 2), QPEL_PARAM(QPEL_SHAPE, shape, 3), QPEL_PARAM(QPEL_WRITE_U32, labels, 4) QPEL_GRID_PARAM(qpel_index)) {
+QPEL_KERNEL void label_count(QPEL_READ_PARAM(QPEL_READ_U8, mask, 0), QPEL_PARAM(QPEL_ATOMIC_U32, parent, 1), QPEL_PARAM(QPEL_ATOMIC_U32, counts, 2), QPEL_PARAM(QPEL_SHAPE, shape, 3), QPEL_PARAM(QPEL_WRITE_U32, labels, 4) QPEL_GRID_PARAM(qpel_index)) {
 QPEL_GRID_LOCAL(qpel_index)
 {
-if (((QPEL_U32)(qpel_index) >= (QPEL_U32)(((QPEL_U32)(((QPEL_U32)(shape.x) * (QPEL_U32)(shape.y))) * (QPEL_U32)(shape.z))))) {
+if (((QPEL_U32)(qpel_index) >= (QPEL_U32)(QPEL_SHAPE_VOLUME(shape, ((QPEL_U32)(((QPEL_U32)(shape.x) * (QPEL_U32)(shape.y))) * (QPEL_U32)(shape.z)))))) {
 return ;
  }
 if ((!mask[qpel_index])) {
@@ -259,7 +538,7 @@ QPEL_ADD((counts + (QPEL_U32)(r)), 1u);
  }
 }
 
-QPEL_KERNEL void areas(QPEL_PARAM(QPEL_READ_U8, mask, 0), QPEL_PARAM(QPEL_ATOMIC_U32, parent, 1), QPEL_PARAM(QPEL_ATOMIC_U32, counts, 2), QPEL_PARAM(QPEL_SHAPE, shape, 3), QPEL_PARAM(QPEL_WRITE_U32, labels, 4), QPEL_PARAM(QPEL_WRITE_U32, output, 5) QPEL_GRID_PARAM(qpel_index)) {
+QPEL_KERNEL void areas(QPEL_READ_PARAM(QPEL_READ_U8, mask, 0), QPEL_PARAM(QPEL_ATOMIC_U32, parent, 1), QPEL_PARAM(QPEL_ATOMIC_U32, counts, 2), QPEL_PARAM(QPEL_SHAPE, shape, 3), QPEL_PARAM(QPEL_WRITE_U32, labels, 4), QPEL_PARAM(QPEL_WRITE_U32, output, 5) QPEL_GRID_PARAM(qpel_index)) {
 QPEL_GRID_LOCAL(qpel_index)
 {
 QPEL_U32 plane = ((QPEL_U32)(shape.x) * (QPEL_U32)(shape.y));

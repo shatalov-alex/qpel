@@ -29,12 +29,14 @@ def _struct(value, layout, size):
     data = bytearray(size)
     for field, kind, offset in layout:
         number = value[field] if kind == 'bf16' else _value(value[field], kind) if kind in ('f32', 'f16') else value[field]
-        if kind not in ('f32', 'f16', 'bf16'):
+        if kind == 'bool':  # (a C bool field: one byte, 0 or 1)
+            number = bool(number)
+        elif kind not in ('f32', 'f16', 'bf16'):
             _value(number, kind)  # range check; packed with its own type below
         _pack.pack_into('<' + _PACK[kind], data, offset, number)
     return bytes(data)
 
-_PACK = {'u8': 'B', 'i8': 'b', 'u16': 'H', 'i16': 'h', 'f16': 'e', 'bf16': 'H', 'u32': 'I', 'i32': 'i', 'f32': 'f', 'u64': 'Q', 'i64': 'q'}
+_PACK = {'u8': 'B', 'i8': 'b', 'bool': '?', 'u16': 'H', 'i16': 'h', 'f16': 'e', 'bf16': 'H', 'u32': 'I', 'i32': 'i', 'f32': 'f', 'u64': 'Q', 'i64': 'q'}
 
 def _value(value, kind):
     """A scalar kernel argument, checked against its qpel type."""
@@ -67,13 +69,15 @@ def _input(value, dtype, count, device):
 
 
 SHADER_FILE = 'components.metal'
-SHADER_SHA256 = '99d79fcf0f0dfefb7d0ea45ac41fb1cae12a4d04981bf2adb6d515b5a3391be5'
+SHADER_SHA256 = 'c4d113f8cb0e3283f46cc4f633e55122488370f0035b71d47665cdb9ad1cf0ca'
 
-def run(inputs, shapes, values=None, *, device="mps"):
-    """Inputs are tensors; shapes map names to (W,H,N); values are scalars; outputs are flat tensors."""
+def run(inputs, shapes, values=None, *, device="mps", omit=()):
+    """Inputs are tensors; shapes map names to (W,H,N); values are scalars; outputs are flat tensors.
+    An optional input is left out by leaving it out of inputs, an optional output by naming it in omit."""
     values = {} if values is None else values
-    if set(inputs) != set(['mask']) or set(shapes) != set(['shape']) or set(values) != set([]):
+    if not set(['mask']) <= set(inputs) <= set(['mask']) or set(shapes) != set(['shape']) or set(values) != set([]) or not set(omit) <= set([]):
         raise ValueError("Input/shape/value names do not match Pipeline")
+    present = {name: name not in omit and (name in inputs or name not in ['mask']) for name in []}
     device = torch.device(device)
     if device.type != "mps":
         raise ValueError("This generated backend requires MPS")
@@ -96,4 +100,5 @@ def run(inputs, shapes, values=None, *, device="mps"):
     torch.mps.synchronize()
     getattr(lib, 'areas')(buffers['mask'], buffers['parent'], buffers['counts'], buffers['shape'], buffers['labels'], buffers['output'], threads=sizes['shape'], group_size=128)
     torch.mps.synchronize()
-    return {'labels': buffers['labels'], 'output': buffers['output']}
+    result = {'labels': buffers['labels'], 'output': buffers['output']}
+    return {name: value for name, value in result.items() if present.get(name, True)}

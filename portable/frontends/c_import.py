@@ -464,6 +464,14 @@ def is_grid_index(node):
     return grid_axis(node) == 'x'
 
 
+def reuse_declaration(node):
+    """True for `T qpel_reuse_K;`, the local of qpel's loop that reads its location once."""
+    if not node or node.get('kind') != 'DeclStmt' or len(node.get('inner', ())) != 1:
+        return False
+    declared = node['inner'][0]
+    return declared.get('kind') == 'VarDecl' and declared.get('name', '').startswith('qpel_reuse_') and not declared.get('init')
+
+
 def walk(node):
     if not node:  # clang writes {} for an absent part, such as a for loop without an init
         return
@@ -2096,8 +2104,15 @@ class Importer:
     def read_statement(self, node):
         kind = node['kind']
         add = self.graph.add
+        if kind == 'CompoundStmt' and reuse_declaration(node.get('inner', [None])[0] if node.get('inner') else None):
+            # qpel's loop that reads its location once (qpel_opt.reused_loads): the loop alone is the meaning
+            return [s for child in node['inner'] for s in self.statement(child)]
         if kind == 'CompoundStmt':
             return [self.block(node)]
+        if kind == 'DeclStmt' and reuse_declaration(node):
+            self.reuse = getattr(self, 'reuse', {})
+            self.reuse[node['inner'][0]['id']] = None
+            return []
         if kind == 'NullStmt':
             return []
         if kind == 'CStyleCastExpr' and node.get('castKind') == 'ToVoid' and (
@@ -2234,6 +2249,24 @@ class Importer:
                 self.as_block(child)
             elif child:
                 self.attempt(lambda: self.expr(child))
+
+    def reused_load(self, node):
+        """The load a qpel_reuse_ local stands for (qpel_opt.reused_loads): `(qpel_reuse_K = load)` in the
+        loop's condition reads it, a later `qpel_reuse_K` reuses it; either way the IR has the load."""
+        reuse = getattr(self, 'reuse', None)
+        if not reuse:
+            return None
+        core = node
+        while core.get('kind') == 'ParenExpr' or core.get('kind') == 'ImplicitCastExpr' and core.get('castKind') == 'LValueToRValue':
+            core = core['inner'][0]
+        if core.get('kind') == 'BinaryOperator' and core.get('opcode') == '=':
+            target = core['inner'][0]
+            if target.get('kind') == 'DeclRefExpr' and target.get('referencedDecl', {}).get('id') in reuse:
+                reuse[target['referencedDecl']['id']] = core['inner'][1]
+                return core['inner'][1]
+        if core.get('kind') == 'DeclRefExpr' and reuse.get(core.get('referencedDecl', {}).get('id')) is not None:
+            return reuse[core['referencedDecl']['id']]
+        return None
 
     def local_group(self, node):
         return [s for d in node['inner'] for s in self.local(d)]
@@ -3306,6 +3339,9 @@ class Importer:
     # -- expressions --
 
     def expr(self, node, statement=False, address=False):
+        reused = self.reused_load(node)
+        if reused is not None:
+            return self.expr(reused, statement, address)
         wrapped = self.wrapping_idiom(node)
         if wrapped is None:
             wrapped = self.converted_wrapping(node)
@@ -3492,6 +3528,9 @@ class Importer:
         return entry
 
     def core(self, n, statement, address):
+        reused = self.reused_load(n)  # qpel_opt.reused_loads, also inside a cast
+        if reused is not None:
+            return self.expr(reused, statement, address)
         add = self.graph.add
         kind = n['kind']
         if '_facade_error' in n:

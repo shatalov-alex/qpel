@@ -17,6 +17,7 @@ inline unsigned atomic_min(std::atomic<unsigned>* p,unsigned v) {
 #define QPEL_WRITE_U32 unsigned*
 #define QPEL_SHAPE Shape
 #define QPEL_PARAM(type,name,binding) type name
+#define QPEL_READ_PARAM(type,name,binding) type name
 #define QPEL_GRID_PARAM(name) , unsigned name
 #define QPEL_GRID_LOCAL(name)
 #define QPEL_LOAD(p) (p)->load(std::memory_order_relaxed)

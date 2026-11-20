@@ -292,6 +292,8 @@ class Lowering:
         import qpel_opt  # optimisation facts, apart from the portability lowering (qpel_opt.py)
         self.vector_loads = qpel_opt.vector_loads(program, self.expression_types)
         self.vector_stores = qpel_opt.vector_stores(program, self.expression_types)
+        self.reused_loads = qpel_opt.reused_loads(program, self.expression_types)
+        self.reuse_names = {}
     def children(self,n,role):return [self.nodes[i] for i in n['children'].get(role,[])]
     def child(self,n,role):
         values=self.children(n,role)
@@ -335,6 +337,12 @@ class Lowering:
 
     def emit(self,n):
         k=n['kind'];a=n['attributes']
+        if n['id'] in getattr(self,'reuse_names',{}):  # qpel_opt.reused_loads: the condition reads, the body reuses
+            name,reads=self.reuse_names.pop(n['id'])
+            try:
+                return '('+name+' = '+self.emit(n)+')' if reads else name
+            finally:
+                self.reuse_names[n['id']]=(name,reads)
         e=lambda role:self.emit(self.child(n,role))
         joined=lambda role,sep:sep.join(self.emit(x) for x in self.children(n,role))
         if k in TYPE_KINDS:return type_macro(term(n))
@@ -372,7 +380,13 @@ class Lowering:
             declared=term(self.child(n,'type'))
             macro='QPEL_PARAM(' if is_buffer(declared) or declared=='shape3' else 'QPEL_VALUE('  # structs travel as values
             if a.get('optional'):  # CUDA: the pointer (null when left out); Metal: the buffer and a presence flag
+                if is_buffer(declared) and access(declared)=='read':  # (see QPEL_READ_PARAM below)
+                    return 'QPEL_OPTIONAL_READ_PARAM('+e('type')+', '+a['name']+', '+str(a.get('binding',0))+', '+str(self.presence_binding(n))+')'
                 return 'QPEL_OPTIONAL_PARAM('+e('type')+', '+a['name']+', '+str(a.get('binding',0))+', '+str(self.presence_binding(n))+')'
+            if is_buffer(declared) and access(declared)=='read':
+                # no other parameter of the dispatch is the same resource (qpel_pipeline: ALIAS), and nothing writes
+                # a read buffer, so CUDA may read it through the read-only cache, as originals' const __restrict__
+                macro='QPEL_READ_PARAM('
             return macro+e('type')+', '+a['name']+', '+str(a.get('binding',0))+')'
         if k=='BufferPresent':return 'QPEL_PRESENT('+self.link(n,'parameter')['attributes']['name']+')'
         if k=='Name':return self.link(n,'declaration')['attributes']['name']
@@ -523,6 +537,13 @@ class Lowering:
             return 'for ('+part('init')+'; '+part('condition')+'; '+part('step')+') '+e('body')+'\n'
         if k=='Break':return 'break;\n'
         if k=='Continue':return 'continue;\n'
+        if k=='While' and n['id'] in self.reused_loads:  # one read of the location for the condition and the body
+            first,again,value_type=self.reused_loads[n['id']]
+            self.reuse_count=getattr(self,'reuse_count',0)+1;name=f'qpel_reuse_{self.reuse_count}'
+            self.reuse_names[first]=(name,True);self.reuse_names[again]=(name,False)
+            out='{\n'+type_macro(value_type)+' '+name+';\nwhile ('+e('condition')+') '+e('body')+'\n}\n'
+            del self.reuse_names[first],self.reuse_names[again]
+            return out
         if k=='While':return 'while ('+e('condition')+') '+e('body')+'\n'
         if k=='DoWhile':return 'do '+e('body')+' while ('+e('condition')+');\n'
         if k in ('SubgroupLane','SubgroupIndex','SubgroupSize'):

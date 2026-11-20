@@ -5,8 +5,8 @@ from pathlib import Path
 import cupy as cp
 import numpy as np
 
-# By-value QpelShape: four uint32 fields, including explicit padding.
-SHAPE_DTYPE = np.dtype({'names': ['x', 'y', 'z', 'padding'],
+# By-value QpelShape: four uint32 fields, the fourth the element count (x * y * z, at most INT32_MAX).
+SHAPE_DTYPE = np.dtype({'names': ['x', 'y', 'z', 'volume'],
                        'formats': ['uint32'] * 4,
                        'offsets': [0, 4, 8, 12], 'itemsize': 16})
 
@@ -26,7 +26,7 @@ def _shape(value):
     w, h, n = value
     if w * h * n > 2**31 - 1:
         raise ValueError("Shape exceeds INT32_MAX elements")
-    return np.array((w, h, n, 0), dtype=SHAPE_DTYPE)[()], w * h * n
+    return np.array((w, h, n, w * h * n), dtype=SHAPE_DTYPE)[()], w * h * n
 
 def _grid3d(shape, block):
     """Blocks covering a (W, H, N) shape; CUDA limits grid y and z to 65535 blocks."""
@@ -74,15 +74,18 @@ def _value(value, kind):
 
 
 SHADER_FILE = 'components.cu'
-SHADER_SHA256 = '0697526ed13a8c881f3694c7371d71ad55a329455912238c967e4322363d4264'
+SHADER_SHA256 = '5d9d860c761aaaab8dd5e33539ae9465a2e91ce9c5dda1814a37fbea619441e6'
 
-def run(inputs, shapes, values=None, *, device=0):
-    """CuPy arrays in/out; shapes are (W,H,N); values are scalars; each stage completes before the next."""
+def run(inputs, shapes, values=None, *, device=0, omit=()):
+    """CuPy arrays in/out; shapes are (W,H,N); values are scalars; each stage completes before the next.
+    An optional input is left out by leaving it out of inputs, an optional output by naming it in omit:
+    the kernel receives a null pointer."""
     values = {} if values is None else values
     if type(device) is not int or device < 0:
         raise ValueError("CUDA device must be a nonnegative integer")
-    if set(inputs) != set(['mask']) or set(shapes) != set(['shape']) or set(values) != set([]):
+    if not set(['mask']) <= set(inputs) <= set(['mask']) or set(shapes) != set(['shape']) or set(values) != set([]) or not set(omit) <= set([]):
         raise ValueError("Input/shape/value names do not match Pipeline")
+    present = {name: name not in omit and (name in inputs or name not in ['mask']) for name in []}
     buffers, sizes = {}, {}
     buffers['shape'], sizes['shape'] = _shape(shapes['shape'])
     value = inputs['mask']
@@ -104,4 +107,5 @@ def run(inputs, shapes, values=None, *, device=0):
         stream.synchronize()
         lib.get_function('areas')(((sizes['shape'] + 127) // 128,), (128,), (buffers['mask'], buffers['parent'], buffers['counts'], buffers['shape'], buffers['labels'], buffers['output'],), stream=stream)
         stream.synchronize()
-    return {'labels': buffers['labels'], 'output': buffers['output']}
+    result = {'labels': buffers['labels'], 'output': buffers['output']}
+    return {name: value for name, value in result.items() if present.get(name, True)}

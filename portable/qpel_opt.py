@@ -15,6 +15,14 @@ an original's `int4* bboxes; bboxes[i] = v`. The lowering emits one N-wide store
 conditions as a whole-vector load, and the N element stores otherwise. The wide store evaluates every
 value before it stores any, so the values and the index must be pure and read no memory (locals,
 parameters, literals and arithmetic on them), and of the buffer's element type (no conversion).
+
+reused_loads: a loop that reads one atomic location in its condition and again, first thing, in its body,
+`while (atomic.load(a) != n) { n = atomic.load(a); ... }`, the union-find of SAM 2's connected components
+and of every disjoint-set forest. The two relaxed loads have nothing between them but the rest of the
+condition, which reads no memory, so reading once and using the value twice is one of the executions
+the relaxed order already allows (no other write can be required to fall between them). The lowering
+reads the location into a local in the condition and assigns that local in the body; nvcc's plain loads
+in the original were merged the same way, and a volatile pair could not be.
 """
 import json
 import re
@@ -153,4 +161,37 @@ def vector_stores(program, types):
                 taken = length
                 break
             at += taken or 1
+    return found
+
+
+def reused_loads(program, types):
+    """{While id: (condition AtomicLoad id, body AtomicLoad id, its value type)} for the loops whose
+    condition and first body statement read the same atomic location (see reused_loads above)."""
+    p = Program(program)
+    found = {}
+    for n in p.nodes.values():
+        if n['kind'] != 'While':
+            continue
+        condition, body = p.child(n, 'condition'), p.child(n, 'body')
+        if condition is None or body is None or condition['kind'] != 'Binary' or body['kind'] != 'Block':
+            continue
+        sides = [p.child(condition, 'left'), p.child(condition, 'right')]
+        loads = [s for s in sides if s is not None and s['kind'] == 'AtomicLoad']
+        if len(loads) != 1:
+            continue
+        load = loads[0]
+        other = sides[1] if sides[0] is load else sides[0]
+        address = p.child(load, 'address')
+        if other is None or address is None or not pure(p, other) or not pure(p, address):
+            continue
+        statements = body['children'].get('statements', [])
+        if not statements:
+            continue
+        first = p.nodes[statements[0]]
+        if first['kind'] != 'Assign' or p.child(first, 'target')['kind'] != 'Name':
+            continue
+        again = p.child(first, 'value')
+        if again['kind'] != 'AtomicLoad' or p.shape(again) != p.shape(load) or load['id'] not in types:
+            continue
+        found[n['id']] = (load['id'], again['id'], types[load['id']])
     return found

@@ -14,8 +14,10 @@ static_assert(sizeof(QpelShape) == 16, "qpel shape ABI must be 16 bytes");
 #define QPEL_WRITE_U32 unsigned int*
 #define QPEL_SHAPE QpelShape
 #define QPEL_PARAM(type, name, binding) type name
+#define QPEL_READ_PARAM(type, name, binding) type __restrict__ name  // a kernel's read buffer: no alias in its dispatch
 // An optional buffer (IR version 9): the pointer, null when the caller leaves the buffer out.
 #define QPEL_OPTIONAL_PARAM(type, name, binding, presence) type name
+#define QPEL_OPTIONAL_READ_PARAM(type, name, binding, presence) type __restrict__ name
 #define QPEL_PRESENT(name) ((name) != nullptr)
 // IR version 12: module-level constant tables, and the leading zero bits of an integer.
 #define QPEL_CONSTANT_ARRAY(T, name, length) __device__ const T name[length]

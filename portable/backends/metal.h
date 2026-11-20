@@ -15,9 +15,11 @@ using namespace metal;
 #define QPEL_SHAPE constant uint3&
 #define QPEL_SHAPE_VOLUME(s, product) (product)  // (Metal's uint3 shape has no volume word)
 #define QPEL_PARAM(type, name, binding) type name [[buffer(binding)]]
+#define QPEL_READ_PARAM(type, name, binding) type name [[buffer(binding)]]
 // An optional buffer (IR version 9): Metal cannot ask whether a buffer is bound, so the host
 // passes a presence flag after all of the kernel's parameters (a placeholder buffer when absent).
 #define QPEL_OPTIONAL_PARAM(type, name, binding, presence) type name [[buffer(binding)]], constant uint& qpel_present_##name [[buffer(presence)]]
+#define QPEL_OPTIONAL_READ_PARAM(type, name, binding, presence) QPEL_OPTIONAL_PARAM(type, name, binding, presence)
 #define QPEL_PRESENT(name) (qpel_present_##name != 0u)
 // IR version 12: module-level constant tables, and the leading zero bits of an integer.
 #define QPEL_CONSTANT_ARRAY(T, name, length) constant T name[length]
