@@ -180,20 +180,22 @@ rasteriser get about 1M keys or voxels in a 2048 x 1024 image, gsplat's rasteris
 frame of 131k gaussians, bitsandbytes 8M values in blocks of 64. The inputs are generated on the
 GPU machine, the launches are timed between CUDA events (median of up to 200 repetitions), and
 both sides' outputs are compared. The sides alternate over 3 rounds and each side's fastest median
-counts. Kaggle run 8 (2026-11-22): 83 programs timed, qpel/original x1.00 as a geometric mean,
-median x1.00, range x0.90 to x1.08; every NVIDIA row passed on the T4.
+counts. Kaggle run 9 (2026-11-22): 83 programs timed, qpel/original x1.00 as a geometric mean,
+median x1.00, range x0.81 to x1.23 (the ends are kernels under 0.3 ms, below); every NVIDIA row
+passed on the T4, and every program's outputs agree bit for bit with the original's.
 
 | Program | Original | qpel | Ratio |
 | --- | --- | --- | --- |
-| gsplat `rasterize_to_pixels_3dgs_fwd` (2048 x 1024, 131k gaussians) | 7.39 ms | 8.00 ms | x1.08 |
+| gsplat `rasterize_to_pixels_3dgs_fwd` (2048 x 1024, 131k gaussians) | 7.44 ms | 7.40 ms | x0.99 |
 | SAM 2 connected components (`sam2_cc`) | 0.256 ms | 0.274 ms | x1.07 |
-| bitsandbytes dequantise 8-bit (8M values) | 0.205 ms | 0.208 ms | x1.01 |
-| bitsandbytes dequantise FP4 | 0.192 ms | 0.187 ms | x0.97 |
-| bitsandbytes dequantise NF4 | 0.192 ms | 0.187 ms | x0.98 |
-| bitsandbytes quantise FP4 / NF4 / 8-bit | 0.186 / 0.311 / 0.526 ms | 0.185 / 0.328 / 0.539 ms | x0.99 / x1.05 / x1.02 |
-| TRELLIS.2 `preprocess` | 0.193 ms | 0.189 ms | x0.98 |
-| TRELLIS.2 `render` | 0.537 ms | 0.538 ms | x1.00 |
-| mamba selective scan | 0.0057 ms | 0.0060 ms | x1.04 |
+| mmcv `roi_align_forward` / `roi_pool_forward` | 6.9 / 6.3 µs | 6.6 / 6.2 µs | x0.96 / x0.99 |
+| bitsandbytes dequantise 8-bit (8M values) | 0.209 ms | 0.210 ms | x1.00 |
+| bitsandbytes dequantise FP4 | 0.194 ms | 0.190 ms | x0.98 |
+| bitsandbytes dequantise NF4 | 0.192 ms | 0.192 ms | x1.00 |
+| bitsandbytes quantise FP4 / NF4 / 8-bit | 0.226 / 0.307 / 0.591 ms | 0.182 / 0.315 / 0.605 ms | x0.81 / x1.03 / x1.02 |
+| TRELLIS.2 `preprocess` | 0.191 ms | 0.187 ms | x0.98 |
+| TRELLIS.2 `render` | 0.537 ms | 0.536 ms | x1.00 |
+| mamba selective scan | 0.0061 ms | 0.0059 ms | x0.96 |
 
 The T4's kernels under 0.3 ms vary by up to 15% between rounds and runs, so only ratios steady
 over runs are findings. Fixed in Phase 6: TRELLIS.2 `render` x1.94 (`__fdiv_rn` and atomic loads
@@ -201,13 +203,16 @@ read as read-modify-writes), bitsandbytes x1.6 to x3.5 (qpel's CUB subset stored
 warp-transposing `BlockStore` directly, so neighbouring threads wrote 64 bytes apart; it now goes
 through shared memory, and orders only the warp, as CUB does: LIBRARIES.md), llama.cpp `arange`
 x1.35 and `fill` x1.14 (the original's block size and the shape's precomputed element count),
-TRELLIS.2 `preprocess` x1.13 (`qpel_opt.vector_stores`: the original's two 128-bit stores). Open,
-steady over runs 6 to 8: gsplat x1.05 to x1.08 and `sam2_cc` x1.07; mmcv's `roi_align` and
-`roi_pool` x1.08 are half a microsecond in kernels of 7 µs (since run 8, a signed `/` and `%` of the
-same operands share one division, as in C: `roi_align` has 3 on sm_75, not 6; not yet timed). gsplat's outputs differ at this size
-(2.5M elements, at most 1168 ulp, in low-magnitude colours and alphas): the original's `__expf` is
-read as qpel's bounded `exp`, more accurate than the original, and the difference compounds over
-the blended layers; the behaviour cases agree within their tolerance.
+TRELLIS.2 `preprocess` x1.13 (`qpel_opt.vector_stores`: the original's two 128-bit stores),
+gsplat rasterize x1.05 to x1.08 (CUDA's `__expf` was read as qpel's bounded `exp`; since IR version
+20 it is `fast_exp`, `__expf` itself, and gsplat's outputs are bit for bit the original's at this
+size, where they had differed by up to 1168 ulp), mmcv `roi_align` and `roi_pool` x1.08 (a signed
+`/` and `%` of the same operands share one division, as in C: `roi_align` has 3 on sm_75, not 6).
+Open, steady over runs 6 to 9: `sam2_cc` x1.07. Its merge's loads are volatile, which nvcc emits as
+`LDG.E.STRONG.SYS`; run 9 tried `ld.relaxed.gpu` (device scope, `LDG.E.STRONG.GPU`, as libcu++'s
+`atomic_ref` spells relaxed loads) and the time did not move, so qpel keeps volatile, which
+GPGPU-Sim also parses. Run 9's `clamp_f16` x1.23, `round_f16` x1.16 and `sin_f32` x1.10 are one fast
+round of the original's: qpel's three rounds lie within the original's spread.
 
 **Pilots on the Apple GPU.** A CUDA original has no Metal side to time against;
 `python3 -m differential.bench --cuda <program>` times qpel's Metal alone, and bitsandbytes'
