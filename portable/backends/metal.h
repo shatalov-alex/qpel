@@ -190,8 +190,10 @@ inline float qpel_group_sum_f32(float value, threadgroup float* scratch, uint la
 #define QPEL_WRITE_I32 device int*
 // Signed division truncates toward zero. INT_MIN / -1 wraps to INT_MIN and
 // INT_MIN % -1 is 0 (C leaves both undefined). Divisors must be nonzero.
-inline int qpel_i32_div(int a, int b) { return b == -1 ? (int)(0u - (uint)a) : a / b; }
-inline int qpel_i32_rem(int a, int b) { return b == -1 ? 0 : a % b; }
+// One quotient for both, the remainder a - q b (wrapping; 0 for b = -1), so that a / b and a % b of the
+// same operands share one division as plain C does (mmcv roi_align on sm_75: 3 divisions, not 6).
+inline int qpel_i32_div(int a, int b) { int q = a / (b == -1 ? 1 : b); return b == -1 ? (int)(0u - (uint)a) : q; }
+inline int qpel_i32_rem(int a, int b) { return (int)((uint)a - (uint)qpel_i32_div(a, b) * (uint)b); }
 #define QPEL_ATOMIC_I32 device atomic_int*
 #define QPEL_I32_DIV(a, b) qpel_i32_div((a), (b))
 #define QPEL_I32_REM(a, b) qpel_i32_rem((a), (b))
@@ -218,8 +220,8 @@ inline int qpel_i32_rem(int a, int b) { return b == -1 ? 0 : a % b; }
 #define QPEL_READ(type) device const type*
 #define QPEL_WRITE(type) device type*
 // As for i32: LONG_MIN / -1 wraps to LONG_MIN and LONG_MIN % -1 is 0. Divisors must be nonzero.
-inline long qpel_i64_div(long a, long b) { return b == -1 ? (long)(0ul - (ulong)a) : a / b; }
-inline long qpel_i64_rem(long a, long b) { return b == -1 ? 0 : a % b; }
+inline long qpel_i64_div(long a, long b) { long q = a / (b == -1 ? 1 : b); return b == -1 ? (long)(0ul - (ulong)a) : q; }
+inline long qpel_i64_rem(long a, long b) { return (long)((ulong)a - (ulong)qpel_i64_div(a, b) * (ulong)b); }  // (as qpel_i32_rem)
 #define QPEL_I64_DIV(a, b) qpel_i64_div((a), (b))
 #define QPEL_I64_REM(a, b) qpel_i64_rem((a), (b))
 #endif

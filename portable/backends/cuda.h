@@ -180,8 +180,10 @@ __device__ __forceinline__ float qpel_group_sum_f32(float value, float* scratch,
 #define QPEL_WRITE_I32 int*
 // Signed division truncates toward zero. INT_MIN / -1 wraps to INT_MIN and
 // INT_MIN % -1 is 0 (C leaves both undefined). Divisors must be nonzero.
-__device__ __forceinline__ int qpel_i32_div(int a, int b) { return b == -1 ? (int)(0u - (unsigned int)a) : a / b; }
-__device__ __forceinline__ int qpel_i32_rem(int a, int b) { return b == -1 ? 0 : a % b; }
+// One quotient for both, the remainder a - q b (wrapping; 0 for b = -1), so that a / b and a % b of the
+// same operands share one division as plain C does (mmcv roi_align on sm_75: 3 divisions, not 6).
+__device__ __forceinline__ int qpel_i32_div(int a, int b) { int q = a / (b == -1 ? 1 : b); return b == -1 ? (int)(0u - (unsigned int)a) : q; }
+__device__ __forceinline__ int qpel_i32_rem(int a, int b) { return (int)((unsigned int)a - (unsigned int)qpel_i32_div(a, b) * (unsigned int)b); }
 #define QPEL_ATOMIC_I32 int*
 #define QPEL_I32_DIV(a, b) qpel_i32_div((a), (b))
 #define QPEL_I32_REM(a, b) qpel_i32_rem((a), (b))
@@ -209,8 +211,8 @@ static_assert(sizeof(short) == 2 && sizeof(long long) == 8, "qpel requires 16-bi
 #define QPEL_READ(type) const type*
 #define QPEL_WRITE(type) type*
 // As for i32: LLONG_MIN / -1 wraps to LLONG_MIN and LLONG_MIN % -1 is 0. Divisors must be nonzero.
-__device__ __forceinline__ long long qpel_i64_div(long long a, long long b) { return b == -1 ? (long long)(0ull - (unsigned long long)a) : a / b; }
-__device__ __forceinline__ long long qpel_i64_rem(long long a, long long b) { return b == -1 ? 0 : a % b; }
+__device__ __forceinline__ long long qpel_i64_div(long long a, long long b) { long long q = a / (b == -1 ? 1 : b); return b == -1 ? (long long)(0ull - (unsigned long long)a) : q; }
+__device__ __forceinline__ long long qpel_i64_rem(long long a, long long b) { return (long long)((unsigned long long)a - (unsigned long long)qpel_i64_div(a, b) * (unsigned long long)b); }  // (as qpel_i32_rem)
 #define QPEL_I64_DIV(a, b) qpel_i64_div((a), (b))
 #define QPEL_I64_REM(a, b) qpel_i64_rem((a), (b))
 #endif
@@ -270,7 +272,7 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long long, -9223372036854775808.0f, 92
 #define QPEL_GROUP_COUNT(axis) gridDim.axis
 #define QPEL_GROUPS_THREAD_INDEX(axis) (blockIdx.axis * blockDim.axis + threadIdx.axis)
 // IR version 4 shared memory and barriers (Groups kernels).
-#define QPEL_SHARED(T, name, n) __shared__ T name[n]
+#define QPEL_SHARED(T, name, n) QPEL_UNUSED __shared__ T name[n]  // (a table a constant-false branch fills is set, never read)
 #define QPEL_BARRIER() __syncthreads()
 #define QPEL_SUBGROUP_BARRIER() __syncwarp()  // IR version 16: the warp's lanes, ordering their memory
 #define QPEL_BARRIER_COUNT(p) __syncthreads_count((p) ? 1 : 0)
@@ -458,12 +460,11 @@ __device__ __forceinline__ qpel_matrix_f32 qpel_matrix_mma_f16(qpel_matrix_f16 a
   // B's column fragment came with it (qpel_matrix_f16::col); A's row fragment is its own layout
   const unsigned int b_frag = b.col;
   const unsigned int a_frag = qpel_half_pair(a.v[0], a.v[1]);
-  float d0, d1, d2, d3;
+  float d[4];  // (an array: nvcc's "set but never used" sees through (void) casts of d2 and d3)
   asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 {%0, %1, %2, %3}, {%4, %5}, {%6}, {%7, %8, %9, %10};"
-               : "=f"(d0), "=f"(d1), "=f"(d2), "=f"(d3)
+               : "=f"(d[0]), "=f"(d[1]), "=f"(d[2]), "=f"(d[3])
                : "r"(a_frag), "r"(0u), "r"(b_frag), "f"(c.v[0]), "f"(c.v[1]), "f"(0.0f), "f"(0.0f));
-  (void)d2; (void)d3;
-  qpel_matrix_f32 d; d.v[0] = d0; d.v[1] = d1; return d;
+  qpel_matrix_f32 r; r.v[0] = d[0]; r.v[1] = d[1]; return r;
 #else
   return qpel_matrix_mma_chain(a, b, c);  // (f16 products are exact in f32)
 #endif
