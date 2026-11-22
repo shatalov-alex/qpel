@@ -104,7 +104,7 @@ ATTRIBUTES = {
     'Variable': {'name': str}, 'ConstantDecl': {'name': str}, 'Literal': {'value': str}, 'I32Literal': {'value': str}, 'F32Literal': {'value': str},
     'Binary': {'operator': str}, 'Unary': {'operator': str},
     'Member': {'member': str}, 'Pipeline': {'name': str},
-    'Resource': {'name': str, 'kind': str, 'scale': int, 'length': int, 'optional': bool},
+    'Resource': {'name': str, 'kind': str, 'scale': int, 'per': int, 'length': int, 'optional': bool},
     'Dispatch': {'blockSize': int, 'blockHeight': int, 'blockDepth': int, 'completionBarrier': bool,
                  'groupsX': str, 'groupsY': str, 'groupsZ': str},
     'ThreadIndex': {'axis': str},
@@ -126,8 +126,9 @@ ATTRIBUTES = {
 SHUFFLE_MODES = ('index', 'xor', 'down', 'up')
 REDUCE_OPERATORS = ('add', 'min', 'max', 'and', 'or', 'xor')
 SUBGROUP_SIZE = 32  # lanes per subgroup on every backend qpel targets (NVIDIA warps, Apple SIMD-groups)
+MAX_PER = 2**20  # elements of the extent per tile: `in M / 256` for one element per 256 (IR version 21)
 MAX_SCALE = 4096  # elements per element of a buffer's extent: `in M * 4` for an [M, 4] tensor
-DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer', 'reference', 'optional'}, 'Resource': {'scale', 'length', 'optional'},
+DEFAULTED = {'Function': {'isKernel'}, 'Parameter': {'binding', 'isBuffer', 'reference', 'optional'}, 'Resource': {'scale', 'per', 'length', 'optional'},
              'Dispatch': {'blockHeight', 'blockDepth', 'groupsX', 'groupsY', 'groupsZ'}, 'MatrixLoad': {'columns'},
              'MatrixStore': {'columns'}, 'View': {'unaligned'}}
 # Every qpel name is emitted verbatim into both CUDA C++ and Metal Shading Language, so it
@@ -328,6 +329,8 @@ def validate_structure(nodes):
             fail('Invalid struct name')
         if kind == 'Resource' and a['kind'] not in ('input', 'inout', 'output', 'scratch', 'zeroed', 'shape', 'value'):
             fail('Unsupported resource kind')
+        if kind == 'Resource' and 'per' in a and not (2 <= a['per'] <= MAX_PER and 'extent' in n['links']):
+            fail(f'A buffer per tile (one count of elements per that many elements of its extent) has a tile of 2 to {MAX_PER}')
         if kind == 'Resource' and 'length' in a and not (1 <= a['length'] <= 2**31 - 1 and 'extent' not in n['links'] and 'scale' not in a):
             fail('A fixed-length buffer has a length from 1 to INT32_MAX elements, and no extent or scale')
         if kind == 'Resource' and 'scale' in a and not (2 <= a['scale'] <= MAX_SCALE and 'extent' in n['links']):

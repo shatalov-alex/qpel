@@ -1,0 +1,21 @@
+// A buffer of a count per tile of its extent (IR version 21): `in n / 256 * 2` holds 2 elements per
+// 256 elements of n, rounded up, as device-wide scans and sorts keep a partial or a histogram per tile.
+// Each tile writes its first element and that element's index.
+module buffer_tiles {
+  kernel k(x: buffer<u32, read> @0, t: buffer<u32, write> @1, n: shape3 @2) grid1d {
+    let i: u32 = qpel.index;
+    if (i >= n.x) {
+      return;
+    }
+    if ((i % 256u) == 0u) {
+      t[(i / 256u) * 2u] = x[i];
+      t[((i / 256u) * 2u) + 1u] = i;
+    }
+  }
+}
+pipeline buffer_tiles_launch {
+  shape n;
+  input x: buffer<u32, read> in n;
+  output t: buffer<u32, write> in n / 256 * 2;
+  dispatch k over n block (64) (x = x, t = t, n = n);
+}

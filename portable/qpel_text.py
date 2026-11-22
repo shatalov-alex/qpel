@@ -218,6 +218,8 @@ class Printer:
                 text += f': {self.type(self.child(r, "type"))}'
             if 'extent' in r['links']:
                 text += f' in {self.link(r, "extent")["attributes"]["name"]}'
+                if 'per' in r['attributes']:  # IR version 21
+                    text += f' / {r["attributes"]["per"]}'
                 if 'scale' in r['attributes']:
                     text += f' * {r["attributes"]["scale"]}'
             if 'length' in r['attributes']:
@@ -787,6 +789,8 @@ class Parser:
                 self.take(']')
             elif self.accept('in'):
                 extents.append((ident, self.take(kind='name')))
+                if self.accept('/'):  # a count per tile of the extent, rounded up: `in M / 256` (v21)
+                    self.graph.nodes[ident]['attributes']['per'] = int(self.take(kind='number'))
                 if self.accept('*'):  # elements per element of the extent: `in M * 4`
                     self.graph.nodes[ident]['attributes']['scale'] = int(self.take(kind='number'))
             self.take(';')

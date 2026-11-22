@@ -895,7 +895,8 @@ def buffer_length(resource, shapes):
     if resource.get('length'):
         return resource['length']
     w, h, n = shapes[resource['extent']]
-    return w * h * n * resource.get('scale', 1)
+    per = resource.get('per', 1)  # IR version 21: a count per tile of `per` elements, rounded up
+    return -(-(w * h * n) // per) * resource.get('scale', 1)
 
 
 def normalize_plan(plan):

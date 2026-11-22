@@ -164,6 +164,13 @@ A program with either is version 19.
 
 `math.fast_exp(x)` (`Math {function: fast_exp}`): e^x within 3 + floor(2|x|) ulp (NUMERICS.md, math functions): CUDA `__expf`, Metal `metal::fast::exp` (backends/metal.h `qpel_fast_exp`). CUDA's `__expf` imports as it. tests/test_fast_exp.py. A program with `math.fast_exp` is version 20.
 
+## IR version 21
+
+Buffers of a count per tile of their extent: a resource's `per` attribute (2 to 2^20) makes its length ceil(volume(extent) / per) elements, times its `scale` if it has one; in text `output t: buffer<u32, write> in n / 256 * 2;` (2 elements per 256 elements of n, rounded up). Device-wide scans and sorts keep a partial or a histogram per tile of their input this way (LIBRARIES.md). The plan carries `per`, and the hosts (`generate_cuda_host.py`, `generate_metal_host.py`), the CPU simulator and the case generator size such buffers by it. `examples/buffer_tiles.qpel`, tests/test_buffer_tiles.py. A program with such a buffer is version 21.
+
+
+Pipelines (any IR version, since 2026-11-22): a buffer resource that a pipeline writes may be bound to a later stage's read-only parameter of the same element type (`buffer<i64, write>` to `buffer<i64, read>`): a sort's output read by the next kernel. Every other binding has the parameter's own type.
+
 ## Optimisation passes
 
 `qpel_opt.py` holds passes that read a validated program and tell the lowering how to emit it faster, with the same results; they never change the IR, whose meaning stays the portable one. Kept apart from the portability lowering (ROADMAP, Phase 6):

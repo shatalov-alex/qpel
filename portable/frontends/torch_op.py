@@ -224,7 +224,7 @@ def _generate_one(launch, plan, kernel, parameters):
     for r in plan['resources']:  # shapes no parameter carries: from a buffer they size
         if r['kind'] == 'shape' and r['name'] not in shapes:
             for b in plan['resources']:
-                if b.get('extent') == r['name'] and b['name'] in tensor_of and not b.get('length'):
+                if b.get('extent') == r['name'] and b['name'] in tensor_of and not b.get('length') and not b.get('per'):
                     t = _identifier(tensor_of[b['name']])
                     shapes[r['name']] = f'({t}.numel() * {t}.element_size() // {_bytes(b)}, 1, 1)'
                     break
