@@ -369,7 +369,7 @@ def is_member(node, base, field):
 TEMPORARIES = ('ImplicitCastExpr', 'MaterializeTemporaryExpr', 'CXXBindTemporaryExpr', 'ExprWithCleanups', 'ParenExpr')
 
 
-BARRIER_CALLS = {'__syncthreads', '__syncthreads_count', 'threadgroup_barrier', 'qpel_barrier_count'}
+BARRIER_CALLS = {'__syncthreads', '__syncthreads_count', '__syncthreads_or', 'threadgroup_barrier', 'qpel_barrier_count'}
 
 
 def predicate(node):
@@ -4235,6 +4235,9 @@ class Importer:
             return add('SubgroupBarrier')
         if callee in ('__syncthreads_count', 'qpel_barrier_count'):
             return add('BarrierCount', children={'value': self.expr(predicate(args[0]))})
+        if callee == '__syncthreads_or':  # any thread's predicate: a nonzero count (gsplat's packed projections)
+            count = add('BarrierCount', children={'value': self.expr(predicate(args[0]))})
+            return add('Binary', {'operator': '!='}, {'left': count, 'right': self.int_value('i32', 0)})
         template = decl_name(n['inner'][0])  # the template's own name: instances may be renamed (_f32, _i32)
         if template in SUBGROUP_CALLS:
             return self.subgroup_call(n, template, args)
