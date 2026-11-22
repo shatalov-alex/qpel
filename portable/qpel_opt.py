@@ -23,11 +23,21 @@ condition, which reads no memory, so reading once and using the value twice is o
 the relaxed order already allows (no other write can be required to fall between them). The lowering
 reads the location into a local in the condition and assigns that local in the body; nvcc's plain loads
 in the original were merged the same way, and a volatile pair could not be.
+
+matrix_pairs: two statements of one block, `c = mma(a_n, b_n, ... mma(a_1, b_1, c))` and
+`c' = mma(a'_n, b_n, ... mma(a'_1, b_1, c'))`, f16 multiply chains with the same B at every step, as the
+CUDA importer writes a 16 x 16 WMMA fragment's two row blocks. CUDA's mma.sync.m16n8k8 multiplies a
+16 x 8 A by an 8 x 8 B, and each row of the result is that row of A times B alone: one instruction with
+a in rows 0 to 7 and a' in rows 8 to 15 gives both results, each element the same as from its own
+instruction with the other rows zero. The operands are locals (`x` or `x[k]`, k a literal), the second
+statement reads nothing the first or a statement between them writes, and the statements between
+neither read nor write what the second writes, so evaluating both chains at the first statement's
+place, before either assignment, is the same execution. Metal and the CPU simulator multiply each.
 """
 import json
 import re
 
-from qpel_types import is_buffer, access, element, term
+from qpel_types import is_buffer, access, element, term, is_matrix, matrix_element
 
 LITERAL = re.compile(r'(\d+)u?')
 
@@ -194,4 +204,78 @@ def reused_loads(program, types):
         if again['kind'] != 'AtomicLoad' or p.shape(again) != p.shape(load) or load['id'] not in types:
             continue
         found[n['id']] = (load['id'], again['id'], types[load['id']])
+    return found
+
+
+def matrix_pairs(program, types):
+    """{id of the first Assign: (id of the second, [(a, a', b) per step, innermost first], c, c')} for two
+    f16 multiply chains of one block that the lowering may emit as one chain over a pair of accumulators
+    (see matrix_pairs above)."""
+    p = Program(program)
+
+    def slot(node):
+        """(declaration, literal index or None) of a local `x` or `x[k]`, else None."""
+        if node['kind'] == 'Name':
+            return node['links'].get('declaration'), 'whole'
+        if node['kind'] == 'Index' and p.child(node, 'base') is not None and p.child(node, 'base')['kind'] == 'Name':
+            index = p.child(node, 'index')
+            return p.child(node, 'base')['links'].get('declaration'), literal_int(index) if index is not None else None
+        return None
+
+    def chain(value):
+        """([(a, b) innermost first], c) of mma(a_n, b_n, ... mma(a_1, b_1, c)) over f16 slots, or None."""
+        steps = []
+        while value is not None and value['kind'] == 'MatrixMma' and not value.get('attributes', {}).get('columns'):
+            a, b = p.child(value, 'a'), p.child(value, 'b')
+            if a is None or b is None or slot(a) is None or slot(b) is None or not (types.get(a['id']) and is_matrix(types[a['id']]) and matrix_element(types[a['id']]) == 'f16'):
+                return None
+            steps.append((a, b))
+            value = p.child(value, 'c')
+        if not steps or value is None or slot(value) is None:
+            return None
+        return steps[::-1], value
+
+    def simple(statement):
+        """(target slot, [read slots], chain) of `slot = mma chain`, or None."""
+        if statement['kind'] != 'Assign':
+            return None
+        target = slot(p.child(statement, 'target'))
+        found = chain(p.child(statement, 'value'))
+        if target is None or found is None:
+            return None
+        steps, c = found
+        return target, [slot(x) for a, b in steps for x in (a, b)] + [slot(c)], found
+
+    def overlap(x, y):
+        return x[0] == y[0] and (x[1] == y[1] or None in (x[1], y[1]) or 'whole' in (x[1], y[1]))
+
+    found = {}
+    for block in p.nodes.values():
+        if block['kind'] != 'Block':
+            continue
+        statements = [p.nodes[i] for i in block['children'].get('statements', [])]
+        forms = [simple(s) for s in statements]
+        taken = set()
+        for i, first in enumerate(forms):
+            if first is None or i in taken:
+                continue
+            for j in range(i + 1, len(forms)):
+                second = forms[j]
+                if second is None:
+                    break  # only across statements whose reads and writes are known
+                if j in taken:
+                    continue
+                (t1, _, (s1, c1)), (t2, r2, (s2, c2)) = first, second
+                between = [forms[m] for m in range(i + 1, j)]
+                # the second moves up to the first: it may not read what the first or anything between writes,
+                # and nothing between may read or write what it writes
+                if overlap(t1, t2) or any(overlap(t1, r) for r in r2) or \
+                   any(overlap(f[0], r) for f in between for r in r2) or \
+                   any(overlap(t2, x) for f in between for x in [f[0]] + f[1]):
+                    continue
+                if len(s1) != len(s2) or any(p.shape(b1) != p.shape(b2) for (_, b1), (_, b2) in zip(s1, s2)):
+                    continue
+                found[statements[i]['id']] = (statements[j]['id'], [(a1, a2, b1) for (a1, b1), (a2, _) in zip(s1, s2)], c1, c2)
+                taken.update((i, j))
+                break
     return found

@@ -455,4 +455,13 @@ inline simdgroup_float8x8 qpel_matrix_mma_f16(simdgroup_half8x8 a, simdgroup_hal
   simdgroup_float8x8 d; simdgroup_multiply_accumulate(d, a, b, c); return d; }
 #define QPEL_MATRIX_MMA_F32(a, b, c) qpel_matrix_mma_f32((a), (b), (c))
 #define QPEL_MATRIX_MMA_F16(a, b, c) qpel_matrix_mma_f16((a), (b), (c))
+// two f16 multiplies with the same B (qpel_opt.matrix_pairs; one instruction on CUDA): here each its own
+struct qpel_matrix_pair_f32 { simdgroup_float8x8 m[2]; };
+#define QPEL_MATRIX_PAIR_F32 qpel_matrix_pair_f32
+inline qpel_matrix_pair_f32 qpel_matrix_pair_f32_of(simdgroup_float8x8 c0, simdgroup_float8x8 c1) {
+  qpel_matrix_pair_f32 p; p.m[0] = c0; p.m[1] = c1; return p; }
+inline qpel_matrix_pair_f32 qpel_matrix_mma2_f16(simdgroup_half8x8 a0, simdgroup_half8x8 a1, simdgroup_half8x8 b, qpel_matrix_pair_f32 c) {
+  qpel_matrix_pair_f32 d; simdgroup_multiply_accumulate(d.m[0], a0, b, c.m[0]); simdgroup_multiply_accumulate(d.m[1], a1, b, c.m[1]); return d; }
+#define QPEL_MATRIX_PAIR_F32_OF(c0, c1) qpel_matrix_pair_f32_of((c0), (c1))
+#define QPEL_MATRIX_MMA2_F16(a0, a1, b, c) qpel_matrix_mma2_f16((a0), (a1), (b), (c))
 #endif

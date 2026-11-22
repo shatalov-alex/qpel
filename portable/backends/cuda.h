@@ -470,6 +470,27 @@ __device__ __forceinline__ qpel_matrix_f32 qpel_matrix_mma_f16(qpel_matrix_f16 a
   return qpel_matrix_mma_chain(a, b, c);  // (f16 products are exact in f32)
 #endif
 }
+// Two f16 multiplies with the same B (qpel_opt.matrix_pairs): one m16n8k8 with a0 in rows 0 to 7 and a1 in
+// rows 8 to 15 of A, c0 and c1 the same rows of C. Each row of D is that row of A times B alone, so every
+// element is the one its own instruction gives.
+struct qpel_matrix_pair_f32 { qpel_matrix_f32 m[2]; };
+#define QPEL_MATRIX_PAIR_F32 qpel_matrix_pair_f32
+__device__ __forceinline__ qpel_matrix_pair_f32 qpel_matrix_pair_f32_of(qpel_matrix_f32 c0, qpel_matrix_f32 c1) {
+  qpel_matrix_pair_f32 p; p.m[0] = c0; p.m[1] = c1; return p; }
+__device__ __forceinline__ qpel_matrix_pair_f32 qpel_matrix_mma2_f16(qpel_matrix_f16 a0, qpel_matrix_f16 a1, qpel_matrix_f16 b, qpel_matrix_pair_f32 c) {
+  qpel_matrix_pair_f32 d;
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750
+  asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 {%0, %1, %2, %3}, {%4, %5}, {%6}, {%7, %8, %9, %10};"
+               : "=f"(d.m[0].v[0]), "=f"(d.m[0].v[1]), "=f"(d.m[1].v[0]), "=f"(d.m[1].v[1])
+               : "r"(qpel_half_pair(a0.v[0], a0.v[1])), "r"(qpel_half_pair(a1.v[0], a1.v[1])), "r"(b.col),
+                 "f"(c.m[0].v[0]), "f"(c.m[0].v[1]), "f"(c.m[1].v[0]), "f"(c.m[1].v[1]));
+#else
+  d.m[0] = qpel_matrix_mma_f16(a0, b, c.m[0]); d.m[1] = qpel_matrix_mma_f16(a1, b, c.m[1]);
+#endif
+  return d;
+}
+#define QPEL_MATRIX_PAIR_F32_OF(c0, c1) qpel_matrix_pair_f32_of((c0), (c1))
+#define QPEL_MATRIX_MMA2_F16(a0, a1, b, c) qpel_matrix_mma2_f16((a0), (a1), (b), (c))
 #endif
 #define QPEL_MATRIX_MMA_F32(a, b, c) qpel_matrix_mma_f32((a), (b), (c))
 #define QPEL_MATRIX_MMA_F16(a, b, c) qpel_matrix_mma_f16((a), (b), (c))

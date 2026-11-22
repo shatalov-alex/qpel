@@ -309,6 +309,8 @@ class Lowering:
         self.vector_loads = qpel_opt.vector_loads(program, self.expression_types)
         self.vector_stores = qpel_opt.vector_stores(program, self.expression_types)
         self.reused_loads = qpel_opt.reused_loads(program, self.expression_types)
+        self.matrix_pairs = qpel_opt.matrix_pairs(program, self.expression_types)
+        self.paired_seconds = {second for second, *_ in self.matrix_pairs.values()}
         self.reuse_names = {}
     def children(self,n,role):return [self.nodes[i] for i in n['children'].get(role,[])]
     def child(self,n,role):
@@ -525,6 +527,16 @@ class Lowering:
                     scalar=''.join(self.emit(s) for s in statements[at:at+length])
                     out.append(f"if (QPEL_VECTOR_ALIGNED({b}, {vector}) && qpel_vector_fits<{length}>({i})) QPEL_VECTOR_STORE({vector}, {b}, {i}, {built});\nelse {{\n{scalar}}}\n")
                     at+=length
+                elif statements[at]['id'] in self.matrix_pairs:  # one m16n8k8 per step for two row blocks (qpel_opt.matrix_pairs)
+                    second,steps,c1,c2=self.matrix_pairs[statements[at]['id']]
+                    value='QPEL_MATRIX_PAIR_F32_OF('+self.emit(c1)+', '+self.emit(c2)+')'
+                    for a1,a2,b in steps:
+                        value='QPEL_MATRIX_MMA2_F16('+self.emit(a1)+', '+self.emit(a2)+', '+self.emit(b)+', '+value+')'
+                    self.pair_count=getattr(self,'pair_count',0)+1;name=f'qpel_pair_{self.pair_count}'
+                    targets=[self.emit(self.child(statements[at],'target')),self.emit(self.child(self.nodes[second],'target'))]
+                    out.append('{\nconst QPEL_MATRIX_PAIR_F32 '+name+' = '+value+';\n'+targets[0]+' = '+name+'.m[0];\n'+targets[1]+' = '+name+'.m[1];\n}\n');at+=1
+                elif statements[at]['id'] in self.paired_seconds:
+                    at+=1  # emitted with its first (above)
                 else:
                     out.append(self.emit(statements[at]));at+=1
             return '{\n'+''.join(out)+' }'
