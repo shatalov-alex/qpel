@@ -203,7 +203,8 @@ through shared memory, and orders only the warp, as CUB does: LIBRARIES.md), lla
 x1.35 and `fill` x1.14 (the original's block size and the shape's precomputed element count),
 TRELLIS.2 `preprocess` x1.13 (`qpel_opt.vector_stores`: the original's two 128-bit stores). Open,
 steady over runs 6 to 8: gsplat x1.05 to x1.08 and `sam2_cc` x1.07; mmcv's `roi_align` and
-`roi_pool` x1.08 are half a microsecond in kernels of 7 µs. gsplat's outputs differ at this size
+`roi_pool` x1.08 are half a microsecond in kernels of 7 µs (since run 8, a signed `/` and `%` of the
+same operands share one division, as in C: `roi_align` has 3 on sm_75, not 6; not yet timed). gsplat's outputs differ at this size
 (2.5M elements, at most 1168 ulp, in low-magnitude colours and alphas): the original's `__expf` is
 read as qpel's bounded `exp`, more accurate than the original, and the difference compounds over
 the blended layers; the behaviour cases agree within their tolerance.
