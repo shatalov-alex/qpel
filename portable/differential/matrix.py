@@ -193,7 +193,8 @@ def parallel(gpu=None, workers=None, chunk=6, metal_chunk=6):
         size = metal_chunk if path.suffix == '.metal' else chunk
         tasks += [group[i:i + size] for i in range(0, len(group), size)]
     tasks.sort(key=len, reverse=True)  # the long ones first
-    workers = workers or max(1, min(len(tasks), (os.cpu_count() or 2) // 2, 4))  # memory: each may hold a 2 GB AST
+    # memory: a worker holding ggml-metal.metal's parse reaches 6-7 GB, so two at once as the corpus survey
+    workers = workers or max(1, min(len(tasks), (os.cpu_count() or 2) // 2, int(os.environ.get('QPEL_SURVEY_WORKERS', 2))))
     executor = ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context('spawn'))
     futures = {}
     for task in tasks:

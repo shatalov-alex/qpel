@@ -234,7 +234,7 @@ Besides the compiler, importer and host tests, the unit tests hold one test per 
 | `test_corpus` | the coverage floor: every corpus kernel imports or is blocked exactly as `corpus/coverage.json` records |
 | `test_gpu_fixtures` | one fixture on the Apple GPU against its independent oracle (`gpu_tests/`) |
 
-The behaviour rows are prepared in parallel worker processes, grouped by source file. Optional capabilities skip when absent: the Apple GPU (PyTorch with MPS), the Metal toolchain (Xcode) and GPGPU-Sim. `QPEL_NVIDIA=1` adds the GPGPU-Sim rows (minutes, in Docker), and `QPEL_REQUIRE=gpu,metal,nvidia` turns a missing capability into a failure; `check_all.py --gpu --nvidia` sets both.
+The behaviour rows are prepared in parallel worker processes, grouped by source file, two at once (`QPEL_SURVEY_WORKERS`, as the corpus survey: a worker holding llama.cpp's Metal file reaches 6-7 GB). Optional capabilities skip when absent: the Apple GPU (PyTorch with MPS), the Metal toolchain (Xcode) and GPGPU-Sim. `QPEL_NVIDIA=1` adds the GPGPU-Sim rows (minutes, in Docker), and `QPEL_REQUIRE=gpu,metal,nvidia` turns a missing capability into a failure; `check_all.py --gpu --nvidia` sets both.
 
 Numerical checks need clang++; CUDA host ABI tests need NumPy. Missing optional prerequisites produce skips, which must not be treated as release validation. CUDA orchestration and CPU simulation are not proof of NVIDIA execution; nvcc compilation is covered by the check below.
 

@@ -2308,6 +2308,8 @@ class Importer:
         t = describe(view_spelling(decl))
         if t[0] == 'pointer' and 'init' in decl and self.byte_view(decl['inner'][0], t[2]):
             return self.byte_view_local(decl, name, t[2])
+        if t[0] == 'pointer' and is_vector(t[2]) and 'init' in decl and self.vector_view_base(decl, t[2]):
+            return self.vector_view_local(decl, name, t[2])
         if t[0] == 'pointer' and self.into_shared(decl):
             return self.shared_view_local(decl, name, t[2])
         if t[0] == 'pointer' and is_vector(t[2]) and self.kernel and 'init' in decl:
@@ -2952,25 +2954,40 @@ class Importer:
         return self.graph.add('VectorValue', {'element': element, 'length': length}, {'elements': values})
 
     def vector_element_ref(self, node):
-        """(qpel parameter, index node, N, element) for `p[i]`, p a kernel's vector buffer (int4* p), or None."""
-        node = peel(node) if node.get('kind') != 'ArraySubscriptExpr' else node
-        if node.get('kind') != 'ArraySubscriptExpr':
+        """(qpel parameter, index node or None, N, element) for `p[i]`, `*(p + i)` or `*p`, p a kernel's vector
+        buffer (int4* p) or a vector view local (`device float4 * D4 = (device float4 *) D`), or None."""
+        node = peel(node) if node.get('kind') not in ('ArraySubscriptExpr', 'UnaryOperator') else node
+        if node.get('kind') == 'UnaryOperator' and node.get('opcode') == '*':
+            pointer = node['inner'][0]
+            while pointer.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and pointer.get('inner') and \
+                    pointer.get('castKind') in (None, 'LValueToRValue', 'NoOp'):
+                pointer = pointer['inner'][0]
+            if pointer.get('kind') == 'BinaryOperator' and pointer.get('opcode') == '+' and \
+                    scalar_of(pointer['inner'][0]) == 'pointer':
+                base, index = pointer['inner']
+            else:
+                base, index = pointer, None
+        elif node.get('kind') == 'ArraySubscriptExpr':
+            base, index = node['inner']
+        else:
             return None
-        base, index = node['inner']
         core = base
         while core.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and core.get('inner'):
             core = core['inner'][0]
         if core.get('kind') != 'DeclRefExpr' or core['referencedDecl']['id'] not in self.vector_params:
             return None
-        if any(x.get('kind') in ('CallExpr', 'CompoundAssignOperator') or x.get('opcode') in ('=', '++', '--')
-               for x in walk(index)):
+        if index is not None and any(x.get('kind') in ('CallExpr', 'CompoundAssignOperator') or x.get('opcode') in ('=', '++', '--')
+                                     for x in walk(index)):
             raise Unsupported(node, 'vector-buffer', 'a vector buffer is indexed by an expression without side effects')
         entry = self.scope[core['referencedDecl']['id']]
-        return entry[1], index, self.vector_params[core['referencedDecl']['id']], element_of(entry[2])
+        element = view_element(entry[2]) if is_shared_view(entry[2]) else element_of(entry[2])
+        return entry[1], index, self.vector_params[core['referencedDecl']['id']], element
 
     def vector_element_index(self, ref, k):
         """p[N*i + k] for a vector buffer element p[i] (see vector_element_ref)."""
         param, index, length, _ = ref
+        if index is None:  # *p: elements 0 to N-1
+            return self.graph.add('Index', children={'base': self.name(param), 'index': self.int_value('u32', k)})
         kind = scalar_of(index)
         kind = kind if kind in INTEGER_TERMS else 'u32'
         scaled = self.graph.add('Binary', {'operator': '*'}, {'left': self.expr(index), 'right': self.int_value(kind, length)})
@@ -3283,6 +3300,54 @@ class Importer:
         value = self.expr(decl['inner'][0], address=True)
         ir = self.graph.add('Variable', {'name': self.unique_name(name)}, {'type': self.type_node(kind), 'value': value})
         self.scope[decl['id']] = ('local', ir, kind)
+        return [ir]
+
+    def vector_view_base(self, decl, vtype):
+        """For `device float4 * D4 = (device float4 *) D` (or `(threadgroup float4 *) C + k`), D a pointer local into a
+        buffer or shared memory of the vector's scalars: (D's scope entry, offset node or None), else None."""
+        init = decl['inner'][0]
+        while init.get('kind') in ('ImplicitCastExpr', 'ParenExpr', 'ExprWithCleanups') and init.get('inner') \
+                and init.get('castKind') in (None, 'LValueToRValue', 'NoOp'):
+            init = init['inner'][0]
+        offset = None
+        if init.get('kind') == 'BinaryOperator' and init.get('opcode') == '+' and scalar_of(init['inner'][0]) == 'pointer':
+            init, offset = init['inner']
+        while init.get('kind') in ('ImplicitCastExpr', 'ParenExpr', 'CStyleCastExpr', 'CXXReinterpretCastExpr') and init.get('inner'):
+            init = init['inner'][0]
+        if init.get('kind') != 'DeclRefExpr':
+            return None
+        entry = self.scope.get(init['referencedDecl']['id'])
+        if not entry or entry[0] != 'local' or init['referencedDecl']['id'] in self.vector_params:
+            return None
+        kind = entry[2]
+        if is_shared_view(kind):
+            element = view_element(kind)
+        elif type_is_buffer(kind):
+            element = element_of(kind)
+        else:
+            return None
+        return (entry, offset) if element == vector_element(vtype) else None
+
+    def vector_view_local(self, decl, name, vtype):
+        """`device float4 * D4 = (device float4 *) D;`: a local of D's kind (a buffer or shared view of the scalars),
+        its elements read and written N at a time, `*(D4 + i)` as D[N i] to D[N i + N-1]. Element accesses of the
+        vector's own alignment, which the original assumes, read and write the same values."""
+        if decl['id'] in self.assigned:
+            raise Unsupported(decl, 'local-type', f'vector view {name} is not assigned again in qpel yet')
+        (entry, offset), length = self.vector_view_base(decl, vtype), vector_length(vtype)
+        value = self.name(entry[1])
+        if offset is not None:
+            kind = scalar_of(offset) if scalar_of(offset) in INTEGER_TERMS else 'u32'
+            scaled = self.graph.add('Binary', {'operator': '*'}, {'left': self.expr(offset), 'right': self.int_value(kind, length)})
+            if kind == 'i32':
+                scaled = self.graph.add('U32Cast', children={'operand': scaled})
+            value = self.graph.add('Binary', {'operator': '+'}, {'left': value, 'right': scaled})
+        ir = self.graph.add('Variable', {'name': self.unique_name(name)}, {'type': self.type_node(entry[2]), 'value': value})
+        self.scope[decl['id']] = ('local', ir, entry[2])
+        self.vector_params[decl['id']] = length
+        message = f'{self.current}: {name} reads and writes its {vtype} elements as {length} scalars each'
+        if message not in self.adaptations:
+            self.adaptations.append(message)
         return [ir]
 
     def vector_buffer_local(self, decl, name, t):
@@ -3699,7 +3764,7 @@ class Importer:
         if kind == 'CXXConstructExpr' and len(n.get('inner', ())) == 1 and \
                 ' '.join(words(n['type']['qualType'])) == ' '.join(words(n['inner'][0]['type']['qualType'])):
             return self.expr(n['inner'][0])  # a copy (a dim3 or vector passed by value)
-        if kind == 'ArraySubscriptExpr' and self.vector_element_ref(n):
+        if kind in ('ArraySubscriptExpr', 'UnaryOperator') and self.vector_element_ref(n):
             ref = self.vector_element_ref(n)
             return add('VectorValue', {'element': ref[3], 'length': ref[2]},
                        {'elements': [self.vector_element_index(ref, k) for k in range(ref[2])]})
