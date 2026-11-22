@@ -179,29 +179,34 @@ on the T4 (`differential/bench_cuda.py`). Each is timed at 8M threads; TRELLIS.2
 rasteriser get about 1M keys or voxels in a 2048 x 1024 image, gsplat's rasteriser a 2048 x 1024
 frame of 131k gaussians, bitsandbytes 8M values in blocks of 64. The inputs are generated on the
 GPU machine, the launches are timed between CUDA events (median of up to 200 repetitions), and
-both sides' outputs are compared. Harness v1, 2026-11-17 (Kaggle run 4): 80 programs timed,
-qpel/original x0.99 as a geometric mean, median x1.00, range x0.78 to x1.35; every NVIDIA row
-passed on the T4. The pilots: gsplat x0.86, bitsandbytes 8-bit x0.99, FP4 x0.97, NF4 x0.97,
-mamba's selective scan x1.00, TRELLIS.2 `render` x1.00 (x1.94 before: `__fdiv_rn` and atomic
-loads read as read-modify-writes; Phase 6), `sam2_cc` x1.07.
+both sides' outputs are compared. The sides alternate over 3 rounds and each side's fastest median
+counts. Kaggle run 8 (2026-11-22): 83 programs timed, qpel/original x1.00 as a geometric mean,
+median x1.00, range x0.90 to x1.08; every NVIDIA row passed on the T4.
 
 | Program | Original | qpel | Ratio |
 | --- | --- | --- | --- |
-| gsplat `rasterize_to_pixels_3dgs_fwd` (2048 x 1024, 131k gaussians) | 9.36 ms | 8.04 ms | x0.86 |
-| bitsandbytes dequantise 8-bit (8M values) | 0.209 ms | 0.207 ms | x0.99 |
-| bitsandbytes dequantise FP4 | 0.193 ms | 0.186 ms | x0.97 |
-| bitsandbytes dequantise NF4 | 0.193 ms | 0.187 ms | x0.97 |
-| TRELLIS.2 `render` | 0.535 ms | 0.536 ms | x1.00 |
+| gsplat `rasterize_to_pixels_3dgs_fwd` (2048 x 1024, 131k gaussians) | 7.39 ms | 8.00 ms | x1.08 |
+| SAM 2 connected components (`sam2_cc`) | 0.256 ms | 0.274 ms | x1.07 |
+| bitsandbytes dequantise 8-bit (8M values) | 0.205 ms | 0.208 ms | x1.01 |
+| bitsandbytes dequantise FP4 | 0.192 ms | 0.187 ms | x0.97 |
+| bitsandbytes dequantise NF4 | 0.192 ms | 0.187 ms | x0.98 |
+| bitsandbytes quantise FP4 / NF4 / 8-bit | 0.186 / 0.311 / 0.526 ms | 0.185 / 0.328 / 0.539 ms | x0.99 / x1.05 / x1.02 |
+| TRELLIS.2 `preprocess` | 0.193 ms | 0.189 ms | x0.98 |
+| TRELLIS.2 `render` | 0.537 ms | 0.538 ms | x1.00 |
+| mamba selective scan | 0.0057 ms | 0.0060 ms | x1.04 |
 
-bitsandbytes was x1.6 to x3.5 in run 3: qpel's CUB subset stored a warp-transposing `BlockStore`
-directly, so neighbouring threads wrote 64 bytes apart. It now goes through shared memory as CUB
-does (LIBRARIES.md). gsplat's outputs differ at this size (2.5M elements, at most 1168 ulp, in
-low-magnitude colours and alphas): the original's `__expf` is read as qpel's bounded `exp`, more
-accurate than the original, and the difference compounds over the blended layers; the behaviour
-cases agree within their tolerance. Slower, and open: llama.cpp `arange` x1.35 and `fill` x1.14,
-TRELLIS.2 `preprocess` x1.13. Their SASS matches the originals' but for computing the element
-count from qpel's shape (three uniform-datapath instructions per warp, in kernels whose warps make
-one store each) — a candidate is passing the count precomputed.
+The T4's kernels under 0.3 ms vary by up to 15% between rounds and runs, so only ratios steady
+over runs are findings. Fixed in Phase 6: TRELLIS.2 `render` x1.94 (`__fdiv_rn` and atomic loads
+read as read-modify-writes), bitsandbytes x1.6 to x3.5 (qpel's CUB subset stored a
+warp-transposing `BlockStore` directly, so neighbouring threads wrote 64 bytes apart; it now goes
+through shared memory, and orders only the warp, as CUB does: LIBRARIES.md), llama.cpp `arange`
+x1.35 and `fill` x1.14 (the original's block size and the shape's precomputed element count),
+TRELLIS.2 `preprocess` x1.13 (`qpel_opt.vector_stores`: the original's two 128-bit stores). Open,
+steady over runs 6 to 8: gsplat x1.05 to x1.08 and `sam2_cc` x1.07; mmcv's `roi_align` and
+`roi_pool` x1.08 are half a microsecond in kernels of 7 µs. gsplat's outputs differ at this size
+(2.5M elements, at most 1168 ulp, in low-magnitude colours and alphas): the original's `__expf` is
+read as qpel's bounded `exp`, more accurate than the original, and the difference compounds over
+the blended layers; the behaviour cases agree within their tolerance.
 
 **Pilots on the Apple GPU.** A CUDA original has no Metal side to time against;
 `python3 -m differential.bench --cuda <program>` times qpel's Metal alone, and bitsandbytes'
