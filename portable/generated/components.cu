@@ -293,6 +293,7 @@ QPEL_F32_TO_INT_FUNCTION(qpel_f32_to_i64, long long, -9223372036854775808.0f, 92
 #define QPEL_MATH_COPYSIGN(a, b) copysignf((a), (b))
 #define QPEL_MATH_SQRT(x) __fsqrt_rn((x))
 #define QPEL_MATH_EXP(x) expf((x))
+#define QPEL_MATH_FAST_EXP(x) __expf((x))  // IR version 20: within 3 + floor(2|x|) ulp (CUDA documents 2 + floor(1.173|x|))
 #define QPEL_MATH_EXP2(x) exp2f((x))
 #define QPEL_MATH_LOG(x) logf((x))
 #define QPEL_MATH_LOG2(x) log2f((x))

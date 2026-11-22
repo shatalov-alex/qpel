@@ -292,6 +292,9 @@ inline int qpel_barrier_count(bool p, threadgroup atomic_int* counter, uint rank
 #define QPEL_MATH_COPYSIGN(a, b) metal::copysign((a), (b))
 #define QPEL_MATH_SQRT(x) metal::precise::sqrt((x))
 #define QPEL_MATH_EXP(x) metal::precise::exp((x))
+// (a function of its own, so that the importer reads qpel's Metal back as fast_exp, not exp)
+inline float qpel_fast_exp(float x) { return metal::fast::exp(x); }
+#define QPEL_MATH_FAST_EXP(x) qpel_fast_exp((x))  // IR version 20: metal::fast::exp, within 3 + floor(2|x|) ulp (measured)
 #define QPEL_MATH_EXP2(x) metal::precise::exp2((x))
 #define QPEL_MATH_LOG(x) metal::precise::log((x))
 #define QPEL_MATH_LOG2(x) metal::precise::log2((x))

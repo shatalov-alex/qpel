@@ -1,0 +1,17 @@
+// math.fast_exp (IR version 20): e^x within 3 + floor(2|x|) ulp, a bound that grows with |x|: CUDA's
+// __expf, Metal's fast::exp (NUMERICS.md, math functions). What CUDA's __expf imports as.
+module math_fast_exp {
+  kernel fast(x: buffer<f32, read> @0, z: buffer<f32, write> @1, n: shape3 @2) grid1d {
+    let i: u32 = qpel.index;
+    if (i >= n.x) {
+      return;
+    }
+    z[i] = math.fast_exp(x[i]);
+  }
+}
+pipeline math_fast_exp_launch {
+  shape n;
+  input x: buffer<f32, read> in n;
+  output z: buffer<f32, write> in n;
+  dispatch fast over n block (64) (x = x, z = z, n = n);
+}

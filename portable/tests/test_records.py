@@ -7,7 +7,7 @@
 - a 2D local array `float acc[P][C]` as one of P * C elements;
 - a pointer parameter moved with `p += n` as the parameter and an offset (an optional buffer stays
   optional: `if (masks != nullptr) masks += n` still tests the argument);
-- `__builtin_ctz` of a constant, folded; `__expf` as qpel's exp, recorded as an adaptation.
+- `__builtin_ctz` of a constant, folded; `__expf` as qpel's fast_exp (IR version 20).
 
 A kernel using all of them runs against the original on the CPU simulator, bit for bit (both sides'
 __expf and exp are the host's expf there)."""
@@ -118,9 +118,9 @@ class Records(unittest.TestCase):
         self.assertIn('colors_offset', text)
         self.assertIn('qpel.present(masks)', text)
         self.assertIn('array<f32, 6>', text)
-        self.assertIn('math.exp(', text)
+        self.assertIn('math.fast_exp(', text)
         self.assertIn('let SHIFT: u32 = cast<u32>(4);', text)  # __builtin_ctz(16), folded
-        self.assertTrue(any('__expf' in a for a in self.report['adaptations']), self.report['adaptations'])
+        self.assertFalse(any('__expf' in a for a in self.report['adaptations']), self.report['adaptations'])
 
     def test_against_the_original(self):
         import numpy as np

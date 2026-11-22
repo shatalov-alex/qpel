@@ -722,10 +722,12 @@ MATH_CALLS = {name: f for f in ('fabs', 'fmin', 'fmax', 'floor', 'ceil', 'trunc'
                                 'exp', 'exp2', 'log', 'log2', 'sin', 'cos', 'tanh', 'erf', 'expm1', 'log1p', 'pow')
               for name in (f, f + 'f')}
 MATH_CALLS.update({'abs': 'fabs', '__fsqrt_rn': 'sqrt'})
-# CUDA's fast intrinsics, documented less accurate than qpel's bounded functions (__expf: 2 + |1.173 x|
-# ulp; __logf, __sinf, __cosf: absolute errors), read as those functions with an adaptation.
-FAST_MATH = {'__expf': 'exp', '__logf': 'log', '__sinf': 'sin', '__cosf': 'cos'}
+# CUDA's fast intrinsics, documented less accurate than qpel's bounded functions (__logf, __sinf, __cosf:
+# absolute errors), read as those functions with an adaptation. __expf is qpel's fast_exp (IR version 20,
+# within 3 + floor(2|x|) ulp; CUDA documents 2 + floor(1.173|x|)), and qpel_fast_exp its Metal spelling.
+FAST_MATH = {'__logf': 'log', '__sinf': 'sin', '__cosf': 'cos'}
 MATH_CALLS.update(FAST_MATH)
+MATH_CALLS.update({'__expf': 'fast_exp', 'qpel_fast_exp': 'fast_exp'})
 MATH_CALLS.update({'qpel_' + f: f for f in ('erf', 'expm1', 'log1p')})  # qpel's own Metal versions (backends/metal.h)
 ROUNDED = {'__fadd_rn': '+', '__fsub_rn': '-', '__fmul_rn': '*', '__fdiv_rn': '/'}
 SATURATE = {f'qpel_f32_to_{t}': t for t in ('u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64')}

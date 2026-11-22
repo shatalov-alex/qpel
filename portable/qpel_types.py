@@ -68,14 +68,25 @@ COMPARISONS = {'==', '!=', '<', '>', '<=', '>='}
 # the others are within MATH_ULPS of the exact result (NUMERICS.md, math functions).
 MATH = {'fabs': 1, 'fmin': 2, 'fmax': 2, 'floor': 1, 'ceil': 1, 'trunc': 1, 'round': 1, 'copysign': 2, 'sqrt': 1,
         'exp': 1, 'exp2': 1, 'log': 1, 'log2': 1, 'sin': 1, 'cos': 1, 'tanh': 1,
-        'erf': 1, 'expm1': 1, 'log1p': 1, 'pow': 2}  # (erf, expm1, log1p: IR version 8; pow: IR version 17)
+        'erf': 1, 'expm1': 1, 'log1p': 1, 'pow': 2, 'fast_exp': 1}  # (erf, expm1, log1p: IR version 8; pow: 17; fast_exp: 20)
 V8_MATH = {'erf', 'expm1', 'log1p'}
 V17_MATH = {'pow'}
+V20_MATH = {'fast_exp'}
 EXACT_MATH = {'fabs', 'fmin', 'fmax', 'floor', 'ceil', 'trunc', 'round', 'copysign', 'sqrt'}
 MATH_ULPS = 4
 # A bounded function's own bound where it is wider than MATH_ULPS: CUDA documents powf within 9 ulp
 # (Metal's precise::pow measured 1.5 ulp; NUMERICS.md, math functions).
-MATH_BOUNDS = {'pow': 9}
+# fast_exp (IR version 20) is within 3 + floor(2|x|) ulp of e^x, a bound that grows with x (CUDA documents __expf
+# within 2 + floor(1.173|x|); Metal's fast::exp measured within 3 + floor(2|x|), NUMERICS.md). Tolerances here are
+# one number per program, so they take the bound at |x| = 8, 19 ulp; a program with larger arguments gives its own.
+FAST_EXP_ULPS = 19
+MATH_BOUNDS = {'pow': 9, 'fast_exp': FAST_EXP_ULPS}
+
+
+def fast_exp_ulps(x):
+    """fast_exp's bound at argument x: 3 + floor(2|x|) ulp."""
+    import math
+    return 3 + math.floor(2*abs(x))
 
 
 def math_ulps(functions):

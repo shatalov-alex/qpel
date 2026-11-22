@@ -160,6 +160,10 @@ Module constants of more than 1024 elements: a `ConstantDecl`'s array of scalars
 
 A program with either is version 19.
 
+## IR version 20
+
+`math.fast_exp(x)` (`Math {function: fast_exp}`): e^x within 3 + floor(2|x|) ulp (NUMERICS.md, math functions): CUDA `__expf`, Metal `metal::fast::exp` (backends/metal.h `qpel_fast_exp`). CUDA's `__expf` imports as it. tests/test_fast_exp.py. A program with `math.fast_exp` is version 20.
+
 ## Optimisation passes
 
 `qpel_opt.py` holds passes that read a validated program and tell the lowering how to emit it faster, with the same results; they never change the IR, whose meaning stays the portable one. Kept apart from the portability lowering (ROADMAP, Phase 6):
