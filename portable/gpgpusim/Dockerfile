@@ -33,10 +33,14 @@ WORKDIR /opt/gpgpu-sim
 # address (*(reinterpret_cast<half *>(hex_val))), so every f16 WMMA crashed the simulator (SIGSEGV in mma_impl);
 # and it summed the products in f16, rounding each product and partial sum, where tensor cores add exact
 # products in f32: D = C + the products in k order, in f32.
-COPY qpel-fixes.patch qpel-shfl.patch qpel-setp.patch qpel-ldmatrix.patch qpel-mma.patch qpel-scopes.patch qpel-wmma.patch /tmp/
+# qpel-cub.patch (2026-11-22, local so far): what NVIDIA's device-wide CUB needs. ld.relaxed|acquire and
+# st.relaxed|release at .cta, .gpu or .sys scope (CUB 2.5's decoupled look-back) did not parse; they are LD and
+# ST, which functional simulation already orders as strongly. %lanemask_eq|le|lt|ge|gt (CUB's warp scans and
+# radix ranking) aborted as not implemented. nanosleep (the look-back's back-off) was unknown; it is a no-op.
+COPY qpel-fixes.patch qpel-shfl.patch qpel-setp.patch qpel-ldmatrix.patch qpel-mma.patch qpel-scopes.patch qpel-wmma.patch qpel-cub.patch /tmp/
 RUN git apply /tmp/qpel-fixes.patch && git apply /tmp/qpel-shfl.patch && git apply /tmp/qpel-setp.patch \
     && git apply /tmp/qpel-ldmatrix.patch && git apply /tmp/qpel-mma.patch && git apply /tmp/qpel-scopes.patch \
-    && git apply /tmp/qpel-wmma.patch
+    && git apply /tmp/qpel-wmma.patch && git apply /tmp/qpel-cub.patch
 RUN bash -c 'set -eo pipefail; export CUDA_INSTALL_PATH=/usr/local/cuda; source setup_environment release; \
       make -j"$(nproc)" > /tmp/make.log 2>&1 || { tail -60 /tmp/make.log; exit 1; }; \
       ls lib/*/*/release/libcudart.so*'

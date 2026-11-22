@@ -149,6 +149,8 @@ def needs_threads(text):
         text = text[text.rindex(GENERATED):]
     if re.search(r'#\s*include\s*[<"]cub/', text):
         return True  # qpel's CUB subset (block scans and reductions use barriers and shuffles)
+    if re.search(r'#\s*include\s*[<"]qpel_library/', text):
+        return True  # qpel's device-wide library (frontends/include/libraries/qpel_library: block scans)
     return any(token in line for line in text.splitlines() if not line.lstrip().startswith(('#', '//'))
                for token in BARRIERS)
 
@@ -176,9 +178,11 @@ def included_text(source, include):
 class Program:
     """A compiled simulator program for one source and one launch plan."""
 
-    def __init__(self, source, plan, work, original=None, include=(), grids=None):
+    def __init__(self, source, plan, work, original=None, include=(), grids=None, located=None):
         """original: the import report when `source` is the original (not qpel-generated) source.
-        grids: {kernel: [x, y, z]} grid expressions transcribed from the original host code."""
+        grids: {kernel: [x, y, z]} grid expressions transcribed from the original host code.
+        located: the folder `source` stands in for, when it is a copy made elsewhere (an original with
+        qpel's library kernels appended, frontends/library.py): its quoted includes resolve there."""
         plan = normalize_plan(plan)
         self.plan, self.work, self.original, self.grids = plan, Path(work), original, grids or {}
         self.resources = {r['name']: r for r in plan['resources']}
@@ -189,7 +193,8 @@ class Program:
         if bodies:
             # Library headers with host code: simulate a copy of their tree with those bodies
             # replaced by ';' (declarations stay); quoted includes still resolve inside the copy.
-            root = Path(os.path.commonpath([source.parent] + [f.parent for f in bodies]))
+            home = Path(located).resolve() if located else source.parent
+            root = Path(os.path.commonpath([home] + [f.parent for f in bodies]))
             tree = self.work/'tree'
             # Never copy a filesystem root or a tree holding the copy itself: a system header
             # mistaken for a library header once made this copy itself until the disk was full.
@@ -211,7 +216,12 @@ class Program:
                     header.write_text(re.sub(r'<<<[^;{}]*?>>>', lambda m: re.sub(r'[^\n]', ' ', m.group(0)),
                                              header.read_text(errors='replace')))
             include = [tree/d.relative_to(root) for d in include if d.is_relative_to(root)] + include
-            source = tree/source.relative_to(root)
+            if located:  # the copy goes into the tree, next to the files it stands among
+                placed = tree/home.relative_to(root)/('qpel_located_' + source.name)
+                shutil.copyfile(source, placed)
+                source = placed
+            else:
+                source = tree/source.relative_to(root)
         if original and original.get('host_spans'):
             text = bytearray(source.read_bytes())
             for start, end in original['host_spans']:  # blank host code, keeping line numbers

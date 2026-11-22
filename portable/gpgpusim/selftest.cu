@@ -1,4 +1,4 @@
-// GPGPU-Sim self-test: the PTX behaviour qpel-fixes.patch corrects (bar.red, shfl.sync, setp on bit types), and a sweep of the
+// GPGPU-Sim self-test: the PTX behaviour qpel's patches correct (bar.red, shfl.sync, setp on bit types, memory orders), and a sweep of the
 // integer and float conversions qpel's CUDA uses (device against host C semantics, in
 // ranges where C defines them). differential/gpgpusim.py runs it before any NVIDIA row.
 #include <cstdio>
@@ -155,6 +155,27 @@ __global__ void nested_scopes(unsigned* out, unsigned x) {
   asm volatile("{ .reg .u32 t; mov.u32 t, %1; { .reg .u32 t; mov.u32 t, 7; } mov.u32 %0, t; }" : "=r"(y) : "r"(x));
   out[threadIdx.x] = y;
 }
+// qpel-cub.patch: what NVIDIA's device-wide CUB uses. Each lane's %lanemask_eq, le, lt, ge and gt; a word read with
+// ld.relaxed.gpu, written with st.relaxed.gpu and st.release.gpu and read back with ld.acquire.gpu; nanosleep.
+__global__ void memory_orders(unsigned* out, unsigned* word) {
+  const unsigned l = threadIdx.x;
+  unsigned eq, le, lt, ge, gt, seen, back;
+  asm volatile("mov.u32 %0, %%lanemask_eq;" : "=r"(eq));
+  asm volatile("mov.u32 %0, %%lanemask_le;" : "=r"(le));
+  asm volatile("mov.u32 %0, %%lanemask_lt;" : "=r"(lt));
+  asm volatile("mov.u32 %0, %%lanemask_ge;" : "=r"(ge));
+  asm volatile("mov.u32 %0, %%lanemask_gt;" : "=r"(gt));
+  asm volatile("ld.relaxed.gpu.global.u32 %0, [%1];" : "=r"(seen) : "l"(word) : "memory");
+  __syncwarp();
+  if (l == 0u) asm volatile("st.relaxed.gpu.global.u32 [%0], %1;" :: "l"(word + 1), "r"(seen + 1u) : "memory");
+  if (l == 1u) asm volatile("st.release.gpu.global.u32 [%0], %1;" :: "l"(word + 2), "r"(seen + 2u) : "memory");
+  asm volatile("nanosleep.u32 20;");
+  __syncwarp();
+  asm volatile("ld.acquire.gpu.global.u32 %0, [%1];" : "=r"(back) : "l"(word + 1 + (l & 1u)) : "memory");
+  unsigned* o = out + l * 7u;
+  o[0] = eq; o[1] = le; o[2] = lt; o[3] = ge; o[4] = gt; o[5] = seen; o[6] = back;
+}
+
 int main() {
   int failures = 0;
   { // nested register scopes
@@ -292,6 +313,18 @@ int main() {
       int bad = 0; unsigned long long v = 0, want = 0, got = 0;
       for (int i = 0; i < N; ++i) { eval(in[i], ref); if (ref[j] != out[i * COUNT + j] && !bad++) { v = in[i]; want = ref[j]; got = out[i * COUNT + j]; } }
       if (bad) { printf("SELFTEST FAIL sweep op %d: %d of %d differ (v=%016llx: %016llx, want %016llx)\n", j, bad, N, v, got, want); ++failures; }
+    }
+  }
+  { // memory orders, lanemasks and nanosleep (qpel-cub.patch)
+    unsigned h[32 * 7], word[3] = {40u, 0u, 0u}, *dout, *dword;
+    cudaMalloc(&dout, sizeof h); cudaMalloc(&dword, sizeof word); cudaMemcpy(dword, word, sizeof word, cudaMemcpyHostToDevice);
+    memory_orders<<<1, 32>>>(dout, dword); cudaDeviceSynchronize(); cudaMemcpy(h, dout, sizeof h, cudaMemcpyDeviceToHost);
+    const char* names[7] = {"%lanemask_eq", "%lanemask_le", "%lanemask_lt", "%lanemask_ge", "%lanemask_gt", "ld.relaxed.gpu", "ld.acquire.gpu"};
+    for (unsigned l = 0; l < 32u; ++l) {
+      const unsigned below = (1u << l) - 1u, upto = l == 31u ? 0xffffffffu : (2u << l) - 1u;
+      const unsigned want[7] = {1u << l, upto, below, ~below, ~upto, 40u, 41u + (l & 1u)};
+      for (unsigned i = 0; i < 7u; ++i)
+        if (h[l * 7u + i] != want[i]) { printf("SELFTEST FAIL %s: lane %u gives %08x, want %08x\n", names[i], l, h[l * 7u + i], want[i]); ++failures; }
     }
   }
   printf(failures ? "SELFTEST FAILED\n" : "SELFTEST PASSED\n");

@@ -1,0 +1,381 @@
+{
+ "schema": 2,
+ "module": "gsplat_intersect_emit",
+ "resources": [
+  {
+   "name": "offset",
+   "kind": "value",
+   "type": "i64",
+   "extent": null
+  },
+  {
+   "name": "gaussians",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "packed",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "I",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "N",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "nnz",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "image_ids",
+   "kind": "input",
+   "type": "buffer<i64, read>",
+   "extent": "gaussians"
+  },
+  {
+   "name": "gaussian_ids",
+   "kind": "input",
+   "type": "buffer<i64, read>",
+   "extent": "gaussians"
+  },
+  {
+   "name": "means2d",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "gaussians",
+   "scale": 2
+  },
+  {
+   "name": "radii",
+   "kind": "input",
+   "type": "buffer<i32, read>",
+   "extent": "gaussians",
+   "scale": 2
+  },
+  {
+   "name": "depths",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "gaussians"
+  },
+  {
+   "name": "conics",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "gaussians",
+   "scale": 3,
+   "optional": true
+  },
+  {
+   "name": "opacities",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "gaussians",
+   "optional": true
+  },
+  {
+   "name": "cum_tiles_per_gauss",
+   "kind": "input",
+   "type": "buffer<i64, read>",
+   "extent": "gaussians",
+   "optional": true
+  },
+  {
+   "name": "tile_size",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "tile_width",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "tile_height",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "tile_n_bits",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "image_n_bits",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "key_start",
+   "kind": "value",
+   "type": "i64",
+   "extent": null
+  },
+  {
+   "name": "key_end",
+   "kind": "value",
+   "type": "i64",
+   "extent": null
+  },
+  {
+   "name": "tile_mask",
+   "kind": "input",
+   "type": "buffer<u8, read>",
+   "extent": "tiles",
+   "optional": true
+  },
+  {
+   "name": "tiles",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "isects",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "unused_tiles_per_gauss",
+   "kind": "scratch",
+   "type": "buffer<i32, write>",
+   "extent": "gaussians"
+  },
+  {
+   "name": "isect_ids",
+   "kind": "scratch",
+   "type": "buffer<i64, write>",
+   "extent": "isects"
+  },
+  {
+   "name": "flatten_ids",
+   "kind": "scratch",
+   "type": "buffer<i32, write>",
+   "extent": "isects"
+  },
+  {
+   "name": "isect_ids_sorted",
+   "kind": "output",
+   "type": "buffer<i64, write>",
+   "extent": "isects"
+  },
+  {
+   "name": "flatten_ids_sorted",
+   "kind": "output",
+   "type": "buffer<i32, write>",
+   "extent": "isects"
+  },
+  {
+   "name": "begin_bit",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "end_bit",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "n_isects",
+   "kind": "value",
+   "type": "i64",
+   "extent": null
+  },
+  {
+   "name": "n_tiles",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "offsets",
+   "kind": "output",
+   "type": "buffer<i64, write>",
+   "extent": "tiles"
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "intersect_tile_kernel",
+   "grid": "gaussians",
+   "blockSize": 256,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "offset",
+     "resource": "offset"
+    },
+    {
+     "parameter": "count",
+     "resource": "gaussians"
+    },
+    {
+     "parameter": "packed",
+     "resource": "packed"
+    },
+    {
+     "parameter": "I",
+     "resource": "I"
+    },
+    {
+     "parameter": "N",
+     "resource": "N"
+    },
+    {
+     "parameter": "nnz",
+     "resource": "nnz"
+    },
+    {
+     "parameter": "image_ids",
+     "resource": "image_ids"
+    },
+    {
+     "parameter": "gaussian_ids",
+     "resource": "gaussian_ids"
+    },
+    {
+     "parameter": "means2d",
+     "resource": "means2d"
+    },
+    {
+     "parameter": "radii",
+     "resource": "radii"
+    },
+    {
+     "parameter": "depths",
+     "resource": "depths"
+    },
+    {
+     "parameter": "conics",
+     "resource": "conics"
+    },
+    {
+     "parameter": "opacities",
+     "resource": "opacities"
+    },
+    {
+     "parameter": "cum_tiles_per_gauss",
+     "resource": "cum_tiles_per_gauss"
+    },
+    {
+     "parameter": "tile_size",
+     "resource": "tile_size"
+    },
+    {
+     "parameter": "tile_width",
+     "resource": "tile_width"
+    },
+    {
+     "parameter": "tile_height",
+     "resource": "tile_height"
+    },
+    {
+     "parameter": "tile_n_bits",
+     "resource": "tile_n_bits"
+    },
+    {
+     "parameter": "image_n_bits",
+     "resource": "image_n_bits"
+    },
+    {
+     "parameter": "key_start",
+     "resource": "key_start"
+    },
+    {
+     "parameter": "key_end",
+     "resource": "key_end"
+    },
+    {
+     "parameter": "tile_mask",
+     "resource": "tile_mask"
+    },
+    {
+     "parameter": "tiles_per_gauss",
+     "resource": "unused_tiles_per_gauss"
+    },
+    {
+     "parameter": "isect_ids",
+     "resource": "isect_ids"
+    },
+    {
+     "parameter": "flatten_ids",
+     "resource": "flatten_ids"
+    }
+   ]
+  },
+  {
+   "library": "cub::DeviceRadixSort::SortPairs",
+   "key": "i64",
+   "value": "i32",
+   "bindings": {
+    "keys_in": "isect_ids",
+    "keys_out": "isect_ids_sorted",
+    "values_in": "flatten_ids",
+    "values_out": "flatten_ids_sorted",
+    "begin_bit": "begin_bit",
+    "end_bit": "end_bit",
+    "n": "isects"
+   }
+  },
+  {
+   "kernel": "intersect_offset_kernel",
+   "grid": "isects",
+   "blockSize": 256,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "offset",
+     "resource": "offset"
+    },
+    {
+     "parameter": "count",
+     "resource": "isects"
+    },
+    {
+     "parameter": "n_isects",
+     "resource": "n_isects"
+    },
+    {
+     "parameter": "isect_ids",
+     "resource": "isect_ids_sorted"
+    },
+    {
+     "parameter": "I",
+     "resource": "I"
+    },
+    {
+     "parameter": "n_tiles",
+     "resource": "n_tiles"
+    },
+    {
+     "parameter": "tile_n_bits",
+     "resource": "tile_n_bits"
+    },
+    {
+     "parameter": "offsets",
+     "resource": "offsets"
+    }
+   ]
+  }
+ ]
+}

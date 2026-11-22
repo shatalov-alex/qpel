@@ -3,7 +3,7 @@
 A write marks a resource produced, not every element initialized. This is not a
 bounds, path-coverage or race proof. Every stage must complete before the next.
 """
-from qpel_types import VALUE_TERMS, TypeChecker, access, is_buffer, is_struct
+from qpel_types import VALUE_TERMS, TypeChecker, access, element, is_buffer, is_struct
 
 READ, WRITE = 1, 2
 
@@ -136,7 +136,12 @@ class PipelineChecker(TypeChecker):
                 self.require(binding, rid in local, 'RESOURCE_SCOPE', 'Binding requires a local resource')
                 self.require(binding, rid not in seen, 'ALIAS', 'Aliasing within a dispatch is unsupported')
                 seen.add(rid)
-                self.require(binding, typ == self.declared(param), 'BIND_TYPE', 'Resource and parameter types must match')
+                wanted = self.declared(param)
+                # a buffer a pipeline writes may be read by a later stage's read-only parameter (a sort's
+                # output read by the next kernel), of the same element type
+                readable = is_buffer(typ) and is_buffer(wanted) and access(typ) == 'write' and access(wanted) == 'read' \
+                    and element(typ) == element(wanted)
+                self.require(binding, typ == wanted or readable, 'BIND_TYPE', 'Resource and parameter types must match')
                 self.require(binding, bool(resource['attributes'].get('optional')) == bool(param['attributes'].get('optional')),
                              'OPTIONAL_BINDING', 'An optional parameter binds an optional resource, and only it')
                 if typ in VALUE_TERMS or is_struct(typ):

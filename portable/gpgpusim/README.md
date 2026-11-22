@@ -13,7 +13,7 @@ python3 -m fuzz --nvidia                    # random programs, also on GPGPU-Sim
 python3 check_all.py --gpu --nvidia         # all of it, with the other checks
 ```
 
-The image (`qpel/gpgpu-sim:dev-4195dd4-qpel19`, from this folder's Dockerfile on the
+The image (`qpel/gpgpu-sim:dev-4195dd4-qpel20`, from this folder's Dockerfile on the
 CUDA 12.6 devel image `nvcc_check.py` uses) is built on first use and takes about a
 minute. It is built and tested natively on arm64 (Apple silicon, Docker Desktop). On
 x86-64 the upstream build flags are kept, but that build is untested. Change the tag in
@@ -158,6 +158,22 @@ integers element by element, and 1 + 15 x 2^-12, which summing in f16 rounds to 
 
 Timing (performance) mode still aborts on shuffles, before and after the fixes
 (`bitset::test` out of range in `shader_core_ctx::execute`); qpel runs functional mode only.
+
+**Fixed (2026-11-22), `qpel-cub.patch`, image `qpel20` (local so far):** what NVIDIA's device-wide CUB 2.5
+needs, found comparing qpel's device-wide scan and radix sort with it (LIBRARIES.md). `ld.relaxed`, `ld.acquire`,
+`st.relaxed` and `st.release` at `.cta`, `.gpu` or `.sys` scope (the decoupled look-back of `DeviceScan`) did not
+parse (`operand "elaxed" has no declaration`); they are LD and ST, which functional simulation already orders
+as strongly. `%lanemask_eq`, `le`, `lt`, `ge` and `gt` (CUB's warp scans and radix ranking) aborted as not
+implemented; they are the lanes at, up to, below, from and above the thread's. `nanosleep` (the look-back's
+back-off) was not an instruction; it does nothing. The self-test checks every lanemask of every lane and the
+four memory orders.
+
+**Open (2026-11-22):** with those fixed, NVIDIA's `DeviceScan` gives the right sums in GPGPU-Sim only on 32-bit
+integers within one of its tiles: across tiles its decoupled look-back gives wrong prefixes or asserts in
+`generic_to_shared` (`isspace_shared`), and its 64-bit scan is wrong from the 15th element of 300. Its
+`DeviceRadixSort` is right for 32-bit keys and for 64-bit keys up to one tile (257 here), wrong beyond. qpel's
+own scan and sort are right at every size there (against numpy), and agree with NVIDIA's CUB where it runs
+right (tests/test_device_scan.py, tests/test_device_radix_sort.py); the T4 compares at every size.
 
 ## What this does not prove
 

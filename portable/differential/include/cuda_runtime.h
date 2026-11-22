@@ -291,6 +291,9 @@ inline float rsqrtf(float x) { return 1.0f / std::sqrt(x); }
 #include <math.h>
 inline long long atomicAdd(long long* a, long long v) { QPEL_SIM_ATOMIC long long o = *a; *a = (long long)((unsigned long long)o + (unsigned long long)v); return o; }
 inline unsigned long long atomicAdd(unsigned long long* a, unsigned long long v) { QPEL_SIM_ATOMIC unsigned long long o = *a; *a = o + v; return o; }
+// system and block scope: on one simulated device the same as device scope (gsplat's add_counts_kernel)
+template <class T, class V> inline T atomicAdd_system(T* a, V v) { return atomicAdd(a, (T)v); }
+template <class T, class V> inline T atomicAdd_block(T* a, V v) { return atomicAdd(a, (T)v); }
 inline int atomicCAS(int* a, int c, int v) { QPEL_SIM_ATOMIC int o = *a; if (o == c) *a = v; return o; }
 inline unsigned atomicCAS(unsigned* a, unsigned c, unsigned v) { QPEL_SIM_ATOMIC unsigned o = *a; if (o == c) *a = v; return o; }
 inline unsigned long long atomicCAS(unsigned long long* a, unsigned long long c, unsigned long long v) { QPEL_SIM_ATOMIC unsigned long long o = *a; if (o == c) *a = v; return o; }

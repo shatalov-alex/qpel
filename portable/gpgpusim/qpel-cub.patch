@@ -1,0 +1,85 @@
+diff -ru sa/src/cuda-sim/instructions.cc sb/src/cuda-sim/instructions.cc
+--- a/src/cuda-sim/instructions.cc
++++ b/src/cuda-sim/instructions.cc
+@@ -4134,6 +4134,10 @@
+   thread->set_operand_value(dst, d, i_type, thread, pI);
+ }
+ 
++// nanosleep.u32 t: a hint that the thread may wait up to t ns (CUB's decoupled look-back backs off with it);
++// a functional simulation needs no wait.
++void nanosleep_impl(const ptx_instruction *pI, ptx_thread_info *thread) {}
++
+ void membar_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+   // handled by timing simulator
+ }
+diff -ru sa/src/cuda-sim/opcodes.def sb/src/cuda-sim/opcodes.def
+--- a/src/cuda-sim/opcodes.def
++++ b/src/cuda-sim/opcodes.def
+@@ -77,6 +77,7 @@
+ OP_DEF(MADP_OP,madp_impl,"madp",1,2)
+ OP_DEF(MAX_OP,max_impl,"max",1,1)
+ OP_DEF(MEMBAR_OP,membar_impl,"membar",1,3)
++OP_DEF(NANOSLEEP_PTX_OP,nanosleep_impl,"nanosleep",1,3)
+ OP_DEF(MIN_OP,min_impl,"min",1,1)
+ OP_DEF(MOV_OP,mov_impl,"mov",1,1)
+ OP_DEF(MUL24_OP,mul24_impl,"mul24",1,1)
+diff -ru sa/src/cuda-sim/ptx.l sb/src/cuda-sim/ptx.l
+--- a/src/cuda-sim/ptx.l
++++ b/src/cuda-sim/ptx.l
+@@ -100,6 +100,8 @@
+ isspacep TC; yylval->int_value = ISSPACEP_OP; return OPCODE;
+ ld      TC; yylval->int_value = LD_OP; return OPCODE;
+ ld.volatile TC; yylval->int_value = LD_OP; return OPCODE;
++ld\.relaxed\.(cta|gpu|sys) TC; yylval->int_value = LD_OP; return OPCODE;
++ld\.acquire\.(cta|gpu|sys) TC; yylval->int_value = LD_OP; return OPCODE;
+ ldu     TC; yylval->int_value = LDU_OP; return OPCODE;
+ lg2	TC; yylval->int_value = LG2_OP; return OPCODE;
+ mad24   TC; yylval->int_value = MAD24_OP; return OPCODE;
+@@ -108,6 +110,7 @@
+ madp	TC; yylval->int_value = MADP_OP; return OPCODE;
+ max     TC; yylval->int_value = MAX_OP; return OPCODE;
+ membar  TC; yylval->int_value = MEMBAR_OP; return OPCODE;
++nanosleep TC; yylval->int_value = NANOSLEEP_PTX_OP; return OPCODE;
+ min     TC; yylval->int_value = MIN_OP; return OPCODE;
+ mov     TC; yylval->int_value = MOV_OP; return OPCODE;
+ mul24   TC; yylval->int_value = MUL24_OP; return OPCODE;
+@@ -151,6 +154,8 @@
+ ssy     TC; yylval->int_value = SSY_OP; return OPCODE;
+ st      TC; yylval->int_value = ST_OP; return OPCODE;
+ st.volatile TC; yylval->int_value = ST_OP; return OPCODE;
++st\.relaxed\.(cta|gpu|sys) TC; yylval->int_value = ST_OP; return OPCODE;
++st\.release\.(cta|gpu|sys) TC; yylval->int_value = ST_OP; return OPCODE;
+ sub	TC; yylval->int_value = SUB_OP; return OPCODE;
+ subc	TC; yylval->int_value = SUBC_OP; return OPCODE;
+ suld	TC; yylval->int_value = SULD_OP; return OPCODE;
+diff -ru sa/src/cuda-sim/ptx_sim.cc sb/src/cuda-sim/ptx_sim.cc
+--- a/src/cuda-sim/ptx_sim.cc
++++ b/src/cuda-sim/ptx_sim.cc
+@@ -252,21 +252,17 @@
+       return m_gridid;
+     case LANEID_REG:
+       return get_hw_tid() % m_core->get_warp_size();
++    // the lanes of the warp below, at or above this one (CUB's warp scans and radix ranks read them)
+     case LANEMASK_EQ_REG:
+-      feature_not_implemented("%lanemask_eq");
+-      return 0;
++      return 1u << (get_hw_tid() % m_core->get_warp_size());
+     case LANEMASK_LE_REG:
+-      feature_not_implemented("%lanemask_le");
+-      return 0;
++      return (unsigned)((2ull << (get_hw_tid() % m_core->get_warp_size())) - 1u);
+     case LANEMASK_LT_REG:
+-      feature_not_implemented("%lanemask_lt");
+-      return 0;
++      return (1u << (get_hw_tid() % m_core->get_warp_size())) - 1u;
+     case LANEMASK_GE_REG:
+-      feature_not_implemented("%lanemask_ge");
+-      return 0;
++      return ~((1u << (get_hw_tid() % m_core->get_warp_size())) - 1u);
+     case LANEMASK_GT_REG:
+-      feature_not_implemented("%lanemask_gt");
+-      return 0;
++      return ~(unsigned)((2ull << (get_hw_tid() % m_core->get_warp_size())) - 1u);
+     case NCTAID_REG:
+       assert(dim_mod < 3);
+       if (dim_mod == 0) return m_nctaid.x;

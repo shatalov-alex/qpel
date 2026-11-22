@@ -327,6 +327,9 @@ def peel(node):
             if cast and cast not in VALUE_CASTS:
                 raise Unsupported(node, 'conversion', f'{cast} has no qpel equivalent')
             node = node['inner'][0]
+            if kind == 'CXXFunctionalCastExpr' and node.get('kind') == 'InitListExpr' and len(node.get('inner', ())) == 1 \
+                    and scalar_of(node) in SCALAR_TERMS:
+                node = node['inner'][0]  # uint64_t{1}: the one value, converted to the type (in the list's own cast)
         elif kind == 'SubstNonTypeTemplateParmExpr':
             node = node['inner'][-1]  # the value the template parameter was replaced by
         elif kind == 'CXXMemberCallExpr' and node['inner'][0].get('name', '').startswith('operator '):
@@ -1474,11 +1477,13 @@ class Importer:
         self.kernel = kernel
         self.template_map = decl.get("_qpel_template", {})  # this instance's template parameters -> arguments
         self.assigned = assigned_decls(body_of(decl))
+        self.body = body_of(decl)
+        self.local_presence = {}  # clang id of a view local that may be null -> its <name>_present local
         self.names = {self.safe_name(p['name']) for p in params_of(decl) if p.get('name')}  # unique per function
         self.conditional_exchanges = conditional_exchanges(body_of(decl))
         # optional buffers (IR version 9): kernel pointer parameters the body tests against null, and
         # (qpel's own Metal read back) the buffers whose presence flag qpel_present_<name> it receives
-        tested = {t[0] for t in (null_tested(x) for x in walk(body_of(decl))) if t} if kernel else set()
+        tested = ({t[0] for t in (null_tested(x) for x in walk(body_of(decl))) if t} | self.null_tested_params(name)) if kernel else set()
         flags = {p['name'][len('qpel_present_'):]: p['id'] for p in params_of(decl)
                  if kernel and p.get('name', '').startswith('qpel_present_')}
         optional_ids = tested | {p['id'] for p in params_of(decl) if p.get('name') in flags}
@@ -1556,6 +1561,20 @@ class Importer:
             ir = self.graph.add('Parameter', attrs, {'type': self.type_node(kind)})
             self.scope[p['id']] = ('param', ir, kind)
             params.append(ir)
+        self.helper_presence = {}
+        if not kernel:  # a buffer parameter tested against null: the caller says whether it passed one
+            for p in params_of(decl):
+                entry = self.scope.get(p['id'])
+                if p['id'] in self.null_tested_params(name) and entry and entry[0] == 'param' and type_is_buffer(entry[2]):
+                    flag = self.graph.add('Parameter', {'name': self.unique_name(self.safe_name(p['name']) + '_present')},
+                                          {'type': self.type_node('u32')})
+                    self.helper_presence[p['id']] = flag
+                    params.append(flag)
+            if self.helper_presence:
+                self.adaptations.append(f'{name} tests ' + ', '.join(self.safe_name(q['name']) for q in params_of(decl)
+                                        if q['id'] in self.helper_presence) + ' against null: it takes '
+                                        + ', '.join(self.graph.nodes[f]['attributes']['name'] for f in self.helper_presence.values())
+                                        + ' (1 when its caller passed a buffer)')
         self.hidden_params = {}
         if not kernel:
             for role, axis in self.builtin_reads(name):
@@ -2002,6 +2021,38 @@ class Importer:
         cache[name] = result
         return result
 
+    def null_tested_params(self, name, seen=None):
+        """Ids of the pointer parameters a function tests against null (`p != nullptr`, `if (p)`), in its
+        own body or by passing them, as they are, to a helper parameter it tests (gsplat's
+        accutile_process_tiles writes its intersections only `if (isect_ids != nullptr)`)."""
+        cache = self.__dict__.setdefault('_null_tested', {})
+        if name in cache:
+            return cache[name]
+        seen = set() if seen is None else seen
+        seen.add(name)
+        decl = self.functions[name][0]
+        found = set()
+        if body_of(decl) is not None:
+            params = {q['id'] for q in params_of(decl)}
+            for node in walk(body_of(decl)):
+                tested = null_tested(node)
+                if tested and tested[0] in params:
+                    found.add(tested[0])
+                if node.get('kind') == 'CallExpr' and node.get('inner'):
+                    callee = self.callee(node)
+                    if callee in self.functions and callee not in seen and not self.functions[callee][2]:
+                        inner = self.null_tested_params(callee, seen)
+                        for i, q in enumerate(params_of(self.functions[callee][0])):
+                            if q['id'] in inner and 1 + i < len(node['inner']):
+                                core = node['inner'][1 + i]
+                                while core.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and core.get('inner'):
+                                    core = core['inner'][0]
+                                ref = core.get('referencedDecl', {}) if core.get('kind') == 'DeclRefExpr' else {}
+                                if ref.get('id') in params:
+                                    found.add(ref['id'])
+        cache[name] = found
+        return found
+
     def calls_builtin_helpers(self, decl):
         """A kernel that calls a helper reading thread builtins (it passes them, so it is a Groups kernel)."""
         for node in walk(body_of(decl)):
@@ -2316,9 +2367,10 @@ class Importer:
             return self.shared_view_local(decl, name, t[2])
         if t[0] == 'pointer' and is_vector(t[2]) and self.kernel and 'init' in decl:
             return self.vector_buffer_local(decl, name, t)
-        if t[0] == 'pointer' and t[2] in SCALAR_TERMS - {'bool'} and \
+        if t[0] == 'pointer' and t[2] in SCALAR_TERMS and \
                 not {'threadgroup', 'constant', 'thread'} & set(decl['type']['qualType'].replace('*', ' ').split()):
-            return self.buffer_local(decl, name, type_buffer(t[2], 'read' if t[1] else 'write'))
+            # (bool *: a u8 view of 0 and 1, as a bool buffer argument is)
+            return self.buffer_local(decl, name, type_buffer('u8' if t[2] == 'bool' else t[2], 'read' if t[1] else 'write'))
         array = LOCAL_ARRAY.fullmatch(decl['type']['qualType'].strip()) or \
             LOCAL_ARRAY.fullmatch(decl['type'].get('desugaredQualType', '').strip())  # BlockScanT::TempStorage
         if array:
@@ -3395,11 +3447,24 @@ class Importer:
                 self.adaptations.append(message)
             return []
         children = {'type': self.type_node(kind)}
-        if 'init' in decl:
+        null = 'init' in decl and is_null_pointer(decl['inner'][0])
+        if 'init' in decl and not null:
             children['value'] = self.expr(decl['inner'][0], address=True)
         ir = self.graph.add('Variable', {'name': self.unique_name(name)}, children)
         self.scope[decl['id']] = ('local', ir, kind)
-        return [ir]
+        tested = any(found and found[0] == decl['id'] for found in (null_tested(x, locals_too=True) for x in walk(self.body)))
+        if not (null or tested):
+            return [ir]
+        # `const bool *mask_img = nullptr; if (tile_mask) mask_img = tile_mask + k;`: a view that may be null.
+        # qpel's buffer locals are never null; <name>_present says whether it was given a buffer, and the
+        # null tests read that (an access through a null view is undefined in C, and is not made here).
+        flag = self.graph.add('Variable', {'name': self.unique_name(name + '_present')},
+                              {'type': self.type_node('u32'), 'value': self.int_value('u32', 0 if null or 'init' not in decl else 1)})
+        self.local_presence[decl['id']] = flag
+        message = f'{self.current}: {name} may be null; {self.graph.nodes[flag]["attributes"]["name"]} says whether it points into a buffer'
+        if message not in self.adaptations:
+            self.adaptations.append(message)
+        return [ir, flag]
 
     def unique_name(self, name):
         """C allows one name in sibling blocks; qpel names are unique in a function."""
@@ -3459,6 +3524,15 @@ class Importer:
             return self.vector_store(node, *node['inner'])
         if kind in ('CXXOperatorCallExpr',) and decl_name(node['inner'][0]) == 'operator=' and self.vector_element_ref(node['inner'][1]):
             return self.vector_store(node, node['inner'][1], node['inner'][2])
+        if kind == 'BinaryOperator' and node['opcode'] == '=' and peel(node['inner'][0]).get('kind') == 'DeclRefExpr' and \
+                peel(node['inner'][0])['referencedDecl'].get('id') in self.local_presence:
+            target, value = node['inner']
+            flag = self.local_presence[peel(target)['referencedDecl']['id']]
+            if is_null_pointer(value):  # made null again: only its flag changes
+                return add('Assign', children={'target': self.name(flag), 'value': self.int_value('u32', 0)})
+            return add('Block', children={'statements': [
+                add('Assign', children={'target': self.lvalue(target), 'value': self.expr(value, address=True)}),
+                add('Assign', children={'target': self.name(flag), 'value': self.int_value('u32', 1)})]})
         if kind == 'BinaryOperator' and node['opcode'] == '=':
             target, value = node['inner']
             # (a pointer: its offset read as a buffer offset, as in an initializer: `Bvar = Bvar + n`)
@@ -4132,12 +4206,18 @@ class Importer:
         """BufferPresent (IR version 9) for a null test of an optional buffer parameter, or for qpel's
         Metal test of a presence flag (`qpel_present_x != 0u`); None for anything else."""
         add = self.graph.add
-        found = null_tested(n)
+        found = null_tested(n, locals_too=True)
         if found:
             entry = self.scope.get(found[0])
             if entry and entry[0] == 'param' and self.graph.nodes[entry[1]]['attributes'].get('optional'):
                 test = add('BufferPresent', links={'parameter': entry[1]})
                 return add('Unary', {'operator': '!'}, {'operand': test}) if found[1] else test
+            if found[0] in self.local_presence:  # a view local that may be null
+                flag = self.name(self.local_presence[found[0]])
+                return add('Binary', {'operator': '==' if found[1] else '!='}, {'left': flag, 'right': self.int_value('u32', 0)})
+            if found[0] in getattr(self, 'helper_presence', {}):  # a helper's buffer: its presence parameter
+                flag = self.name(self.helper_presence[found[0]])
+                return add('Binary', {'operator': '==' if found[1] else '!='}, {'left': flag, 'right': self.int_value('u32', 0)})
             return None
         if n.get('kind') == 'BinaryOperator' and n.get('opcode') in ('==', '!=') and len(n.get('inner', ())) == 2:
             for a, b in (n['inner'], n['inner'][::-1]):
@@ -4150,6 +4230,22 @@ class Importer:
                     test = add('BufferPresent', links={'parameter': param['id']})
                     return add('Unary', {'operator': '!'}, {'operand': test}) if n['opcode'] == '==' else test
         return None
+
+    def presence_argument(self, arg):
+        """u32 1 or 0: whether arg, passed for a helper's buffer parameter, is a buffer (see function)."""
+        add = self.graph.add
+        core = arg
+        while core.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and core.get('inner'):
+            core = core['inner'][0]
+        entry = self.scope.get(core.get('referencedDecl', {}).get('id')) if core.get('kind') == 'DeclRefExpr' else None
+        if entry and entry[0] == 'param' and self.graph.nodes[entry[1]]['attributes'].get('optional'):
+            return add('Select', children={'condition': add('BufferPresent', links={'parameter': entry[1]}),
+                                           'yes': self.int_value('u32', 1), 'no': self.int_value('u32', 0)})
+        if core.get('kind') == 'DeclRefExpr' and core['referencedDecl'].get('id') in getattr(self, 'helper_presence', {}):
+            return self.name(self.helper_presence[core['referencedDecl']['id']])
+        if is_null_pointer(arg):
+            raise Unsupported(arg, 'null-buffer', 'a null pointer passed to a helper is not in qpel (an optional kernel buffer is)')
+        return self.int_value('u32', 1)
 
     def callee_name(self, node):
         """The callee of node when it is a call, else None."""
@@ -4249,10 +4345,26 @@ class Importer:
             decl, ident, kernel = self.functions[callee]
             if kernel:
                 raise Unsupported(n, 'call-kernel', 'kernels cannot be called from device code')
+            tested = self.null_tested_params(callee)
+            tested_at = [i for i, q in enumerate(params_of(decl)) if q['id'] in tested and i < len(args)]
+            given = list(args)
+            for i, a in enumerate(args):  # `first_pass ? nullptr : isect_ids`: the buffer, absent when the condition says
+                split = null_or_buffer(a)  # (untested, the helper cannot use the null without undefined behaviour)
+                if split:
+                    given[i] = split[0]
             arguments = [self.name(self.local_array(a)) if self.local_array(a) is not None and
                          is_array(self.scope.get(peel_decl(a), (None, None, ''))[2]) else self.expr(a, address=True)
-                         for a in args]
+                         for a in given]
             self.copy_in_place(decl, args, arguments)
+            for i in tested_at:  # the presence of each buffer the helper tests against null
+                split = null_or_buffer(args[i])
+                present = self.presence_argument(split[0] if split else args[i])
+                if split:
+                    zero = self.int_value('u32', 0)
+                    condition = self.expr(predicate(split[1]))
+                    present = self.graph.add('Select', children={'condition': condition, 'yes': zero if split[2] else present,
+                                                                 'no': present if split[2] else zero})
+                arguments.append(present)
             for role, axis in self.builtin_reads(callee):  # the thread builtins the helper reads
                 arguments.append(add(GROUP_NODES[role], {'axis': axis}) if self.kernel
                                  else self.name(self.hidden_params[(role, axis)]))
@@ -4510,6 +4622,7 @@ class Importer:
         for r in plan['resources']:
             kind, attributes = node_spec(r['type'])
             attrs = {'name': r['name'], 'kind': r['kind']} | ({'scale': r['scale']} if r.get('scale', 1) != 1 else {}) \
+                | ({'per': r['per']} if r.get('per', 1) != 1 else {}) \
                 | ({'length': r['length']} if r.get('length') else {}) \
                 | ({'optional': True} if r.get('optional') or r['name'] in optional else {})
             ids[r['name']] = add('Resource', attrs, {'type': add(kind, attributes)})
@@ -5088,6 +5201,20 @@ def peel_decl(node):
     return node.get('referencedDecl', {}).get('id') if node.get('kind') == 'DeclRefExpr' else None
 
 
+def null_or_buffer(node):
+    """(buffer, condition, True when the condition gives the null) for `c ? nullptr : p` or `c ? p : nullptr`, else None."""
+    while node.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and node.get('inner'):
+        node = node['inner'][0]
+    if node.get('kind') != 'ConditionalOperator' or len(node.get('inner', ())) != 3:
+        return None
+    condition, yes, no = node['inner']
+    if is_null_pointer(yes) and not is_null_pointer(no):
+        return no, condition, True
+    if is_null_pointer(no) and not is_null_pointer(yes):
+        return yes, condition, False
+    return None
+
+
 def is_null_pointer(node):
     """True for a null pointer constant: nullptr, NULL (__null) or 0 converted to a pointer."""
     converted = False
@@ -5098,14 +5225,14 @@ def is_null_pointer(node):
         converted and node.get('kind') == 'IntegerLiteral' and int(node.get('value', '1')) == 0
 
 
-def null_tested(node):
-    """(clang id of a parameter tested against null, True when the test is p == null) for a test
-    `p != nullptr`, `p == NULL`, `nullptr != p` or `if (p)`, else None."""
+def null_tested(node, locals_too=False):
+    """(clang id of a parameter (or, with locals_too, a local) tested against null, True when the test is
+    p == null) for a test `p != nullptr`, `p == NULL`, `nullptr != p` or `if (p)`, else None."""
     def parameter(x):
         while x.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and x.get('inner') and x.get('castKind') != 'PointerToBoolean':
             x = x['inner'][0]
         ref = x.get('referencedDecl', {}) if x.get('kind') == 'DeclRefExpr' else {}
-        return ref.get('id') if ref.get('kind') == 'ParmVarDecl' else None
+        return ref.get('id') if ref.get('kind') == 'ParmVarDecl' or locals_too and ref.get('kind') == 'VarDecl' else None
     if node.get('kind') == 'BinaryOperator' and node.get('opcode') in ('==', '!=') and len(node.get('inner', ())) == 2:
         left, right = node['inner']
         for a, b in ((left, right), (right, left)):

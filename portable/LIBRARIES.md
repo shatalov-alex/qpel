@@ -25,8 +25,8 @@ own CUB, which the tests compare against.
 
 T is `int`, `unsigned int` or `float` (and any copyable type, `float2` among them, for a scan with a functor), one item per thread or several; N is a multiple of 32 up to 256
 (qpel's block limit), in a 1D block. Signed sums wrap, as CUB's `add.s32` does. `cub::DeviceScan`
-and `cub::DeviceReduce` are declared, so host code that uses them parses, but they are host calls
-(temporary storage, several launches) and not translated.
+and `cub::DeviceReduce` are declared, so host code that uses them parses; the device-wide calls
+are qpel library pipelines instead (Device-wide CUB, below).
 
 A load with `valid` and no default leaves the items from `valid` on as they were, as CUB's direct
 and striped loads do; CUB's transposing loads put other threads' unset values there instead, so a
@@ -38,6 +38,64 @@ with state as the operator, the raking `BlockReduce` algorithms, `WarpScan`/`War
 own, and TempStorage in unions. A source using one of these does
 not compile against qpel's header (a `static_assert` or a missing declaration names it), and
 the importer reports it.
+
+## Device-wide CUB (Phase 7)
+
+`cub::DeviceScan` and `cub::DeviceRadixSort` are host calls: each launches several kernels with
+temporary storage between them. qpel writes those kernels as plain CUDA in
+`frontends/include/libraries/qpel_library/` and imports them like any other source;
+`frontends/library.py` gives, per call and element type, the CUDA that launches them (so the
+importer sees one instance of each template) and the launch plan of their stages, with the
+temporary storage as scratch buffers sized per tile of the input (IR version 21, CORE.md).
+
+| CUB | qpel library | Stages |
+|---|---|---|
+| `DeviceScan::InclusiveSum`, `ExclusiveSum` on `int`, `unsigned int`, `long long`, `unsigned long long` | `device_scan(element, exclusive)`: `qlib_scan_reduce` (each tile of 1024's total, by a tree in shared memory), `qlib_scan_partials` (one group: the totals' exclusive prefix, 256 at a time), `qlib_scan_tiles` (each tile from its prefix) | 3 |
+| `DeviceRadixSort::SortPairs(keys_in, keys_out, values_in, values_out, n, begin_bit, end_bit)`, keys of those four types, values of those or `float` | `device_radix_sort_pairs(key, value)`: per 8 bits of the key type, `qlib_radix_histogram` (each tile of 256's count of every digit, digit-major), the device scan of the counts, `qlib_radix_scatter` (each key to its digit's start plus its rank among the tile's keys with that digit before it: stable), `qlib_radix_advance` (the pass number, kept in a one-word buffer, goes up) | 6 per pass: 24 for 32-bit keys, 48 for 64-bit |
+
+Integer sums wrap and do not depend on their order, and a stable sort has one result, so both are
+CUB's bit for bit. Signed keys have their sign bit flipped before their digits are taken, as CUB
+does, so negative keys sort first. A pass whose bits start at or after `end_bit` copies its keys in
+order; the passes alternate between the outputs and a scratch pair, and their number is even, so
+the result is in the outputs. Sums are made in the unsigned type of the same width (`qlib_add`), so
+the library's CUDA is defined C++ when the CPU simulator runs it with UBSan.
+
+Not offered: float scans (CUB's add in an order that varies with the timing of its decoupled
+look-back), `SortKeys` without values, descending sorts, segmented and merge sorts
+(gsplat's `DeviceSegmentedRadixSort`, `DeviceMergeSort`), and `DeviceReduce`. Not yet fast: the
+scatter finds a key's rank by reading the tile's 256 digits, where CUB uses warp ballots and
+match instructions.
+
+A port's launch plan names a call as a library stage, `{"library": "cub::DeviceRadixSort::SortPairs",
+"key": "i64", "value": "i32", "bindings": {"keys_in": ..., "keys_out": ..., "values_in": ..., "values_out": ...,
+"begin_bit": ..., "end_bit": ..., "n": shape}}` (or `cub::DeviceScan::InclusiveSum` and `ExclusiveSum` with
+`"input"`, `"element"` and bindings `in`, `out`, `n`); `library.expand(source, plan)` appends the call's kernels
+to the source (one `__global__` wrapper per stage, named after the stage's prefix, so several calls of
+different types share a source) and puts its stages and scratch buffers in the plan. The original then runs
+with the same library kernels on the CPU simulator, as qpel's CUB subset stands in for CUB's block
+algorithms.
+
+**Pilot: gsplat's forward tile intersection (2026-11-22).** gsplat's host code counts each projected
+gaussian's tiles (`intersect_tile_kernel`), takes the counts' cumulative sum (`torch::cumsum`, int32 into
+int64), reads the total back, writes each intersection's 64-bit key (image | tile | depth) and gaussian id
+(`intersect_tile_kernel` again), sorts them (`cub::DeviceRadixSort::SortPairs` over 32 + tile and image bits)
+and finds each tile's first intersection (`intersect_offset_kernel`). That is two qpel pipelines,
+`corpus/gsplat/plans/intersect_tile_count.plan.json` (4 stages) and `intersect_tile_emit.plan.json` (50), of
+gsplat's own kernels, unmodified, and the library's scan and sort. On the CPU simulator, the Apple GPU and
+GPGPU-Sim every output agrees with the original bit for bit, over scenes with several images, partial tiles,
+culled gaussians, a tile mask and nothing on screen; and the intersections feed gsplat's rasterizer (the
+`gsplat_rasterize_fwd` corpus program), so on the Apple GPU gsplat's forward pass runs from projected
+gaussians to pixels (tests/test_gsplat_intersect.py).
+
+Evidence: `tests/test_device_scan.py` (9 variants, sizes 1 to 300000 so that the partials are scanned in
+several rounds, int32 into int64 as torch's cumsum) and `tests/test_device_radix_sort.py` (4 key and value
+types, three bit ranges each, keys over the full range and from 16 values so that stability shows) run the
+library's CUDA as the original on the CPU simulator, qpel's CUDA there and qpel's Metal on the Apple GPU,
+against numpy's wrapping cumsum and stable argsort. With `QPEL_NVIDIA=1` qpel's CUDA runs on GPGPU-Sim
+against the same oracle at every size, and against NVIDIA's own CUB where CUB runs right in the simulator
+(32-bit scans within one of its tiles, 32-bit sorts, 64-bit sorts of up to 257 keys; gsplat's 64-bit sort
+of more is wrong there: gpgpusim/README.md, Open, and `qpel-cub.patch` for what it needed to run at all).
+NVIDIA's CUB at every size is for a T4 (differential/hardware.py).
 
 ## How it works
 
