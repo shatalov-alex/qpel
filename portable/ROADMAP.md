@@ -2,7 +2,7 @@
 
 qpel is a neutral intermediate language between NVIDIA CUDA and Apple Metal: kernels are imported from either platform into a typed IR and generated for both, so that applications and libraries can move in either direction. This file records the design decisions behind it, the phases of work, and where each phase stands. [RELEASE.md](RELEASE.md) remains the release-readiness checklist.
 
-## Where things stand (2026-11-15)
+## Where things stand (2026-11-22)
 
 | Phase | Scope | State |
 |---|---|---|
@@ -10,10 +10,10 @@ qpel is a neutral intermediate language between NVIDIA CUDA and Apple Metal: ker
 | 1 | Offline Clang-based CUDA and Metal importers, round-trip matrix | done 2026-11-11 |
 | 2 | IR v3, real-world corpus (llama.cpp), text syntax, fuzzing, NVIDIA gate | done 2026-11-12 (GPGPU-Sim and a Tesla T4) |
 | 3 | First real port: PyTorch extensions (TRELLIS.2 pilot), header stubs, PyTorch op host, benchmarks v0 | done 2026-11-14 (Apple GPU, CPU simulator, Tesla T4) |
-| 4 | `qpel verify` for any port; public release | in progress (verify v0 done) |
-| 5 | Breadth: shared memory, atomics, warp/simdgroup ops, block scans | planned |
-| 6 | Performance: matrix tiles, benchmarks | planned |
-| 7 | Libraries, Triton | later (Triton frontend pilot started 2026-11-15) |
+| 4 | `qpel verify` for any port; public release | verify done 2026-11-14 (exit criterion met locally); the public release waits for the owner |
+| 5 | Breadth: shared memory, atomics, warp/simdgroup ops, block scans | done 2026-11-16 (pilots: mamba, pytorch_sparse, mmcv) |
+| 6 | Performance: matrix tiles, benchmarks | done 2026-11-22 (pilots: gsplat, bitsandbytes; 83 programs x1.00 on a T4) |
+| 7 | Libraries, Triton | in progress (Triton frontend pilot since 2026-11-15; device-wide CUB since 2026-11-22) |
 
 ## 1. Design decisions
 
@@ -230,6 +230,13 @@ Pilot: Microsoft TRELLIS.2's `o-voxel` extension (13 kernels: Z-order and Hilber
 
 
 ### Phase 7: libraries and other frontends (later; re-evaluated when reached)
+
+**Closed Phase 6 (2026-11-22).** Every listed item is done; carried open: Apple M5's matrix tiles (no M5 to test on), `sam2_cc` x1.07 on the T4 (neither fewer strong loads nor device-scope loads moved it), the WMMA GEMM's 24 loads to the original's 12, and a T4 timing of the paired `m16n8k8`.
+
+**Re-evaluated (2026-11-22).** What the corpus calls on the host, counted over its sources: PyTorch's stream and device guards (`at::cuda::getCurrentCUDAStream` 178, `CUDAGuard` 85), which qpel's PyTorch op host already stands in for; device-wide CUB in gsplat's tile intersection (`IntersectTile.cu`: `cub::DeviceScan::InclusiveSum`, `DeviceRadixSort::SortPairs` on 64-bit keys, `DeviceSegmentedRadixSort`, `DeviceMergeSort`), its sparse tile layout and llama.cpp's `cumsum`; cuBLAS only as handle set-up (llama.cpp, bitsandbytes' int8 `cublasLt` path); cuDNN, cuSPARSE and Thrust not at all. So the library layer starts with device-wide CUB, which blocks whole pipelines rather than single kernels:
+- `cub::DeviceScan::InclusiveSum`/`ExclusiveSum` and `cub::DeviceRadixSort::SortPairs`/`SortKeys` as qpel library pipelines (stages of qpel kernels, scratch buffers), in LIBRARIES.md. Integer scans and a stable radix sort have exactly one result, so they are checked bit for bit against NVIDIA's CUB (GPGPU-Sim, the T4) and run on the Apple GPU.
+- **Pilot:** gsplat's forward tile intersection (`intersect_tile`, the scan, the sort of 64-bit keys, `intersect_offset`) ported whole, feeding the rasteriser that passes already, so gsplat's forward pass from projected gaussians to pixels runs on Metal.
+- After that: the host-API IR (streams, events, `cudaMallocAsync`) where the PyTorch op host does not cover a launcher, and the library-mapping table for what stays unmapped, reported.
 - A host-API IR and a library-mapping table: cuBLAS GEMM → MPSMatrixMultiplication/MPSGraph; CUB/Thrust reductions and scans → qpel library kernels; cuDNN convolution → MPSGraph. Unmappable calls are reported, not dropped.
 - Triton: first as an input to `qpel verify`; a Triton frontend only if Triton's own Apple backend does not land.
 
