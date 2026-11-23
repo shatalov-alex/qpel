@@ -1,0 +1,19 @@
+// math.atan2 (IR version 22): the angle of (x, y), in [-pi, pi], with C's special cases (signed zeros,
+// infinities, NaN). A bounded function within MATH_ULPS: CUDA documents atan2f within 3 ulp, Metal's
+// precise::atan2 is measured in tests/test_math_atan2.py (NUMERICS.md, math functions).
+module math_atan2 {
+  kernel angle(y: buffer<f32, read> @0, x: buffer<f32, read> @1, z: buffer<f32, write> @2, n: shape3 @3) grid1d {
+    let i: u32 = qpel.index;
+    if (i >= n.x) {
+      return;
+    }
+    z[i] = math.atan2(y[i], x[i]);
+  }
+}
+pipeline math_atan2_launch {
+  shape n;
+  input y: buffer<f32, read> in n;
+  input x: buffer<f32, read> in n;
+  output z: buffer<f32, write> in n;
+  dispatch angle over n block (64) (y = y, x = x, z = z, n = n);
+}

@@ -74,7 +74,7 @@ def _value(value, kind):
 
 
 SHADER_FILE = 'components.cu'
-SHADER_SHA256 = '4fff1e6d5933d261f02103151c65f784fe7be58dbdc2a68a79cb1a70ca772070'
+SHADER_SHA256 = '7ae640c48cfbb3cb6cd7afd63b660e8d2e7c35e6f96ddfa5f9f9fabc2c89da8c'
 
 def run(inputs, shapes, values=None, *, device=0, omit=()):
     """CuPy arrays in/out; shapes are (W,H,N); values are scalars; each stage completes before the next.

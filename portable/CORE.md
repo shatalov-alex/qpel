@@ -171,6 +171,11 @@ Buffers of a count per tile of their extent: a resource's `per` attribute (2 to 
 
 Pipelines (any IR version, since 2026-11-22): a buffer resource that a pipeline writes may be bound to a later stage's read-only parameter of the same element type (`buffer<i64, write>` to `buffer<i64, read>`): a sort's output read by the next kernel. Every other binding has the parameter's own type.
 
+
+## IR version 22
+
+`math.atan2(y, x)` (`Math {function: atan2}`, two arguments): the angle of (x, y) in [-pi, pi], within `MATH_ULPS` (NUMERICS.md, math functions): CUDA `atan2f`, Metal `metal::precise::atan2`. CUDA's `atan2f` and `atan2` on floats import as it (gsplat's fisheye projection, through `glm::atan(y, x)`). examples/math_atan2.qpel, tests/test_math_atan2.py. A program with `math.atan2` is version 22.
+
 ## Optimisation passes
 
 `qpel_opt.py` holds passes that read a validated program and tell the lowering how to emit it faster, with the same results; they never change the IR, whose meaning stays the portable one. Kept apart from the portability lowering (ROADMAP, Phase 6):
