@@ -1,0 +1,147 @@
+{
+ "schema": 2,
+ "module": "gsplat_projection_ewa_simple_fwd",
+ "resources": [
+  {
+   "name": "B",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "C",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "N",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "means",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "elements",
+   "scale": 3
+  },
+  {
+   "name": "covars",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "elements",
+   "scale": 9
+  },
+  {
+   "name": "Ks",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "cameras",
+   "scale": 9
+  },
+  {
+   "name": "width",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "height",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "camera_model",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "means2d",
+   "kind": "output",
+   "type": "buffer<f32, write>",
+   "extent": "elements",
+   "scale": 2
+  },
+  {
+   "name": "covars2d",
+   "kind": "output",
+   "type": "buffer<f32, write>",
+   "extent": "elements",
+   "scale": 4
+  },
+  {
+   "name": "elements",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "cameras",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "projection_ewa_simple_fwd_kernel",
+   "grid": "elements",
+   "blockSize": 256,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "B",
+     "resource": "B"
+    },
+    {
+     "parameter": "C",
+     "resource": "C"
+    },
+    {
+     "parameter": "N",
+     "resource": "N"
+    },
+    {
+     "parameter": "means",
+     "resource": "means"
+    },
+    {
+     "parameter": "covars",
+     "resource": "covars"
+    },
+    {
+     "parameter": "Ks",
+     "resource": "Ks"
+    },
+    {
+     "parameter": "width",
+     "resource": "width"
+    },
+    {
+     "parameter": "height",
+     "resource": "height"
+    },
+    {
+     "parameter": "camera_model",
+     "resource": "camera_model"
+    },
+    {
+     "parameter": "means2d",
+     "resource": "means2d"
+    },
+    {
+     "parameter": "covars2d",
+     "resource": "covars2d"
+    },
+    {
+     "parameter": "elements",
+     "resource": "elements"
+    }
+   ]
+  }
+ ]
+}

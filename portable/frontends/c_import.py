@@ -2212,10 +2212,18 @@ class Importer(GlmReader):
                 a, b = node['inner']
                 for index, other in ((a, b), (b, a)):
                     target = peel_decl(other)
-                    if (peel_decl(index) in grid or is_grid_index(index)) and target in locals_ and target not in changed:
+                    if not (peel_decl(index) in grid or is_grid_index(index)):
+                        continue
+                    if target in locals_ and target not in changed:
                         factors = product(locals_[target]['inner'][0])
                         if factors:
                             found.add((locals_[target]['name'], ' * '.join(factors)))
+                    elif target is None:
+                        # the product written in the comparison (`if (idx >= B * C * N) return;`, gsplat's simple
+                        # projection); a single parameter is element_count's case
+                        factors = product(other)
+                        if factors and len(factors) > 1:
+                            found.add((' * '.join(factors), ' * '.join(factors)))
         if len(found) != 1:
             return None
         return next(iter(found))  # (the local's name, its factors)

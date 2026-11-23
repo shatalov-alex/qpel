@@ -27,13 +27,13 @@ WIDTH, HEIGHT = 64, 48
 
 
 class Built:
-    def __init__(self, name, work):
+    def __init__(self, name, work, source=SOURCE):
         from frontends import roundtrip
         from frontends.c_import import import_source
         from qpel import compile_program
         from qpel_ir import Lowering, validate
         from differential.simulate import Program
-        entry = next(e for e in roundtrip.corpus_entries() if e['source'].endswith(SOURCE))
+        entry = next(e for e in roundtrip.corpus_entries() if e['source'].endswith(source))
         self.source = roundtrip.CORPUS/entry['source']
         include = [roundtrip.CORPUS/f for f in entry.get('include', ())]
         plan = json.loads((PLANS/f'{name}.plan.json').read_text())

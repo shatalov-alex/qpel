@@ -35,7 +35,7 @@ leaves the part that both can run.
 
 ## Highlights
 
-- **Real code, unmodified.** 371 of the 2364 kernels in a pinned corpus of real projects
+- **Real code, unmodified.** 373 of the 2364 kernels in a pinned corpus of real projects
   (llama.cpp, SAM 2, TRELLIS.2, mamba, pytorch_sparse, mmcv, gsplat, bitsandbytes) import as
   they are. Whole pipelines run against their originals:
   - llama.cpp's matrix multiply, `kernel_mul_mm`, for every quantised format, and its
@@ -131,7 +131,7 @@ qpel is in active development. Phases 0 to 6 of the [roadmap](portable/ROADMAP.m
 | 6 | Matrix tiles and performance | done |
 | 7 | Library mapping (device-wide CUB first), Triton | in progress |
 
-The corpus coverage report (`python3 -m frontends.corpus`) currently counts 371 of 2364
+The corpus coverage report (`python3 -m frontends.corpus`) currently counts 373 of 2364
 kernels (llama.cpp, SAM 2, TRELLIS.2 and the extensions corpus: mamba, pytorch_sparse, mmcv, gsplat,
 bitsandbytes) whose import validates.
 
