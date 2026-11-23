@@ -176,8 +176,9 @@ for name in ('results.tar.gz', 'gpu.txt', 'timing.txt', 'selftest.log', 'cupy_ho
 
 
 class Kaggle:
-    def __init__(self, cli, slug='qpel-nvidia', timeout=1500):
-        self.cli, self.slug, self.timeout = cli, slug, timeout
+    def __init__(self, cli, slug='qpel-nvidia', timeout=1500, queue_limit=4 * 3600):
+        # timeout counts from when the kernel runs: Kaggle can keep it queued for hours waiting for a T4
+        self.cli, self.slug, self.timeout, self.queue_limit = cli, slug, timeout, queue_limit
         self.user = self.kaggle('config', 'view', capture=True)
         self.user = next((line.split(':', 1)[1].strip() for line in self.user.splitlines()
                           if line.strip().startswith('- username')), None)
@@ -227,7 +228,7 @@ class Kaggle:
             'is_private': True, 'enable_gpu': True, 'enable_internet': True, 'dataset_sources': [dataset],
             'competition_sources': [], 'kernel_sources': []}))
         self.kaggle('kernels', 'push', '-p', str(folder), '--accelerator', 'NvidiaTeslaT4', '-t', str(self.timeout))
-        started = time.time()
+        pushed, started = time.time(), None
         while True:
             time.sleep(20)
             try:
@@ -236,7 +237,16 @@ class Kaggle:
                 continue  # transient API errors while the kernel starts
             if any(word in status for word in ('complete', 'error', 'cancel')):
                 break
-            if time.time() - started > self.timeout + 600:
+            now = time.time()
+            if 'queued' in status:
+                if now - pushed > self.queue_limit:
+                    raise RuntimeError(f'kernel {ident} still queued after {self.queue_limit}s (no T4 free); '
+                                       'push it again or wait with `kaggle kernels status`')
+                continue
+            if started is None:
+                started = now
+                print(f'kernel {ident} running after {now - pushed:.0f}s in the queue', file=sys.stderr)
+            if now - started > self.timeout + 600:
                 raise RuntimeError(f'kernel {ident} still running after {self.timeout + 600}s: {status}')
         out.mkdir(parents=True, exist_ok=True)
         self.kaggle('kernels', 'output', ident, '-p', str(out), '-o', '-q')
@@ -260,7 +270,9 @@ def main(argv=None):
     parser.add_argument('--cupy-only', action='store_true',
                         help='only the self-test and the CuPy host fixture tests (no behaviour rows)')
     parser.add_argument('--kaggle-cli', default=shutil.which('kaggle') or 'kaggle')
-    parser.add_argument('--timeout', type=int, default=1500, help='Kaggle run time limit in seconds')
+    parser.add_argument('--timeout', type=int, default=1500, help='Kaggle run time limit in seconds, from when it starts')
+    parser.add_argument('--queue-limit', type=int, default=4 * 3600,
+                        help='how long to wait for Kaggle to start the run (seconds)')
     parser.add_argument('--no-cupy', action='store_true', help='leave out the CuPy host fixture tests')
     parser.add_argument('--bench-size', type=int, nargs=3, default=(2048, 1024, 4), metavar=('W', 'H', 'N'),
                         help='benchmark size of every CUDA original and its translation (differential/bench_cuda.py)')
@@ -270,7 +282,7 @@ def main(argv=None):
     parser.add_argument('--out', type=Path, help='keep the bundle and the downloaded results here')
     args = parser.parse_args(argv)
     out = (args.bundle_only or args.out or Path(tempfile.mkdtemp(prefix='qpel-hardware-'))).resolve()
-    remote = Kaggle(args.kaggle_cli, timeout=args.timeout) if args.kaggle else None
+    remote = Kaggle(args.kaggle_cli, timeout=args.timeout, queue_limit=args.queue_limit) if args.kaggle else None
     details = {}
 
     def execute(root):
