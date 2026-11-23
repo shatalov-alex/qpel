@@ -15,7 +15,7 @@ Phase 7 continues after this release.
   by less, written as plain CUDA, imported like any source and expanded from library stages of a
   launch plan. Scratch buffers sized per tile (IR version 21). Integer scans and stable sorts have
   one result, so they are checked bit for bit against numpy, and against NVIDIA's CUB on GPGPU-Sim
-  (their run on a Tesla T4 is pending).
+  and on a Tesla T4 (2026-11-23, after the release: every row passed).
 - **gsplat's forward pass on the Apple GPU:** gsplat's unmodified projection (all three camera
   models), covariance, spherical harmonics (the K = 16 kernel and the generic ones), tile
   intersection (count, scan, emit, sort, offsets) and rasterisation, chained as gsplat's host does
