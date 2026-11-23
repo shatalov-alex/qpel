@@ -106,6 +106,23 @@ against the same oracle at every size, and against NVIDIA's own CUB where CUB ru
 of more is wrong there: gpgpusim/README.md, Open, and `qpel-cub.patch` for what it needed to run at all).
 NVIDIA's CUB at every size is for a T4 (differential/hardware.py).
 
+## What the corpus calls (the library-mapping report)
+
+`python3 -m frontends.library_map` counts every CUDA runtime, CUB, cuBLAS, NCCL and PyTorch CUDA API
+identifier in the corpus's sources, kernels and host code alike, and says for each what qpel maps it to
+(corpus/library_map.json; tests/test_library_map.py fails when it changes or when an identifier is not
+classified). On 2026-11-23, of 926 uses:
+
+| Status | Uses | What |
+| --- | --- | --- |
+| library | 57 | CUB's block-level templates (from qpel_cub, imported with the kernel) and the four device-wide algorithms above, ATen's `at::cuda::cub` wrapper included |
+| host | 672 | PyTorch's streams and device guards (`getCurrentCUDAStream` 195, `CUDAGuard` 90), `cudaStream_t`, launch status checks: qpel's PyTorch op host runs the op on PyTorch's MPS device and current stream, so none of them needs a counterpart |
+| planned | 156 | host code for the host-API IR: per-kernel shared memory opt-in (`cudaFuncSetAttribute`, 26, mostly gsplat), stream-ordered allocation, events and stream waits (gsplat), memsets and copies, device attributes, llama.cpp's CUDA graphs and programmatic dependent launch |
+| unmapped | 41 | cuBLAS and cuBLASLt (handles in llama.cpp; bitsandbytes' int8 `cublasLtMatmul` and `cublasGemmEx` paths: MPSGraph matmul would stand in), NCCL in llama.cpp, and eight CUB helpers (`ShuffleDown`, `BlockExchange`, ...) in mamba's `reverse_scan.cuh`, which only its backward kernels use |
+
+So the libraries the corpus needs and qpel lacks are cuBLAS (bitsandbytes' matmuls), NCCL (llama.cpp's
+multi-GPU path) and mamba's backward-scan helpers; the rest is host code, most of it gsplat's.
+
 ## How it works
 
 The header writes `BlockScan` and `BlockReduce` as facades: a class built from its TempStorage,
