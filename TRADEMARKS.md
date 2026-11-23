@@ -26,3 +26,9 @@ based on qpel.
 
 To ask for permission, contact the maintainer through
 [GitHub](https://github.com/shatalov-alex).
+
+## The logo
+
+The qpel logo is `assets/qpel-icon.svg` (with its renderings `assets/qpel-icon-512.png` and
+`assets/social-preview.png`): a cupel, the assayer's bone-ash cup, holding a bead of refined
+metal that blends gold into silver.

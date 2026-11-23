@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/qpel-icon.svg" width="160" height="160" alt="qpel: a cupel holding a bead of refined metal">
+</p>
+
 <h1 align="center">qpel</h1>
 
 <p align="center">
@@ -23,6 +27,10 @@ CUDA and Metal from it, with the same numerical results on both platforms.
                ├──▶  qpel IR / .qpel  ──┤
 Metal source ──┘    typed, validated    └──▶ Metal (Apple GPUs)
 ```
+
+The name is a nod to the cupel, the small bone-ash cup in which assayers refine metal: the base
+metals soak away and one bright bead is left. qpel takes kernels written for one platform and
+leaves the part that both can run.
 
 ## Highlights
 
