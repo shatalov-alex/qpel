@@ -57,6 +57,7 @@ struct coalesced_group {  // (declared only, as the tiles: gsplat's backward pro
   template <class T> T shfl_down(T, unsigned int) const;
 };
 template <class Group, class Label> coalesced_group labeled_partition(const Group&, Label);
+coalesced_group coalesced_threads();  // (declared only)
 template <class T = void> struct plus { T operator()(T a, T b) const { return a + b; } };
 template <class T = void> struct less { T operator()(T a, T b) const { return a < b ? a : b; } };
 template <class T = void> struct greater { T operator()(T a, T b) const { return a > b ? a : b; } };

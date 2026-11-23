@@ -90,13 +90,13 @@ def sized_shared(text, lengths):
     bytes as CUDA aligns dynamic shared memory (a `char` block carved into float2 views needs it)."""
     import re
     for name, length in lengths.items():
-        text, count = re.subn(r'extern\s+__shared__\s+((?:\w+\s+)*?\w+)\s+' + re.escape(name) + r'\s*\[\s*\]\s*;',
+        text, count = re.subn(r'extern\s+__shared__\s+((?:\w+(?:\(\d+\))?\s+)*?\w+)\s+' + re.escape(name) + r'\s*\[\s*\]\s*;',
                               lambda m: f'__shared__ {m.group(1)} {name}[{int(length)}] __attribute__((aligned(16)));', text)
         if not count:
             raise ValueError(f'dynamic shared memory {name}: no extern __shared__ declaration found')
     # The rest belong to kernels this program does not run (the importer needs a length for any it
     # runs): one element, so that the file compiles.
-    return re.sub(r'extern\s+__shared__\s+((?:\w+\s+)*?\w+)\s+(\w+)\s*\[\s*\]\s*;',
+    return re.sub(r'extern\s+__shared__\s+((?:\w+(?:\(\d+\))?\s+)*?\w+)\s+(\w+)\s*\[\s*\]\s*;',
                   lambda m: f'__shared__ {m.group(1)} {m.group(2)}[1];', text)
 
 

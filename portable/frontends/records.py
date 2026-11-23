@@ -336,6 +336,162 @@ def _is_null(node):
         node.get('kind') == 'IntegerLiteral' and node.get('value') == '0'
 
 
+def _element_of(pointer_type):
+    """`const __half *__restrict` -> `__half`."""
+    text = pointer_type.replace('__restrict', '').replace('const ', '').replace('volatile ', '').strip()
+    return text[:-1].strip() if text.endswith('*') else None
+
+
+def _int(value):
+    return {'kind': 'IntegerLiteral', 'type': {'qualType': 'int'}, 'valueCategory': 'prvalue', 'value': str(value)}
+
+
+def wide_copies(unit):
+    """A wide load or store through reinterpret_cast (gsplat's spherical harmonics:
+    `reinterpret_cast<uint4 *>(mem)[0] = reinterpret_cast<const uint4 *>(coeffs)[i]`, 16 bytes at once)
+    as the element copies it stands for: with W = sizeof(V) / sizeof(T) elements of T per V,
+    `mem[0 * W + j] = coeffs[i * W + j]` for j < W. Both sides must point to the same element type T;
+    the bits copied are the same, only the width of each access differs."""
+    from .statics import SIZES
+
+    def side(node):
+        node = _peel_cast(node) if node.get('kind') != 'ArraySubscriptExpr' else node
+        if node.get('kind') != 'ArraySubscriptExpr' or len(node.get('inner', ())) != 2:
+            return None
+        base = node['inner'][0]
+        while base.get('kind') == 'ParenExpr' and base.get('inner'):
+            base = base['inner'][0]
+        if base.get('kind') != 'CXXReinterpretCastExpr' or not base.get('inner'):
+            return None
+        pointer = base['inner'][0]
+        element = _element_of(pointer.get('type', {}).get('qualType', ''))
+        wide = _element_of(base.get('type', {}).get('desugaredQualType', base.get('type', {}).get('qualType', '')))
+        return pointer, element, wide, node['inner'][1]
+
+    for parent in walk(unit):
+        statements = parent.get('inner')
+        if parent.get('kind') != 'CompoundStmt' or not statements:
+            continue
+        for k, node in enumerate(statements):
+            if node.get('kind') == 'CXXOperatorCallExpr' and len(node.get('inner', ())) == 3 and \
+                    _peel_cast(node['inner'][0]).get('referencedDecl', {}).get('name') == 'operator=':
+                left, right = node['inner'][1], node['inner'][2]
+                wide_type = node.get('type', {}).get('desugaredQualType', node.get('type', {}).get('qualType', ''))
+            elif node.get('kind') == 'BinaryOperator' and node.get('opcode') == '=':
+                left, right = node['inner']
+                wide_type = node.get('type', {}).get('desugaredQualType', node.get('type', {}).get('qualType', ''))
+            else:
+                continue
+            a, b = side(left), side(right)
+            if a is None or b is None or a[1] != b[1] or a[1] not in SIZES:
+                continue
+            wide_type = wide_type.replace('const ', '').strip()
+            if wide_type not in SIZES or SIZES[wide_type] % SIZES[a[1]]:
+                continue
+            width = SIZES[wide_type] // SIZES[a[1]]
+            element = a[1]
+
+            def at(pointer, index, j, const):
+                scaled = {'kind': 'BinaryOperator', 'opcode': '*', 'type': {'qualType': 'int'}, 'valueCategory': 'prvalue',
+                          'inner': [copy.deepcopy(index), _int(width)]}
+                return {'kind': 'ArraySubscriptExpr', 'type': {'qualType': ('const ' if const else '') + element},
+                        'valueCategory': 'lvalue', 'range': node.get('range'),
+                        'inner': [copy.deepcopy(pointer), {'kind': 'BinaryOperator', 'opcode': '+', 'type': {'qualType': 'int'},
+                                                           'valueCategory': 'prvalue', 'inner': [scaled, _int(j)]}]}
+            copies = []
+            for j in range(width):
+                read = {'kind': 'ImplicitCastExpr', 'castKind': 'LValueToRValue', 'type': {'qualType': element},
+                        'valueCategory': 'prvalue', 'inner': [at(b[0], b[3], j, True)]}
+                copies.append({'kind': 'BinaryOperator', 'opcode': '=', 'type': {'qualType': element}, 'valueCategory': 'lvalue',
+                               'range': node.get('range'), 'inner': [at(a[0], a[3], j, False), read]})
+            statements[k] = {'kind': 'CompoundStmt', 'range': node.get('range'), 'inner': copies}
+
+
+def _array_of(node):
+    """(the local array's DeclRefExpr, element, length) for `items` decayed to a pointer, else None."""
+    while node.get('kind') == 'ImplicitCastExpr' and node.get('castKind') == 'NoOp' and node.get('inner'):
+        node = node['inner'][0]  # (to const T *)
+    if node.get('kind') != 'ImplicitCastExpr' or node.get('castKind') != 'ArrayToPointerDecay' or not node.get('inner'):
+        return None
+    ref = node['inner'][0]
+    while ref.get('kind') == 'ParenExpr' and ref.get('inner'):
+        ref = ref['inner'][0]
+    spelled = ref.get('type', {}).get('desugaredQualType', ref.get('type', {}).get('qualType', ''))
+    found = re.fullmatch(r'(?:const )?([\w:]+(?: [\w:]+)*) ?\[(\d+)\]', spelled)
+    if ref.get('kind') != 'DeclRefExpr' or ref.get('referencedDecl', {}).get('kind') != 'VarDecl' or not found:
+        return None
+    if {'threadgroup', 'device', 'constant', 'thread', '__shared__', 'static'} & set(spelled.split()):
+        return None  # (shared memory, or an address space qpel's own output spells: left as it is)
+    return ref, found.group(1), int(found.group(2))
+
+
+def array_arguments(unit):
+    """A helper whose pointer parameter is given a local array (gsplat's `sh_coeffs_to_color_fast(..., sh_coeffs,
+    out_color)` of `float sh_coeffs[48]`, the same helper given buffers elsewhere) as a copy of the helper for those
+    arrays: each such parameter `const T *p` becomes `const T (&p)[N]` (an array by reference, IR version 10), a
+    copy per set of lengths, named with them (`_a48_3`). The helper's body is the same; it reads p[i] either way."""
+    functions, owners = {}, {}
+    for owner in walk(unit):
+        for child in owner.get('inner', ()) if isinstance(owner.get('inner'), list) else ():
+            if isinstance(child, dict) and child.get('kind') == 'FunctionDecl' and _body(child) is not None:
+                functions[child['id']] = child
+                owners[child['id']] = owner
+    shared = {d['id'] for d in walk(unit) if d.get('kind') == 'VarDecl' and
+              (any(a.get('kind') == 'CUDASharedAttr' for a in d.get('inner', ())) or d.get('storageClass') == 'static')}
+    made = {}
+    for function in list(functions.values()):
+        for call in walk(_body(function)):
+            if call.get('kind') != 'CallExpr' or not call.get('inner'):
+                continue
+            target = _peel_cast(call['inner'][0])
+            callee = functions.get(target.get('referencedDecl', {}).get('id')) if target.get('kind') == 'DeclRefExpr' else None
+            if callee is None:
+                continue
+            params = [p for p in callee.get('inner', ()) if p.get('kind') == 'ParmVarDecl']
+            arrays = {}
+            for i, arg in enumerate(call['inner'][1:]):
+                found = _array_of(arg)
+                if found and found[0]['referencedDecl']['id'] in shared:
+                    found = None
+                if found and i < len(params) and _element_of(params[i].get('type', {}).get('qualType', '')) is not None:
+                    pointee = params[i]['type']['qualType'].replace('__restrict', '').strip()
+                    if pointee.endswith('*') and '*' not in pointee[:-1]:
+                        arrays[i] = found
+            if not arrays:
+                continue
+            key = (callee['id'], tuple((i, arrays[i][2]) for i in sorted(arrays)))
+            if key not in made:
+                suffix = '_a' + '_'.join(str(arrays[i][2]) for i in sorted(arrays))
+                clone = copy.deepcopy(callee)
+                clone['id'] = f'{callee["id"]}{suffix}'
+                clone['_qpel_suffix'] = suffix
+                if not any(c.get('kind') == 'TemplateArgument' for c in callee.get('inner', ())):
+                    clone['name'] = callee['name'] + suffix
+                cloned = [p for p in clone['inner'] if p.get('kind') == 'ParmVarDecl']
+                for i in arrays:
+                    p = cloned[i]
+                    const = 'const' in p['type']['qualType'].split('*')[0].split()
+                    element = _element_of(p['type'].get('desugaredQualType', p['type']['qualType']))
+                    array_type = {'qualType': f'{"const " if const else ""}{element} (&)[{arrays[i][2]}]'}
+                    p['type'] = array_type
+                    body = _body(clone)
+                    parents = _parents(body)
+                    for use in walk(body):
+                        if use.get('kind') == 'DeclRefExpr' and use.get('referencedDecl', {}).get('id') == p['id']:
+                            use['type'] = {'qualType': f'{"const " if const else ""}{element}[{arrays[i][2]}]'}
+                            use['referencedDecl'] = dict(use['referencedDecl'], type=dict(array_type))
+                            above = parents.get(id(use))
+                            if above is not None and above.get('kind') == 'ImplicitCastExpr' and above.get('castKind') == 'LValueToRValue':
+                                above['castKind'] = 'ArrayToPointerDecay'
+                owner = owners[callee['id']]
+                owner['inner'].insert(owner['inner'].index(callee) + 1, clone)
+                made[key] = clone
+            clone = made[key]
+            target['referencedDecl'] = dict(target['referencedDecl'], id=clone['id'], name=clone['name'])
+            for i, (ref, _, _) in arrays.items():
+                call['inner'][1 + i] = ref
+
+
 def pointer_offsets(unit):
     """A pointer parameter moved by `p += n` (gsplat: `isect_offsets += image_id * tiles`, `if (masks !=
     nullptr) masks += ...`) as the parameter and an offset: a local `p_offset` starts at 0, `p += n` adds

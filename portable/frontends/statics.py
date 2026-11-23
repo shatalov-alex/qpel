@@ -351,6 +351,23 @@ def resolve_aliases(text, members, local):
     return text
 
 
+def alias_templates(unit):
+    """{alias template name: (class template, member)} of `template <class T> using a = typename C<T>::m;`
+    (ATen's `opmath_type`), whose instances desugar_aliases reads from C's specializations."""
+    out = {}
+    for node in walk(unit):
+        if node.get('kind') != 'TypeAliasTemplateDecl':
+            continue
+        params = [c.get('name') for c in node.get('inner', ()) if c.get('kind') == 'TemplateTypeParmDecl']
+        alias = next((c for c in node.get('inner', ()) if c.get('kind') == 'TypeAliasDecl'), None)
+        if len(params) != 1 or alias is None:
+            continue
+        found = re.fullmatch(r'typename\s+(\w+)<\s*' + re.escape(params[0]) + r'\s*>::(\w+)', alias['type'].get('qualType', ''))
+        if found:
+            out[node['name']] = (found.group(1), found.group(2))
+    return out
+
+
 def desugar_aliases(unit):
     """Types that clang spells through type aliases give their desugared spelling only at the top
     (`scan_t` names float2, but `scan_t *` and `scan_t[16]` say nothing more), so in an instance of
@@ -369,6 +386,22 @@ def desugar_aliases(unit):
                 if found:
                     members.setdefault(spelled, {}).update(found)
     unit['_qpel_alias_members'] = members  # (functors.py resolves the aliases of lifted methods with it)
+    templates = alias_templates(unit)
+    if templates:  # at::opmath_type<__half>, `template <class T> using opmath_type = typename OpMathType<T>::type`
+        pattern = re.compile(r'(?<![\w])(?:[\w]+::)*(' + '|'.join(map(re.escape, templates)) + r')<([^<>]+)>')
+
+        def instance(found):
+            record, member = templates[found.group(1)]
+            argument = found.group(2).strip()
+            value = members.get(f'{record}<{argument}>', {}).get(member)
+            return value if value else found.group(0)
+        for node in walk(unit):
+            t = node.get('type')
+            if isinstance(t, dict) and any(name in t.get('qualType', '') for name in templates):
+                spelled = t.get('desugaredQualType', t['qualType'])
+                resolved = pattern.sub(instance, spelled)
+                if resolved != spelled:
+                    t['desugaredQualType'] = resolved
     if members:
         for function in walk(unit):
             if function.get('kind') != 'FunctionDecl':
@@ -394,7 +427,8 @@ SIZES = {'char': 1, 'signed char': 1, 'unsigned char': 1, 'bool': 1, 'int8_t': 1
          '__nv_bfloat16': 2, 'at::BFloat16': 2, 'c10::BFloat16': 2, 'int': 4, 'unsigned int': 4, 'float': 4,
          'int32_t': 4, 'uint32_t': 4, 'long': 8, 'unsigned long': 8, 'long long': 8, 'unsigned long long': 8,
          'int64_t': 8, 'uint64_t': 8, 'double': 8, 'float2': 8, 'int2': 8, 'uint2': 8, 'float4': 16, 'int4': 16,
-         'uint4': 16, 'c10::complex<float>': 8, 'complex<float>': 8}  # sizeof, for constants (constant_values)
+         'uint4': 16, 'ushort4': 8, 'short4': 8, 'half2': 4, '__half2': 4, 'ushort2': 4, 'short2': 4,
+         'c10::complex<float>': 8, 'complex<float>': 8}  # sizeof, for constants (constant_values)
 PASS = ('ImplicitCastExpr', 'ParenExpr', 'ConstantExpr', 'ExprWithCleanups', 'MaterializeTemporaryExpr',
         'CXXFunctionalCastExpr', 'CStyleCastExpr', 'CXXStaticCastExpr', 'SubstNonTypeTemplateParmExpr')
 BINARY = {'+': lambda a, b: a + b, '-': lambda a, b: a - b, '*': lambda a, b: a * b,
@@ -508,6 +542,9 @@ def constant_values(unit):
         value = decl_value(decl)
         if value is not None:
             values[decl_id] = value
+    for trait_id, value in memo.items():  # std::is_same_v<A, B> instances read in device code
+        if value is not None:
+            values.setdefault(trait_id, value)
     unit['_qpel_constant_values'] = values
     return values
 

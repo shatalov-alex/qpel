@@ -144,6 +144,7 @@ inline float __fdiv_rn(float a, float b) { volatile float r = a / b; return r; }
 #include <cstring>
 #define __launch_bounds__(...)
 #define __shared__ static
+#define __align__(n) __attribute__((aligned(n)))  // (CUDA's __align__(16) char smem[])
 struct int2 { int x, y; };
 struct int3 { int x, y, z; };
 struct int4 { int x, y, z, w; };

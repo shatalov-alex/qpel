@@ -21,7 +21,7 @@ from . import clang_ast
 from .clang_ast import position
 from .facades import inline_facades
 from .views import dead_parameters, shared_views
-from .records import scalarize_struct_values, glm_members, flatten_local_matrices, pointer_offsets
+from .records import scalarize_struct_values, glm_members, flatten_local_matrices, pointer_offsets, wide_copies, array_arguments
 from .functors import scalarize_functors
 from .demote import demote_unit
 from .statics import constant_values, desugar_aliases, flatten_argument_structs, instances_to_definitions, lift_statics, lower_switches, single_rows, read_enums, local_pointers_as_references
@@ -724,7 +724,7 @@ TO_BF16 = {'__float2bfloat16_rn', '__float2bfloat16'}
 MATH_CALLS = {name: f for f in ('fabs', 'fmin', 'fmax', 'floor', 'ceil', 'trunc', 'round', 'copysign', 'sqrt',
                                 'exp', 'exp2', 'log', 'log2', 'sin', 'cos', 'tanh', 'erf', 'expm1', 'log1p', 'pow', 'atan2')
               for name in (f, f + 'f')}
-MATH_CALLS.update({'abs': 'fabs', '__fsqrt_rn': 'sqrt'})
+MATH_CALLS.update({'abs': 'fabs', '__fsqrt_rn': 'sqrt', 'rsqrtf': 'rsqrt', 'rsqrt': 'rsqrt'})  # (rsqrt: IR version 23)
 # CUDA's fast intrinsics, documented less accurate than qpel's bounded functions (__logf, __sinf, __cosf:
 # absolute errors), read as those functions with an adaptation. __expf is qpel's fast_exp (IR version 20,
 # within 3 + floor(2|x|) ulp; CUDA documents 2 + floor(1.173|x|)), and qpel_fast_exp its Metal spelling.
@@ -803,6 +803,8 @@ class Importer(GlmReader):
         lower_switches(unit)  # switch (DATA_TYPE): the case taken; switch (x): an if-else chain (statics.py)
         single_rows(unit)  # for (int r = 0; r < kNRows; ++r) with kNRows = 1, T a[1][N] (statics.py)
         flatten_local_matrices(unit)  # float pix_out[P][C]: pix_out[P * C], read at [p * C + c] (records.py)
+        array_arguments(unit)  # f(items) of float items[8] for a helper's `const float *p`: a copy taking `const float (&p)[8]` (records.py)
+        wide_copies(unit)  # reinterpret_cast<uint4 *>(a)[0] = reinterpret_cast<const uint4 *>(p)[i]: element copies (records.py)
         pointer_offsets(unit)  # isect_offsets += n: an offset local, isect_offsets[offset + i] (records.py)
         flatten_argument_structs(unit)  # SSMParamsBase params: params_u_ptr, params_seqlen, ... (statics.py)
         read_enums(unit)  # SUM, MEAN, ...: their values; enum-typed expressions: the underlying integer
@@ -1053,7 +1055,7 @@ class Importer(GlmReader):
             taken = set()
             for use in uses:
                 arguments = self.template_arguments(use)
-                name = self.host_name(use) or instance_name(node['name'], arguments)
+                name = self.host_name(use) or instance_name(node['name'], arguments) + use.get('_qpel_suffix', '')
                 while name in taken:
                     name += '_'
                 taken.add(name)
@@ -3978,6 +3980,11 @@ class Importer(GlmReader):
                 if same is not None:  # metal::is_same<T0_4x4, block_q>::value, of this instance's arguments
                     return add('Literal', {'value': 'true' if same else 'false'}) if scalar_of(n) == 'bool' else \
                         self.literal({'value': str(int(same))}, scalar_of(n))
+            if entry is None and ref.get('kind') == 'VarTemplateSpecializationDecl' and \
+                    isinstance(constant_values(self.unit).get(ref['id']), (bool, int)):
+                value = constant_values(self.unit)[ref['id']]  # std::is_same_v<scalar_t, float> of this instance
+                return self.literal({'value': str(int(value))}, scalar_of(n)) if scalar_of(n) != 'bool' else \
+                    add('Literal', {'value': 'true' if value else 'false'})
             if entry is None and ref.get('kind') == 'VarDecl':
                 value = self.static_constant(ref['id'])
                 if value is not None:  # metal::is_same<T0_4x4, block_q>::value: a static constexpr member's value
@@ -4354,6 +4361,8 @@ class Importer(GlmReader):
                                            'yes': self.int_value('u32', 1), 'no': self.int_value('u32', 0)})
         if core.get('kind') == 'DeclRefExpr' and core['referencedDecl'].get('id') in getattr(self, 'helper_presence', {}):
             return self.name(self.helper_presence[core['referencedDecl']['id']])
+        if is_null_pointer(arg) and getattr(self, "prelude", None) is not None:
+            return self.int_value('u32', 0)  # (the call passes an unset view for it: call)
         if is_null_pointer(arg):
             raise Unsupported(arg, 'null-buffer', 'a null pointer passed to a helper is not in qpel (an optional kernel buffer is)')
         return self.int_value('u32', 1)
@@ -4462,13 +4471,26 @@ class Importer(GlmReader):
                     raise Unsupported(n, 'glm', 'a helper giving a glm matrix is called where its result is assigned or passed')
                 return call
             tested = self.null_tested_params(callee)
-            tested_at = [i for i, q in enumerate(params_of(decl)) if q['id'] in tested and i < len(args)]
+            params = params_of(decl)
+            args = [params[i]['inner'][0] if a.get('kind') == 'CXXDefaultArgExpr' and i < len(params) and params[i].get('inner')
+                    else a for i, a in enumerate(args)]  # `const float *viewmat_rs = nullptr`: the default, as given
+            tested_at = [i for i, q in enumerate(params) if q['id'] in tested and i < len(args)]
             given = list(args)
+            for i in tested_at:  # a null for a buffer the helper tests: an unset view, its presence 0 (presence_argument)
+                if is_null_pointer(args[i]) and getattr(self, "prelude", None) is not None:
+                    t = describe(view_spelling(params[i]))
+                    if t[0] == 'pointer' and t[2] in SCALAR_TERMS:
+                        view = self.graph.add('Variable', {'name': self.unique_name(f'{params[i].get("name", "p")}_absent')},
+                                              {'type': self.type_node(type_buffer('u8' if t[2] == 'bool' else t[2],
+                                                                                  'read' if t[1] else 'write'))})
+                        self.prelude.append(view)
+                        given[i] = {'kind': 'QpelName', 'ident': view, 'null': True}
             for i, a in enumerate(args):  # `first_pass ? nullptr : isect_ids`: the buffer, absent when the condition says
                 split = null_or_buffer(a)  # (untested, the helper cannot use the null without undefined behaviour)
                 if split:
-                    given[i] = split[0]
-            arguments = [self.name(self.local_array(a)) if self.local_array(a) is not None and
+                    given[i] = unmoved_when_null(split)
+            arguments = [self.name(a['ident']) if a.get('kind') == 'QpelName' else
+                         self.name(self.local_array(a)) if self.local_array(a) is not None and
                          is_array(self.scope.get(peel_decl(a), (None, None, ''))[2]) else self.expr(a, address=True)
                          for a in given]
             self.copy_in_place(decl, args, arguments)
@@ -5331,6 +5353,23 @@ def null_or_buffer(node):
     return None
 
 
+def unmoved_when_null(split):
+    """The buffer of `c ? nullptr : p + k` (null_or_buffer's split), moved by k only where c gives it: p + (c ? 0 : k).
+    Where it is absent it is not moved (offsetting a null pointer is undefined in C), and the helper is told it is
+    absent."""
+    buffer, condition, null_when_true = split
+    core = buffer
+    while core.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and core.get('inner'):
+        core = core['inner'][0]
+    if core.get('kind') != 'BinaryOperator' or core.get('opcode') != '+' or '*' not in core.get('type', {}).get('qualType', ''):
+        return buffer
+    offset = core['inner'][1]
+    zero = {'kind': 'IntegerLiteral', 'type': dict(offset.get('type', {'qualType': 'long'})), 'valueCategory': 'prvalue', 'value': '0'}
+    chosen = {'kind': 'ConditionalOperator', 'type': dict(offset.get('type', {'qualType': 'long'})), 'valueCategory': 'prvalue',
+              'inner': [condition, zero, offset] if null_when_true else [condition, offset, zero]}
+    return dict(core, inner=[core['inner'][0], chosen])
+
+
 def is_null_pointer(node):
     """True for a null pointer constant: nullptr, NULL (__null) or 0 converted to a pointer."""
     converted = False
@@ -5631,7 +5670,9 @@ def original_shared(importer):
     carved = importer.unit.get('_qpel_carved', {})
     views = {v for names in carved.values() for v in names}
     out = {k: v for k, v in importer.shared_lengths.items() if k not in views}
-    missing = [block for block in carved if block not in out]
+    imported = {d.get('id') for d in importer.decls}
+    where = importer.unit.get('_qpel_carved_in', {})
+    missing = [block for block in carved if block not in out and (block not in where or where[block] & imported)]
     if missing:
         raise clang_ast.SourceError(f'{", ".join(missing)} is carved into views; to run the original, '
                                     f'import with shared={{{missing[0]!r}: bytes}} too')

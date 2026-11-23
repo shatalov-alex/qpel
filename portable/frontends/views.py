@@ -198,6 +198,7 @@ def shared_views(unit):
                             statement.clear()
                             statement['kind'] = 'NullStmt'
                 unit.setdefault('_qpel_carved', {})[block['name']] = [view['name'] for view, plan in plans if plan]
+                unit.setdefault('_qpel_carved_in', {}).setdefault(block['name'], set()).add(function['id'])
                 notes.append((function['id'], f'{function.get("name")}: the views of {block["name"]} became shared memory '
                                                f'of their own' + (f' ({"; ".join(made)})' if made else '')))
     return notes
