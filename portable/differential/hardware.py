@@ -265,6 +265,8 @@ def main(argv=None):
     parser.add_argument('--bench-size', type=int, nargs=3, default=(2048, 1024, 4), metavar=('W', 'H', 'N'),
                         help='benchmark size of every CUDA original and its translation (differential/bench_cuda.py)')
     parser.add_argument('--no-bench', action='store_true', help='leave out the CUDA benchmarks')
+    parser.add_argument('--no-extra', action='store_true',
+                        help='leave out the library and gsplat rows (differential/extra_rows.py)')
     parser.add_argument('--out', type=Path, help='keep the bundle and the downloaded results here')
     args = parser.parse_args(argv)
     out = (args.bundle_only or args.out or Path(tempfile.mkdtemp(prefix='qpel-hardware-'))).resolve()
@@ -317,7 +319,8 @@ def main(argv=None):
     else:
         found = gpgpusim.prepared_rows(args.programs or None, None, execute, keep=False,
                                        prefix='qpel-hardware-', device='nvidia hw',
-                                       bench_size=None if args.no_bench else tuple(args.bench_size))
+                                       bench_size=None if args.no_bench else tuple(args.bench_size),
+                                       extra=not args.no_extra)
     for row, label, error in found:
         if error and error.startswith('skipped'):
             print(f'SKIP {row:34} {label}: {error}')

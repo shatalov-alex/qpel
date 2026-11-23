@@ -52,24 +52,33 @@ temporary storage as scratch buffers sized per tile of the input (IR version 21,
 |---|---|---|
 | `DeviceScan::InclusiveSum`, `ExclusiveSum` on `int`, `unsigned int`, `long long`, `unsigned long long` | `device_scan(element, exclusive)`: `qlib_scan_reduce` (each tile of 1024's total, by a tree in shared memory), `qlib_scan_partials` (one group: the totals' exclusive prefix, 256 at a time), `qlib_scan_tiles` (each tile from its prefix) | 3 |
 | `DeviceRadixSort::SortPairs(keys_in, keys_out, values_in, values_out, n, begin_bit, end_bit)`, keys of those four types, values of those or `float` | `device_radix_sort_pairs(key, value)`: per 8 bits of the key type, `qlib_radix_histogram` (each tile of 256's count of every digit, digit-major), the device scan of the counts, `qlib_radix_scatter` (each key to its digit's start plus its rank among the tile's keys with that digit before it: stable), `qlib_radix_advance` (the pass number, kept in a one-word buffer, goes up) | 6 per pass: 24 for 32-bit keys, 48 for 64-bit |
+| `DeviceSegmentedRadixSort::SortPairs(keys_in, keys_out, values_in, values_out, n, segments, begin_offsets, end_offsets, begin_bit, end_bit)`, the same keys and values, offsets of the four integer types | `device_segmented_radix_sort_pairs(key, value, offset)` (`device_segmented_sort.cuh`): `qlib_segment_init` (each element's place is its index), `qlib_segment_mark` (one thread per segment: its elements' place is its begin), the radix sort of the keys and their indices by the bits, `qlib_gather` of the sorted keys' places, the radix sort of the places (all 32 bits, carrying the indices), `qlib_gather` of the keys and values from the indices | 77 for 64-bit keys, 53 for 32-bit |
+| `DeviceMergeSort::SortPairs(keys, values, n, less)` and `StableSortPairs`, in place, the same keys and values | `device_merge_sort_pairs(key, value)`: the radix sort over every bit of the key type, in place | as the radix sort |
 
 Integer sums wrap and do not depend on their order, and a stable sort has one result, so both are
-CUB's bit for bit. Signed keys have their sign bit flipped before their digits are taken, as CUB
+CUB's bit for bit. So is the segmented sort, in its segments: both of its sorts are stable, the second
+puts every key back in its segment (a segment's elements all have its begin as their place, and the places
+come back in order, the segments not overlapping), in the first sort's order; an element in no segment has
+its own index as its place and returns to it (CUB leaves those undefined). gsplat's one `offsets` array of
+segments + 1 is `begin_offsets = offsets[:-1]`, `end_offsets = offsets[1:]`. NVIDIA's merge sort is not
+stable: with equal keys its values may come in any order, of which the stable sort is one (StableSortPairs
+exactly); the keys are NVIDIA's bit for bit. Signed keys have their sign bit flipped before their digits are taken, as CUB
 does, so negative keys sort first. A pass whose bits start at or after `end_bit` copies its keys in
 order; the passes alternate between the outputs and a scratch pair, and their number is even, so
 the result is in the outputs. Sums are made in the unsigned type of the same width (`qlib_add`), so
 the library's CUDA is defined C++ when the CPU simulator runs it with UBSan.
 
 Not offered: float scans (CUB's add in an order that varies with the timing of its decoupled
-look-back), `SortKeys` without values, descending sorts, segmented and merge sorts
-(gsplat's `DeviceSegmentedRadixSort`, `DeviceMergeSort`), and `DeviceReduce`. Not yet fast: the
+look-back), `SortKeys` without values, descending sorts, merge sorts by other comparisons, and `DeviceReduce`. Not yet fast: the
 scatter finds a key's rank by reading the tile's 256 digits, where CUB uses warp ballots and
-match instructions.
+match instructions; the segmented sort marks a segment's places with one thread.
 
 A port's launch plan names a call as a library stage, `{"library": "cub::DeviceRadixSort::SortPairs",
 "key": "i64", "value": "i32", "bindings": {"keys_in": ..., "keys_out": ..., "values_in": ..., "values_out": ...,
 "begin_bit": ..., "end_bit": ..., "n": shape}}` (or `cub::DeviceScan::InclusiveSum` and `ExclusiveSum` with
-`"input"`, `"element"` and bindings `in`, `out`, `n`); `library.expand(source, plan)` appends the call's kernels
+`"input"`, `"element"` and bindings `in`, `out`, `n`; `cub::DeviceSegmentedRadixSort::SortPairs` with `"offset"`
+as well and bindings `begin_offsets`, `end_offsets` and `segments`, a shape, besides the radix sort's;
+`cub::DeviceMergeSort::SortPairs` or `StableSortPairs` with `"compare": "less"` and bindings `keys`, `values`, `n`); `library.expand(source, plan)` appends the call's kernels
 to the source (one `__global__` wrapper per stage, named after the stage's prefix, so several calls of
 different types share a source) and puts its stages and scratch buffers in the plan. The original then runs
 with the same library kernels on the CPU simulator, as qpel's CUB subset stands in for CUB's block

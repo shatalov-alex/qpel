@@ -237,12 +237,14 @@ def rows(names=None, gpu=None, config=CONFIG, functional=True, keep=False):
 
 
 def prepared_rows(names, gpu, execute, keep=False, prefix='qpel-nvidia-', device='nvidia', skip=None,
-                  bench_size=None):
+                  bench_size=None, extra=False):
     """Write a CUDA host program and its cases for every original (GpuProgram), call
     execute(root) to compile and run them all, then compare each case with its reference.
     Program folders are root/s*/p_*/ (main.cu, nvcc.args), cases their c*/ subfolders.
     With bench_size, root/bench.json also lists every CUDA original and its qpel translation
-    for differential/bench_cuda.py, which times both at that size on the GPU machine."""
+    for differential/bench_cuda.py, which times both at that size on the GPU machine.
+    With extra, the rows of differential/extra_rows.py (qpel's library pipelines against NVIDIA's CUB, the
+    gsplat pilots) run too, under root/l*/: on real NVIDIA hardware, where CUB runs right at every size."""
     if gpu is None:
         try:
             from . import metal
@@ -299,11 +301,17 @@ def prepared_rows(names, gpu, execute, keep=False, prefix='qpel-nvidia-', device
                 yield f'{device}: {dialect} -> qpel', path.name, str(error)
         if benchmarks:
             (root/'bench.json').write_text(json.dumps(benchmarks))
-        if pending:
+        others = []
+        if extra:
+            from . import extra_rows
+            others = extra_rows.prepare(root, device, None if not names else set(names))
+        if pending or others:
             execute(root)
         for row, label, p, program, case, folder, expected in pending:
             actual, error = program.outcome(folder, case)
             yield row, label, error or p.compare(expected, actual, case)
+        for row, label, check in others:
+            yield row, label, check()
     finally:
         if keep:
             print(f'kept {root}')
