@@ -2196,6 +2196,15 @@ class Importer(GlmReader):
             if core.get('kind') == 'BinaryOperator' and core['opcode'] == '*':
                 a, b = (product(x) for x in core['inner'])
                 return a + b if a is not None and b is not None else None
+            if core.get('kind') == 'ConditionalOperator':
+                # `(packed ? gaussian_count : B * C * gaussian_count) * D` (gsplat's spherical harmonics): the caller
+                # gives whichever count applies; the kernel still compares with its own
+                test = peel(core['inner'][0])
+                a, b = (product(x) for x in core['inner'][1:])
+                if a is None or b is None:
+                    return None
+                spelled = decl_name(test) if test.get('kind') == 'DeclRefExpr' else 'condition'
+                return [f'({spelled} ? {" * ".join(a)} : {" * ".join(b)})']
             return None
         found = set()
         for node in walk(body):
