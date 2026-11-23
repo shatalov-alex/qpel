@@ -12,7 +12,7 @@ from qpel_ir import validate, Lowering
 from build_backends import build
 
 
-VERSION = '0.5.0'  # the pip package's version (packaging/build_wheel.py reads it)
+VERSION = '0.7.0'  # the pip package's version (packaging/build_wheel.py reads it)
 
 def save(path, value):
     path.write_text(json.dumps(value, indent=2) + '\n')

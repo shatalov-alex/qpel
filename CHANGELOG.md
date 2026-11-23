@@ -4,7 +4,10 @@ Notable changes to qpel, by milestone. Dates are when the milestone was reached 
 The IR has its own version (currently 23), recorded in every program and launch plan;
 older programs keep building.
 
-## [Unreleased] — Phase 7 (in progress)
+## [0.7.0] — 2026-11-23
+
+The first release on PyPI (`pip install qpel`). It contains Phases 3–6 and the Phase 7 work so far.
+Phase 7 continues after this release.
 
 ### Added
 - **Device-wide CUB as qpel pipelines** (LIBRARIES.md): `DeviceScan::InclusiveSum`/`ExclusiveSum`,
@@ -25,6 +28,11 @@ older programs keep building.
   conditionals of arguments, enum arguments.
 - `differential/hardware.py` runs the library pipelines and the gsplat pilots on the T4 as well
   (`differential/extra_rows.py`).
+
+### Fixed
+- The pip package: `qpel_opt` and the importer's helper modules (`facades`, `glm`, `records`, ...) were
+  missing from the wheel since they were added; `packaging/build_wheel.py` now fails when a packaged
+  module imports a repository module the package lacks.
 
 ## Phase 6 — 2026-11-22
 

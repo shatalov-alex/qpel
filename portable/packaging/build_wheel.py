@@ -30,19 +30,22 @@ PORTABLE = HERE.parent
 ROOT = PORTABLE.parent
 VERSION = re.search(r"^VERSION = '([^']+)'", (PORTABLE/'qpel.py').read_text(), re.M).group(1)
 
-MODULES = ['qpel_bounds', 'qpel_ir', 'qpel_pipeline', 'qpel_schema', 'qpel_text', 'qpel_types', 'qpel_uniform',
-           'build_backends', 'generate_cuda_host', 'generate_metal_host', 'qpel_mcp']
-FRONTENDS = ['__init__', 'c_import', 'clang_ast', 'torch_op']  # roundtrip and corpus need the repository's corpus
+MODULES = ['qpel_bounds', 'qpel_ir', 'qpel_opt', 'qpel_pipeline', 'qpel_schema', 'qpel_text', 'qpel_types',
+           'qpel_uniform', 'build_backends', 'generate_cuda_host', 'generate_metal_host', 'qpel_mcp']
+FRONTENDS = ['__init__', 'c_import', 'clang_ast', 'demote', 'facades', 'functors', 'glm', 'records', 'statics',
+             'torch_op', 'views']  # roundtrip and corpus need the repository's corpus
 DIFFERENTIAL = ['__init__', 'cases', 'compare', 'metal', 'metal_cpu', 'metal_text', 'simulate', 'verify']  # what `qpel verify` runs
 FLAT = '|'.join(MODULES)
+# every top-level module of the repository: one that a packaged module imports but MODULES lacks is left behind
+TOP = '|'.join(sorted(path.stem for path in PORTABLE.glob('*.py') if path.stem != 'qpel'))
 IMPORTS = [
     (re.compile(rf'^(\s*)from ({FLAT}) import ', re.M), r'\1from qpel.\2 import '),
-    (re.compile(rf'^(\s*)import ({FLAT})$', re.M), r'\1from qpel import \2'),
+    (re.compile(rf'^(\s*)import ({FLAT})(\s*#.*)?$', re.M), r'\1import qpel.\2 as \2\3'),
     (re.compile(r'^(\s*)from frontends(\.\w+)? import ', re.M), r'\1from qpel.frontends\2 import '),
     (re.compile(r'^(\s*)from differential(\.\w+)? import ', re.M), r'\1from qpel.differential\2 import '),
     (re.compile(r'^(\s*)from qpel import ', re.M), r'\1from qpel.cli import '),
 ]
-LEFT_BEHIND = re.compile(rf'^\s*(from|import) ({FLAT}|frontends|qpel_test_support|differential|fuzz)\b', re.M)
+LEFT_BEHIND = re.compile(rf'^\s*(from|import) ({TOP}|frontends|qpel_test_support|differential|fuzz)\b', re.M)
 LEFT_BEHIND_RELATIVE = re.compile(r'^\s*from \.(matrix|roundtrip|gpgpusim|hardware|bench\w*) import', re.M)
 
 PYPROJECT = f'''[build-system]
@@ -59,11 +62,25 @@ license-files = ["LICENSE", "NOTICE", "TRADEMARKS.md"]
 authors = [{{name = "Alex Shatalov"}}]
 requires-python = ">=3.10"
 dependencies = []
+keywords = ["cuda", "metal", "gpu", "kernels", "compiler", "translation", "apple-silicon", "triton", "cub"]
 classifiers = [
     "Development Status :: 3 - Alpha",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Compilers",
 ]
+
+[project.urls]
+Homepage = "https://github.com/shatalov-alex/qpel"
+Source = "https://github.com/shatalov-alex/qpel"
+Issues = "https://github.com/shatalov-alex/qpel/issues"
+Changelog = "https://github.com/shatalov-alex/qpel/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 mps = ["torch>=2.6", "numpy>=2.0"]
@@ -82,7 +99,9 @@ include-package-data = true
 "qpel.differential" = ["include/**/*"]
 '''
 
-README = '''# qpel
+README = '''<p align="center"><img src="https://raw.githubusercontent.com/shatalov-alex/qpel/main/assets/qpel-icon-512.png" width="128" alt="qpel"></p>
+
+# qpel
 
 qpel is a small portable kernel language between CUDA and Apple Metal: CUDA or Metal
 kernels import to qpel, and qpel builds both CUDA and Metal again, with documented numerics.
@@ -99,15 +118,22 @@ qpel mcp                                         # verify and translate as MCP t
 ```
 
 Importing CUDA needs clang (Xcode's or LLVM's); importing Metal needs Xcode's Metal toolchain.
+Source, documentation and changelog: https://github.com/shatalov-alex/qpel.
 This is a development release. The name qpel is a trademark (TRADEMARKS.md); the code is
 Apache-2.0.
 '''
+
+
+TOP_LEVEL_RELATIVE = re.compile(r'^from \.(\w*) import (\w+)', re.M)  # at module level: needed to import at all
 
 
 def rewrite(text, name):
     for pattern, replacement in IMPORTS:
         text = pattern.sub(replacement, text)
     left = LEFT_BEHIND.findall(text) + LEFT_BEHIND_RELATIVE.findall(text)
+    packaged = DIFFERENTIAL if name.startswith('differential/') else FRONTENDS
+    left += [module or member for module, member in TOP_LEVEL_RELATIVE.findall(text)
+             if (module or member) not in packaged]
     if left:
         raise SystemExit(f'{name}: imports outside the package remain: {left}')
     return text
