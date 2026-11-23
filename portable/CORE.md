@@ -176,6 +176,10 @@ Pipelines (any IR version, since 2026-11-22): a buffer resource that a pipeline 
 
 `math.atan2(y, x)` (`Math {function: atan2}`, two arguments): the angle of (x, y) in [-pi, pi], within `MATH_ULPS` (NUMERICS.md, math functions): CUDA `atan2f`, Metal `metal::precise::atan2`. CUDA's `atan2f` and `atan2` on floats import as it (gsplat's fisheye projection, through `glm::atan(y, x)`). examples/math_atan2.qpel, tests/test_math_atan2.py. A program with `math.atan2` is version 22.
 
+## IR version 23
+
+`math.rsqrt(x)` (`Math {function: rsqrt}`, one argument): 1 / sqrt(x) within `MATH_ULPS` (NUMERICS.md, math functions): CUDA `rsqrtf`, Metal `metal::precise::rsqrt`. C's special cases hold exactly: +-0 gives +-infinity, +infinity +0, a negative x or NaN NaN. CUDA's `rsqrtf` and Metal's `rsqrt` on floats import as it (gsplat's spherical harmonics normalise the view direction with it). examples/math_rsqrt.qpel, tests/test_math_rsqrt.py. A program with `math.rsqrt` is version 23.
+
 ## Optimisation passes
 
 `qpel_opt.py` holds passes that read a validated program and tell the lowering how to emit it faster, with the same results; they never change the IR, whose meaning stays the portable one. Kept apart from the portability lowering (ROADMAP, Phase 6):

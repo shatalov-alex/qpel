@@ -1,0 +1,18 @@
+// math.rsqrt (IR version 23): 1 / sqrt(x), within MATH_ULPS, with C's special cases (+-0: +-infinity,
+// +infinity: +0, a negative x or NaN: NaN). CUDA documents rsqrtf within 2 ulp, Metal's precise::rsqrt is
+// measured in tests/test_math_rsqrt.py (NUMERICS.md, math functions).
+module math_rsqrt {
+  kernel reciprocal_root(x: buffer<f32, read> @0, z: buffer<f32, write> @1, n: shape3 @2) grid1d {
+    let i: u32 = qpel.index;
+    if (i >= n.x) {
+      return;
+    }
+    z[i] = math.rsqrt(x[i]);
+  }
+}
+pipeline math_rsqrt_launch {
+  shape n;
+  input x: buffer<f32, read> in n;
+  output z: buffer<f32, write> in n;
+  dispatch reciprocal_root over n block (64) (x = x, z = z, n = n);
+}

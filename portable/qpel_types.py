@@ -68,11 +68,12 @@ COMPARISONS = {'==', '!=', '<', '>', '<=', '>='}
 # the others are within MATH_ULPS of the exact result (NUMERICS.md, math functions).
 MATH = {'fabs': 1, 'fmin': 2, 'fmax': 2, 'floor': 1, 'ceil': 1, 'trunc': 1, 'round': 1, 'copysign': 2, 'sqrt': 1,
         'exp': 1, 'exp2': 1, 'log': 1, 'log2': 1, 'sin': 1, 'cos': 1, 'tanh': 1,
-        'erf': 1, 'expm1': 1, 'log1p': 1, 'pow': 2, 'fast_exp': 1, 'atan2': 2}  # (erf, expm1, log1p: IR version 8; pow: 17; fast_exp: 20; atan2: 22)
+        'erf': 1, 'expm1': 1, 'log1p': 1, 'pow': 2, 'fast_exp': 1, 'atan2': 2, 'rsqrt': 1}  # (erf, expm1, log1p: IR version 8; pow: 17; fast_exp: 20; atan2: 22; rsqrt: 23)
 V8_MATH = {'erf', 'expm1', 'log1p'}
 V17_MATH = {'pow'}
 V20_MATH = {'fast_exp'}
 V22_MATH = {'atan2'}
+V23_MATH = {'rsqrt'}
 EXACT_MATH = {'fabs', 'fmin', 'fmax', 'floor', 'ceil', 'trunc', 'round', 'copysign', 'sqrt'}
 MATH_ULPS = 4
 # A bounded function's own bound where it is wider than MATH_ULPS: CUDA documents powf within 9 ulp

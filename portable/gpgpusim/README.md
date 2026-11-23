@@ -184,3 +184,8 @@ or races, is out of scope too: qpel's kernels have none. The second half of the 
 ran the same programs, compiled to SASS, on a real NVIDIA GPU (Tesla T4, 2026-11-12):
 every case and `selftest.cu` pass there too (`python3 -m differential.hardware`, see
 `../README.md`).
+
+**Open (2026-11-23):** GPGPU-Sim's `rsqrt.approx.f32` of -0 is +infinity; the PTX ISA (and NVIDIA's GPUs) give
+-infinity. Every other value of `examples/math_rsqrt.qpel` is within its bound there, so
+`tests/test_math_rsqrt.py` leaves that one case out of its GPGPU-Sim row (the Apple GPU and the CPU simulator
+compare it).

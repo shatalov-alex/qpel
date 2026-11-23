@@ -298,6 +298,7 @@ inline float qpel_fast_exp(float x) { return metal::fast::exp(x); }
 #define QPEL_MATH_FAST_EXP(x) qpel_fast_exp((x))  // IR version 20: metal::fast::exp, within 3 + floor(2|x|) ulp (measured)
 #define QPEL_MATH_EXP2(x) metal::precise::exp2((x))
 #define QPEL_MATH_ATAN2(y, x) metal::precise::atan2((y), (x))  // IR version 22
+#define QPEL_MATH_RSQRT(x) metal::precise::rsqrt((x))  // IR version 23
 #define QPEL_MATH_LOG(x) metal::precise::log((x))
 #define QPEL_MATH_LOG2(x) metal::precise::log2((x))
 #define QPEL_MATH_SIN(x) metal::precise::sin((x))
