@@ -8,7 +8,7 @@
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776ab.svg">
   <img alt="Targets: CUDA and Metal" src="https://img.shields.io/badge/targets-CUDA%20%7C%20Metal-76b900.svg">
-  <img alt="Status: Phase 3" src="https://img.shields.io/badge/status-phase%203-orange.svg">
+  <img alt="Status: Phase 7" src="https://img.shields.io/badge/status-phase%207-orange.svg">
 </p>
 
 ---
@@ -26,20 +26,35 @@ Metal source ──┘    typed, validated    └──▶ Metal (Apple GPUs)
 
 ## Highlights
 
-- **Real code, unmodified.** 52 llama.cpp kernels (28 CUDA operations, 24 Metal
-  specialisations) and SAM 2's connected-components kernel import as they are, and give the
-  same outputs as the originals on every path.
+- **Real code, unmodified.** 371 of the 2364 kernels in a pinned corpus of real projects
+  (llama.cpp, SAM 2, TRELLIS.2, mamba, pytorch_sparse, mmcv, gsplat, bitsandbytes) import as
+  they are. Whole pipelines run against their originals:
+  - llama.cpp's matrix multiply, `kernel_mul_mm`, for every quantised format, and its
+    mixture-of-experts form, bit for bit on the Apple GPU;
+  - gsplat's 3D Gaussian Splatting forward pass, from projection through spherical harmonics and
+    tile intersection to rasterisation;
+  - mamba's selective scan, and bitsandbytes' quantisation and dequantisation.
 - **Specified numerics.** Integer widths from 8 to 64 bits, `f16`/`bf16` storage and float32
   arithmetic in which every operation is rounded separately. Exact math functions give the
-  same bits on both platforms; transcendentals stay within a stated 4-ulp bound. The rules
-  are in [`NUMERICS.md`](portable/NUMERICS.md).
-- **Checked by execution, not only by compilation.** Every original and every translation
-  runs on a CPU CUDA simulator, on Apple GPUs, and on [GPGPU-Sim](portable/gpgpusim/README.md),
-  a simulated NVIDIA GPU (720 cases), and the same 720 pass on a real NVIDIA Tesla T4.
-  Differential fuzzing keeps comparing all of these.
+  same bits on both platforms; transcendentals stay within stated ulp bounds. The rules are in
+  [`NUMERICS.md`](portable/NUMERICS.md).
+- **Checked by execution, not only by compilation.** Every original and every translation runs
+  on a CPU CUDA simulator, on Apple GPUs, on [GPGPU-Sim](portable/gpgpusim/README.md) (a
+  simulated NVIDIA GPU) and on a real NVIDIA Tesla T4. Differential fuzzing keeps comparing all
+  of them.
+- **Performance kept.** On a T4, qpel's CUDA takes x1.00 of the original's time (geometric
+  mean over 83 programs, [benchmarks](portable/README.md)). Matrix tiles map WMMA and `mma.sync` to Metal's `simdgroup_matrix`.
+- **Beyond single kernels.** Device-wide CUB (scans and radix, segmented and merge sorts) is
+  provided as qpel pipelines, checked bit for bit against NVIDIA's CUB. A Triton frontend runs 49
+  Triton kernels, Liger-Kernel's among them, on Metal.
+- **`qpel verify` for any port.** It checks a hand-written or AI-generated port against its
+  original, and `qpel mcp` serves the check to AI porting agents.
 - **Platform bugs found and handled.** These include an Apple Metal compiler miscompilation,
-  sign-of-zero and subnormal differences, and eleven GPGPU-Sim bugs, submitted upstream as
-  [accel-sim/gpgpu-sim_distribution#154](https://github.com/accel-sim/gpgpu-sim_distribution/pull/154).
+  sign-of-zero and subnormal differences, and GPGPU-Sim bugs fixed and submitted upstream
+  ([#154](https://github.com/accel-sim/gpgpu-sim_distribution/pull/154),
+  [#156](https://github.com/accel-sim/gpgpu-sim_distribution/pull/156),
+  [#159](https://github.com/accel-sim/gpgpu-sim_distribution/pull/159),
+  [#160](https://github.com/accel-sim/gpgpu-sim_distribution/pull/160)).
 - **Text syntax.** Programs can be written, printed and reviewed as `.qpel` text
   ([`TEXT.md`](portable/TEXT.md)). JetBrains MPS remains an optional structured editor that
   exports the same IR.
@@ -83,7 +98,8 @@ module saxpy {
 
 ## Status
 
-qpel is in active development. Phases 0 to 6 of the [roadmap](portable/ROADMAP.md) are complete (Phase 4 except the public release); Phase 7 is in progress.
+qpel is in active development. Phases 0 to 6 of the [roadmap](portable/ROADMAP.md) are complete; Phase 7 is in progress. The source is public since 2026-11-23; packages on PyPI
+will follow.
 
 | Phase | Scope | State |
 |---|---|---|
@@ -91,7 +107,7 @@ qpel is in active development. Phases 0 to 6 of the [roadmap](portable/ROADMAP.m
 | 1 | Offline Clang-based CUDA and Metal importers, round-trip matrix | done |
 | 2 | IR v3, real-world corpus (llama.cpp), text syntax, fuzzing, NVIDIA gate | done |
 | 3 | First real port: PyTorch extensions, header stubs, PyTorch op host, benchmarks | done |
-| 4 | `qpel verify`: check any port (hand-written or AI-generated) against its original | done, except the public release |
+| 4 | `qpel verify`: check any port (hand-written or AI-generated) against its original | done; source public 2026-11-23 |
 | 5 | Shared memory, atomics, warp/simdgroup ops, block scans | done |
 | 6 | Matrix tiles and performance | done |
 | 7 | Library mapping (device-wide CUB first), Triton | in progress |
@@ -99,6 +115,15 @@ qpel is in active development. Phases 0 to 6 of the [roadmap](portable/ROADMAP.m
 The corpus coverage report (`python3 -m frontends.corpus`) currently counts 371 of 2364
 kernels (llama.cpp, SAM 2, TRELLIS.2 and the extensions corpus: mamba, pytorch_sparse, mmcv, gsplat,
 bitsandbytes) whose import validates.
+
+### Limitations
+
+qpel is pre-1.0 and maintained by one person. Most kernels in the corpus do not import yet; the
+report (`python3 -m frontends.corpus --details`) lists every blocker. Host code is translated
+only through the PyTorch op host and the generated Python hosts: there is no host-API IR
+(streams, events, `cudaMalloc`) yet. Float atomics give results that differ from run to run and
+are checked within a tolerance. Apple M5's matrix tiles are untested. Hosted CI is not enabled;
+`check_all.py` runs every check locally.
 
 ## Repository layout
 
@@ -109,7 +134,8 @@ bitsandbytes) whose import validates.
 | `portable/differential/` | Behaviour rows: CPU simulator, Apple GPU, GPGPU-Sim runners |
 | `portable/fuzz/` | Differential fuzzer and saved regressions |
 | `portable/gpgpusim/` | GPGPU-Sim Docker image, simulator fixes, self-test |
-| `portable/corpus/` | Pinned third-party sources (llama.cpp, SAM 2) with their licenses |
+| `portable/corpus/` | Pinned, unmodified third-party sources with their licenses (see [NOTICE](NOTICE)) |
+| `portable/frontends/triton/` | Triton frontend (TTIR to qpel) |
 | `languages/`, `.mps/` | JetBrains MPS language (optional authoring frontend) |
 
 ## Testing

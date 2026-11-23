@@ -1,10 +1,54 @@
 # Changelog
 
 Notable changes to qpel, by milestone. Dates are when the milestone was reached on `main`.
-The IR has its own version (currently 7), recorded in every program and launch plan;
+The IR has its own version (currently 23), recorded in every program and launch plan;
 older programs keep building.
 
-## [Unreleased] — Phase 5
+## [Unreleased] — Phase 7 (in progress)
+
+### Added
+- **Device-wide CUB as qpel pipelines** (LIBRARIES.md): `DeviceScan::InclusiveSum`/`ExclusiveSum`,
+  `DeviceRadixSort::SortPairs`, `DeviceSegmentedRadixSort::SortPairs` and `DeviceMergeSort::SortPairs`
+  by less, written as plain CUDA, imported like any source and expanded from library stages of a
+  launch plan. Scratch buffers sized per tile (IR version 21). Integer scans and stable sorts have
+  one result, so they are checked bit for bit against numpy, and against NVIDIA's CUB on GPGPU-Sim
+  and a Tesla T4.
+- **gsplat's forward pass on the Apple GPU:** gsplat's unmodified projection (all three camera
+  models), covariance, spherical harmonics (the K = 16 kernel and the generic ones), tile
+  intersection (count, scan, emit, sort, offsets) and rasterisation, chained as gsplat's host does
+  (tests/test_gsplat_forward.py). Each stage is bit for bit with the original on the CPU simulator.
+- **glm read by running glm's own code** (frontends/glm.py): constructors, operators and functors
+  inlined symbolically, so every scalar is glm's arithmetic in glm's order.
+- **IR versions 22 and 23:** `math.atan2` and `math.rsqrt`, within stated ulp bounds.
+- Importer: constant arrays passed to helpers, wide `reinterpret_cast` copies, variable-template
+  traits, alias templates (`at::opmath_type`), default arguments, grids sized by products and
+  conditionals of arguments, enum arguments.
+- `differential/hardware.py` runs the library pipelines and the gsplat pilots on the T4 as well
+  (`differential/extra_rows.py`).
+
+## Phase 6 — 2026-11-22
+
+### Added
+- **Matrix tiles (IR versions 13 to 15):** `matrix<f32|f16, 8, 8>` held by a subgroup, with fill,
+  load, store (row- and column-major) and multiply-accumulate; arrays of matrices. Metal uses
+  `simdgroup_matrix`, CUDA the `mma.sync` layout (f16 on tensor cores, `m16n8k8`). WMMA fragments
+  and Metal's simdgroup matrices import.
+- **llama.cpp's `kernel_mul_mm` and `kernel_mul_mm_id`, unmodified,** for f32, f16 and all 22
+  quantised formats (IR versions 18 and 19: byte views, local unions, f16/u16 bitcasts, large
+  constant tables), bit for bit with the original on the Apple GPU.
+- **Pilots:** gsplat's rasteriser and bitsandbytes' quantisation and dequantisation, against the
+  originals on the CPU simulator, the Apple GPU, GPGPU-Sim and the T4.
+- **Vectorised loads** (`qpel_opt.py`) and paired f16 multiply chains as one `m16n8k8`.
+- **Benchmarks v1:** on the T4, 83 CUDA originals against qpel's CUDA, x1.00 geometric mean;
+  Metal timings of the pilots.
+- **`fast_exp`** (IR version 20): CUDA's `__expf` kept as itself, with its own bound.
+
+### Found
+- GPGPU-Sim had no `mma.sync`, crashed on f16 WMMA and let a nested PTX register block clobber
+  its function's predicate: fixed in `qpel-mma.patch`, `qpel-wmma.patch` and `qpel-scopes.patch`,
+  the last two submitted upstream (accel-sim PRs #159 and #160).
+
+## Phase 5 — 2026-11-16
 
 ### Added
 - **GPGPU-Sim `ldmatrix`** (`gpgpusim/qpel-ldmatrix.patch`, image `qpel15`, with a self-test check):
