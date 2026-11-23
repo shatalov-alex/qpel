@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="https://pypi.org/project/qpel/"><img alt="PyPI" src="https://img.shields.io/pypi/v/qpel.svg"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776ab.svg">
   <img alt="Targets: CUDA and Metal" src="https://img.shields.io/badge/targets-CUDA%20%7C%20Metal-76b900.svg">
@@ -73,6 +74,16 @@ Requires Python 3.10+. The compiler itself uses only the standard library. Impor
 needs `clang`; the Metal importer also needs Xcode's `metal`. C++23 sources (a few of gsplat's)
 need LLVM's clang 20 or later (`brew install llvm`, or `QPEL_LLVM_CLANG`).
 
+From PyPI, as a `qpel` command:
+
+```sh
+pip install qpel                 # the compiler; "qpel[mps]" adds PyTorch for the Metal hosts, "qpel[verify]" NumPy
+qpel build program.qpel --out build/
+qpel translate kernels.cu --out translated/
+```
+
+From the repository, with the tests, the corpus and the differential tools:
+
 ```sh
 git clone https://github.com/shatalov-alex/qpel.git && cd qpel/portable
 
@@ -106,8 +117,8 @@ module saxpy {
 
 ## Status
 
-qpel is in active development. Phases 0 to 6 of the [roadmap](portable/ROADMAP.md) are complete; Phase 7 is in progress. The source is public since 2026-11-23; packages on PyPI
-will follow.
+qpel is in active development. Phases 0 to 6 of the [roadmap](portable/ROADMAP.md) are complete; Phase 7 is in progress. The source is public since 2026-11-23, and
+[0.7.0](https://github.com/shatalov-alex/qpel/releases/tag/v0.7.0) is on [PyPI](https://pypi.org/project/qpel/).
 
 | Phase | Scope | State |
 |---|---|---|

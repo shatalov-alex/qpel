@@ -10,7 +10,7 @@ qpel is a neutral intermediate language between NVIDIA CUDA and Apple Metal: ker
 | 1 | Offline Clang-based CUDA and Metal importers, round-trip matrix | done 2026-11-11 |
 | 2 | IR v3, real-world corpus (llama.cpp), text syntax, fuzzing, NVIDIA gate | done 2026-11-12 (GPGPU-Sim and a Tesla T4) |
 | 3 | First real port: PyTorch extensions (TRELLIS.2 pilot), header stubs, PyTorch op host, benchmarks v0 | done 2026-11-14 (Apple GPU, CPU simulator, Tesla T4) |
-| 4 | `qpel verify` for any port; public release | verify done 2026-11-14 (exit criterion met locally); repository public 2026-11-23 (the PyPI release and the upstream offer of the Phase 3 port still to come) |
+| 4 | `qpel verify` for any port; public release | verify done 2026-11-14 (exit criterion met locally); repository public 2026-11-23; 0.7.0 on PyPI 2026-11-23 (the upstream offer of the Phase 3 port still to come) |
 | 5 | Breadth: shared memory, atomics, warp/simdgroup ops, block scans | done 2026-11-16 (pilots: mamba, pytorch_sparse, mmcv) |
 | 6 | Performance: matrix tiles, benchmarks | done 2026-11-22 (pilots: gsplat, bitsandbytes; 83 programs x1.00 on a T4) |
 | 7 | Libraries, Triton | in progress (Triton frontend pilot since 2026-11-15; device-wide CUB since 2026-11-22) |
