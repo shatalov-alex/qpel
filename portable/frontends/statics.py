@@ -142,6 +142,22 @@ def callee_name(call):
     return target.get('referencedDecl', {}).get('name') if target.get('kind') == 'DeclRefExpr' else None
 
 
+def enum_names(unit):
+    """{enum name: its name qualified by its namespaces}."""
+    found = {}
+
+    def visit(node, scope):
+        for child in node.get('inner', ()):
+            if child.get('kind') == 'EnumDecl' and child.get('name'):
+                found.setdefault(child['name'], scope + child['name'])
+            elif child.get('kind') == 'NamespaceDecl':
+                visit(child, scope + (child.get('name') or '') + '::' if child.get('name') else scope)
+            elif child.get('kind') in ('LinkageSpecDecl',):
+                visit(child, scope)
+    visit(unit, '')
+    return found
+
+
 def enum_values(unit):
     """{clang id of an enumerator: its value} and {enum name: underlying type} of the unit's enums."""
     values, types = {}, {}
@@ -179,6 +195,7 @@ def read_enums(unit):
     if unit.get('_qpel_enums'):
         return
     values, types = enum_values(unit)
+    qualified = enum_names(unit)
     for node in walk(unit):
         if node.get('kind') == 'DeclRefExpr' and node.get('referencedDecl', {}).get('id') in values:
             value = values[node['referencedDecl']['id']]
@@ -191,6 +208,13 @@ def read_enums(unit):
             spelled = t.get('qualType', '').replace('const ', '').strip()
             if spelled in types:
                 t['desugaredQualType'] = types[spelled]
+                t['_qpel_enum'] = qualified.get(spelled, spelled)
+        elif isinstance(t, dict):  # `const gsplat::CameraModelType`: the enum, spelled with its namespace
+            full = t['desugaredQualType'].replace('const ', '').strip()
+            spelled = full.rpartition('::')[2]
+            if spelled in types and full.rpartition('::')[0].replace('::', '').isidentifier():
+                t['desugaredQualType'] = types[spelled]
+                t['_qpel_enum'] = full  # (what a call of the original passes: static_cast<gsplat::CameraModelType>(v))
     unit['_qpel_enums'] = True
 
 

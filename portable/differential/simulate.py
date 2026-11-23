@@ -360,6 +360,8 @@ class Program:
                     args.append(self.word(f'{params[a["parameter"]]}.{a["axis"]}'))
                 elif a['source'] == 'volume':
                     args.append(resource_arg(params[a['parameter']], 'volume'))
+                elif a['source'] == 'parameter' and a.get('enum'):  # gsplat's CameraModelType camera_model
+                    args.append(f'static_cast<{a["enum"]}>({resource_arg(params[a["parameter"]])})')
                 elif a['source'] == 'parameter':
                     args.append(resource_arg(params[a['parameter']]))
                 elif a['source'] == 'presence':  # qpel's Metal presence flag of an optional buffer

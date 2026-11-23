@@ -1,0 +1,290 @@
+{
+ "schema": 2,
+ "module": "gsplat_projection_ewa_fwd",
+ "resources": [
+  {
+   "name": "gaussian_offset",
+   "kind": "value",
+   "type": "i64",
+   "extent": null
+  },
+  {
+   "name": "gaussian_count",
+   "kind": "value",
+   "type": "i64",
+   "extent": null
+  },
+  {
+   "name": "B",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "C",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "N",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "means",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "gaussians",
+   "scale": 3
+  },
+  {
+   "name": "covars",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "gaussians",
+   "scale": 6,
+   "optional": true
+  },
+  {
+   "name": "quats",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "gaussians",
+   "scale": 4
+  },
+  {
+   "name": "scales",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "gaussians",
+   "scale": 3
+  },
+  {
+   "name": "opacities",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "gaussians",
+   "optional": true
+  },
+  {
+   "name": "viewmats",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "cameras",
+   "scale": 16
+  },
+  {
+   "name": "Ks",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "cameras",
+   "scale": 9
+  },
+  {
+   "name": "image_width",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "image_height",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "eps2d",
+   "kind": "value",
+   "type": "f32",
+   "extent": null
+  },
+  {
+   "name": "near_plane",
+   "kind": "value",
+   "type": "f32",
+   "extent": null
+  },
+  {
+   "name": "far_plane",
+   "kind": "value",
+   "type": "f32",
+   "extent": null
+  },
+  {
+   "name": "radius_clip",
+   "kind": "value",
+   "type": "f32",
+   "extent": null
+  },
+  {
+   "name": "camera_model",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "radii",
+   "kind": "output",
+   "type": "buffer<i32, write>",
+   "extent": "elements",
+   "scale": 2
+  },
+  {
+   "name": "means2d",
+   "kind": "output",
+   "type": "buffer<f32, write>",
+   "extent": "elements",
+   "scale": 2
+  },
+  {
+   "name": "depths",
+   "kind": "output",
+   "type": "buffer<f32, write>",
+   "extent": "elements"
+  },
+  {
+   "name": "conics",
+   "kind": "output",
+   "type": "buffer<f32, write>",
+   "extent": "elements",
+   "scale": 3
+  },
+  {
+   "name": "compensations",
+   "kind": "output",
+   "type": "buffer<f32, write>",
+   "extent": "elements",
+   "optional": true
+  },
+  {
+   "name": "elements",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "gaussians",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "cameras",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "projection_ewa_3dgs_fused_fwd_kernel",
+   "grid": "elements",
+   "blockSize": 256,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "gaussian_offset",
+     "resource": "gaussian_offset"
+    },
+    {
+     "parameter": "gaussian_count",
+     "resource": "gaussian_count"
+    },
+    {
+     "parameter": "B",
+     "resource": "B"
+    },
+    {
+     "parameter": "C",
+     "resource": "C"
+    },
+    {
+     "parameter": "N",
+     "resource": "N"
+    },
+    {
+     "parameter": "means",
+     "resource": "means"
+    },
+    {
+     "parameter": "covars",
+     "resource": "covars"
+    },
+    {
+     "parameter": "quats",
+     "resource": "quats"
+    },
+    {
+     "parameter": "scales",
+     "resource": "scales"
+    },
+    {
+     "parameter": "opacities",
+     "resource": "opacities"
+    },
+    {
+     "parameter": "viewmats",
+     "resource": "viewmats"
+    },
+    {
+     "parameter": "Ks",
+     "resource": "Ks"
+    },
+    {
+     "parameter": "image_width",
+     "resource": "image_width"
+    },
+    {
+     "parameter": "image_height",
+     "resource": "image_height"
+    },
+    {
+     "parameter": "eps2d",
+     "resource": "eps2d"
+    },
+    {
+     "parameter": "near_plane",
+     "resource": "near_plane"
+    },
+    {
+     "parameter": "far_plane",
+     "resource": "far_plane"
+    },
+    {
+     "parameter": "radius_clip",
+     "resource": "radius_clip"
+    },
+    {
+     "parameter": "camera_model",
+     "resource": "camera_model"
+    },
+    {
+     "parameter": "radii",
+     "resource": "radii"
+    },
+    {
+     "parameter": "means2d",
+     "resource": "means2d"
+    },
+    {
+     "parameter": "depths",
+     "resource": "depths"
+    },
+    {
+     "parameter": "conics",
+     "resource": "conics"
+    },
+    {
+     "parameter": "compensations",
+     "resource": "compensations"
+    },
+    {
+     "parameter": "elements",
+     "resource": "elements"
+    }
+   ]
+  }
+ ]
+}

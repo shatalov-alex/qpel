@@ -722,7 +722,7 @@ TO_F16 = {'__float2half_rn', '__float2half'}
 TO_BF16 = {'__float2bfloat16_rn', '__float2bfloat16'}
 # C, CUDA and Metal spellings of qpel's math functions (on float arguments).
 MATH_CALLS = {name: f for f in ('fabs', 'fmin', 'fmax', 'floor', 'ceil', 'trunc', 'round', 'copysign', 'sqrt',
-                                'exp', 'exp2', 'log', 'log2', 'sin', 'cos', 'tanh', 'erf', 'expm1', 'log1p', 'pow')
+                                'exp', 'exp2', 'log', 'log2', 'sin', 'cos', 'tanh', 'erf', 'expm1', 'log1p', 'pow', 'atan2')
               for name in (f, f + 'f')}
 MATH_CALLS.update({'abs': 'fabs', '__fsqrt_rn': 'sqrt'})
 # CUDA's fast intrinsics, documented less accurate than qpel's bounded functions (__logf, __sinf, __cosf:
@@ -789,7 +789,10 @@ class Graph:
 
 # --- importer --------------------------------------------------------------
 
-class Importer:
+from .glm import GlmReader, glm_type, is_glm_decl, node_glm  # noqa: E402 (glm.py reads the helpers above)
+
+
+class Importer(GlmReader):
     def __init__(self, unit, source, path, dialect, module, survey=False):
         self.dialect = DIALECT[dialect]
         VECTOR_ALIASES.clear()
@@ -843,6 +846,7 @@ class Importer:
         self.path = path
         self.module = module
         self.graph = Graph()
+        self.glm_setup(unit)  # glm's own code, inlined where the source calls it (glm.py)
         self.functions = {}  # source name -> (decl, IR id, is kernel)
         self.unsigned = 0  # > 0 while reading promoted unsigned chars as unsigned
         self.domains = {}  # kernel name -> 'grid1d' | 'grid3d'
@@ -877,6 +881,8 @@ class Importer:
             elif node.get('kind') == 'FunctionDecl' and VECTOR_TYPE.fullmatch(node.get('name', '')[5:]) and \
                     node.get('name', '').startswith('make_'):
                 continue  # CUDA's make_int4 and friends: vector locals read them as element lists
+            elif is_glm_decl(node):
+                continue  # glm's headers: their code is inlined where the source calls it (glm.py)
             elif not node.get('isImplicit') and contains_any(node, self.reachable):
                 self.header = True
                 decls.extend(self.attempt(lambda: self.top_level(node), []))
@@ -1221,6 +1227,14 @@ class Importer:
         return shared, device
 
     def parameter_type(self, decl, i, p, find, atomic_groups):
+        found = glm_type(p.get('type'))
+        if found is not None and (found.kind == 'mat' or found.ref == '*'):
+            if self.dialect.is_kernel(decl):
+                raise Unsupported(p, 'parameter-type', f'glm kernel arguments ({p["type"]["qualType"]}) are not in qpel')
+            if found.ref == '*':  # mat3 *covar: the caller's object, and whether there is one (glm.py)
+                self.glm_pointer_params.setdefault(p['id'], None)
+            self.glm_decl_types[p['id']] = found.value()
+            return found.term
         t = describe(view_spelling(p))
         slot = (decl['name'], i)
         if t[0] == 'pointer' and not self.dialect.is_kernel(decl) and slot in getattr(self, 'shared_slots', ()) and \
@@ -1495,6 +1509,7 @@ class Importer:
         self.dynamic_shared = []  # threadgroup parameters made shared memory (threadgroup_parameter)
         self.planes = {}  # threadgroup char* parameters read as several types: {param id: {type: (array, size)}}
         count = self.attempt(lambda: self.element_count(decl, types)) if kernel and not self.grid3d and not self.groups else None
+        computed = self.computed_count(decl, types) if kernel and count is None and not self.grid3d and not self.groups else None
         sizes = self.launch_sizes(decl, types) if count is not None else {}
         sized = {p['id']: p for p in params_of(decl) if p['name'] in sizes and p['id'] != count['id']}
         for i, p in enumerate(params_of(decl)):
@@ -1533,8 +1548,8 @@ class Importer:
             attrs = {'name': self.safe_name(p['name'])}
             if kernel and p.get('_qpel_field_of'):
                 self.struct_fields.add(attrs['name'])  # (statics.flatten_argument_structs)
-            if is_array(kind):
-                attrs['reference'] = True  # an array by reference (IR version 10), const or not
+            if is_array(kind) or p['id'] in self.glm_pointer_params:
+                attrs['reference'] = True  # an array by reference (IR version 10), const or not; a pointer to a glm object
             elif is_reference(p['type']['qualType']) and not str(kind).startswith('shared<'):  # (a TempStorage &: a view)
                 if kernel:
                     self.attempt(lambda: self.reject(Unsupported(p, 'reference', 'kernel arguments cannot be references')))
@@ -1575,6 +1590,23 @@ class Importer:
                                         if q['id'] in self.helper_presence) + ' against null: it takes '
                                         + ', '.join(self.graph.nodes[f]['attributes']['name'] for f in self.helper_presence.values())
                                         + ' (1 when its caller passed a buffer)')
+        self.glm_result = None
+        if not kernel:
+            if any(p['id'] in self.glm_pointer_params for p in params_of(decl)) and self.helper_presence:
+                self.attempt(lambda: self.reject(Unsupported(decl, 'glm', 'a helper taking both optional buffers and '
+                                                                        'pointers to glm objects is not in qpel yet')))
+            for p in params_of(decl):  # mat3 *covar: <name>_present, 1 when the caller passed an object (glm.py)
+                if p['id'] in self.glm_pointer_params and self.scope.get(p['id'], ('',))[0] == 'param':
+                    flag = self.graph.add('Parameter', {'name': self.unique_name(self.safe_name(p['name']) + '_present')},
+                                          {'type': self.type_node('u32')})
+                    self.glm_pointer_params[p['id']] = flag
+                    params.append(flag)
+            produced = glm_type({'qualType': decl['type']['qualType'].split('(')[0].strip()})
+            if produced is not None and produced.kind == 'mat':  # a glm matrix result: written to the caller's array
+                self.glm_result = self.graph.add('Parameter', {'name': self.unique_name('result'), 'reference': True},
+                                                 {'type': self.type_node(produced.value().term)})
+                params.append(self.glm_result)
+                self.adaptations.append(f'{name} gives a glm matrix: it writes it to its last parameter, result')
         self.hidden_params = {}
         if not kernel:
             for role, axis in self.builtin_reads(name):
@@ -1586,6 +1618,18 @@ class Importer:
                 self.adaptations.append(f'{name} reads thread builtins, which a qpel helper is passed: it takes '
                                         + ', '.join(self.graph.nodes[p]['attributes']['name'] for p in
                                                     self.hidden_params.values()) + ' as parameters')
+        if computed is not None and shape_param is None:
+            # `count = B * C * gaussian_count; if (idx >= count) return;` (gsplat's projections): the grid is a shape
+            # of that many elements the caller gives; the kernel still compares with its own count
+            grid = self.graph.add('Parameter', {'name': self.unique_name('elements'), 'binding': position, 'isBuffer': True},
+                                  {'type': self.type_node('shape3')})
+            params.append(grid)
+            position += 1
+            shape_param = True
+            self.grid_params[name] = self.graph.nodes[grid]['attributes']['name']
+            local, factors = computed
+            self.adaptations.append(f'{name}: the thread index is compared with {local} = {factors}; qpel launches it over '
+                                    f'a shape {self.grid_params[name]} of ({factors}, 1, 1) elements, which its caller gives')
         if kernel and self.groups:
             shape_param = True  # sizes stay ordinary arguments; the plan sizes the buffers
         if kernel and self.grid3d and shape_param is None and not any(
@@ -1615,6 +1659,8 @@ class Importer:
             self.kernel_params[name] = {self.graph.nodes[p]['attributes']['name']: p for p in params}
             self.arguments[name] = self.argument_map(decl)
         result = describe(decl['type']['qualType'].split('(')[0])
+        if self.glm_result is not None:
+            result = ('scalar', 'void')
         if result[0] != 'scalar' or result[1] not in SCALAR_TERMS | {'void'} and not (is_vector(result[1]) and not kernel):
             self.attempt(lambda: self.reject(Unsupported(decl, 'result-type', 'unsupported result type ' + decl['type']['qualType'])))
             result = ('scalar', 'void')
@@ -1682,6 +1728,8 @@ class Importer:
                 continue
             entry = self.scope.get(p['id'])
             item = {'name': p['name'], 'binding': self.dialect.binding(p, position), 'type': describe(p['type']['qualType'])[-1]}
+            if p['type'].get('_qpel_enum'):
+                item['enum'] = p['type']['_qpel_enum']  # an enum argument: the original is called with that type
             if p.get('_qpel_values_of'):  # the scalar fields of a struct argument, as one struct value
                 whole = structs.get(p['_qpel_values_of'])
                 if whole is None:
@@ -2120,6 +2168,47 @@ class Importer:
             return unsigned[next(iter(compared))]
         return None
 
+    def computed_count(self, decl, types):
+        """(name, spelled factors) of a local the thread index is compared with, when that local is a product of the
+        kernel's integer parameters (`const int64_t count = static_cast<int64_t>(B) * C * gaussian_count;`), else None."""
+        params = {p['id']: p for i, p in enumerate(params_of(decl)) if types.get((decl['name'], i)) in INTEGER_TERMS}
+        body = body_of(decl)
+        grid = {p['id'] for p in params_of(decl) if self.dialect.builtin(p) == 'grid'}
+        locals_ = {}
+        for node in walk(body):
+            if node.get('kind') == 'VarDecl' and 'init' in node and node.get('inner'):
+                if is_grid_index(node['inner'][0]):
+                    grid.add(node['id'])
+                else:
+                    locals_[node['id']] = node
+        changed = {peel_decl(n['inner'][0]) for n in walk(body) if n.get('kind') in ('BinaryOperator', 'CompoundAssignOperator',
+                   'UnaryOperator') and n.get('opcode') in ('=', '+=', '-=', '*=', '/=', '++', '--') and n.get('inner')}
+
+        def product(node):
+            core = node
+            while core.get('kind') in ('ImplicitCastExpr', 'ParenExpr', 'CStyleCastExpr', 'CXXStaticCastExpr', 'CXXFunctionalCastExpr') \
+                    and core.get('inner'):
+                core = core['inner'][0]
+            if core.get('kind') == 'DeclRefExpr' and core['referencedDecl'].get('id') in params:
+                return [core['referencedDecl']['name']]
+            if core.get('kind') == 'BinaryOperator' and core['opcode'] == '*':
+                a, b = (product(x) for x in core['inner'])
+                return a + b if a is not None and b is not None else None
+            return None
+        found = set()
+        for node in walk(body):
+            if node.get('kind') == 'BinaryOperator' and node['opcode'] in COMPARISONS:
+                a, b = node['inner']
+                for index, other in ((a, b), (b, a)):
+                    target = peel_decl(other)
+                    if (peel_decl(index) in grid or is_grid_index(index)) and target in locals_ and target not in changed:
+                        factors = product(locals_[target]['inner'][0])
+                        if factors:
+                            found.add((locals_[target]['name'], ' * '.join(factors)))
+        if len(found) != 1:
+            return None
+        return next(iter(found))  # (the local's name, its factors)
+
     # -- statements --
 
     def block(self, node):
@@ -2249,7 +2338,10 @@ class Importer:
                         split(x['inner'][1])
                     else:
                         steps.append(self.expression_statement(x))
+                waiting = len(self.prelude)
                 split(step)
+                if len(self.prelude) != waiting:
+                    raise Unsupported(node, 'for-step', 'a for step that needs locals before it is not in qpel yet')
                 children['step'] = steps
             children['body'] = self.as_block(body)
             return [add('For', children=children)]
@@ -2285,6 +2377,8 @@ class Importer:
                                                'body': add('Block', children={'statements': [block] + before + [leave]})})]
             return [add('DoWhile', children={'body': block, 'condition': condition})]
         if kind == 'ReturnStmt':
+            if self.glm_result is not None and node.get('inner'):
+                return self.glm_return(node)  # a glm matrix result, into the result parameter (glm.py)
             value = [self.expr(node['inner'][0])] if node.get('inner') else []
             return [add('Return', children={'value': value})]
         later = {'SwitchStmt': 'switch', 'GotoStmt': 'goto', 'LabelStmt': 'goto'}
@@ -2346,6 +2440,13 @@ class Importer:
             return []
         if fragment_of(decl['type']):
             return self.fragment_local(decl, name, fragment_of(decl['type']))
+        if node_glm(decl) is not None and node_glm(decl).kind == 'mat' and node_glm(decl).ref != '*':
+            if node_glm(decl).ref and 'init' in decl and local_glm_id(decl['inner'][-1]) in self.scope and \
+                    self.glm_user_target(decl['inner'][-1]) is not None:
+                self.scope[decl['id']] = self.scope[local_glm_id(decl['inner'][-1])]  # const mat3 &R = M: M itself
+                self.glm_decl_types[decl['id']] = node_glm(decl).value()
+                return []
+            return self.glm_matrix_local(decl, name)  # an array of its components (glm.py)
         if matrix_type_of(decl) and not matrix_pointee(decl):
             return self.scalar_matrix_local(decl, name, matrix_type_of(decl))
         if matrix_pointee(decl) and 'init' in decl and \
@@ -2936,6 +3037,10 @@ class Importer:
         buffer of its elements, or any other expression of the vector's type."""
         while node['kind'] in LOOSE | {'ConstantExpr'} and len(node.get('inner', ())) == 1:
             node = node['inner'][0]
+        if node['kind'] in ('CXXConstructExpr', 'CXXTemporaryObjectExpr') and node_glm(node) is not None and \
+                not self.glm_plain(node) and self.glm_reaches(node) and not (
+                    len(node.get('inner', ())) == 1 and node_glm(node).same(node_glm(node['inner'][0]))):
+            return self.glm_core(node)  # vec4(0.f), vec4(v3, w): glm's constructor, read (glm.py)
         if node['kind'] == 'CXXConstructExpr' and len(node.get('inner', ())) == 1:
             return self.vector_value(node['inner'][0], vtype)  # a copy
         if node['kind'] in ('CXXConstructExpr', 'CXXTemporaryObjectExpr') and \
@@ -3485,6 +3590,9 @@ class Importer:
         while node['kind'] in ('ExprWithCleanups', 'ParenExpr'):
             node = node['inner'][0]
         kind = node['kind']
+        found = self.glm_statement(node)  # m = a * b, v += w, *covar = M, m[i][j] = x (glm.py)
+        if found is not None:
+            return found[0] if len(found) == 1 else add('Block', children={'statements': found})
         if kind == 'BinaryOperator' and node['opcode'] == ',':  # `a = x, b = y;`: one statement after the other
             return add('Block', children={'statements': [self.expression_statement(x) for x in node['inner']]})
         if kind == 'BinaryOperator' and node['opcode'] == '=' and self.union_member(node['inner'][0]):
@@ -3822,6 +3930,9 @@ class Importer:
         kind = n['kind']
         if '_facade_error' in n:
             raise Unsupported(n, 'library', n['_facade_error'])
+        found = self.glm_core(n)  # glm's operators and functions, and the source's glm matrices (glm.py)
+        if found is not None:
+            return found
         present = self.presence(n)
         if present is not None:
             return present
@@ -4345,6 +4456,11 @@ class Importer:
             decl, ident, kernel = self.functions[callee]
             if kernel:
                 raise Unsupported(n, 'call-kernel', 'kernels cannot be called from device code')
+            if self.glm_signature(decl):  # glm matrices or pointers to glm objects (glm.py)
+                call, _ = self.glm_helper_call(n, decl, ident)
+                if call is None:
+                    raise Unsupported(n, 'glm', 'a helper giving a glm matrix is called where its result is assigned or passed')
+                return call
             tested = self.null_tested_params(callee)
             tested_at = [i for i, q in enumerate(params_of(decl)) if q['id'] in tested and i < len(args)]
             given = list(args)
@@ -5604,3 +5720,8 @@ def unguarded_kernels(program):
             warnings.append(f'{n["attributes"]["name"]}: no bounds guard on the thread index'
                             + (f' ({", ".join(sorted(used - compared))})' if len(used) > 1 else ''))
     return warnings
+
+
+def local_glm_id(node):
+    from .glm import local_id
+    return local_id(node)

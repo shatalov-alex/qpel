@@ -373,8 +373,12 @@ def pointer_offsets(unit):
             uses = [n for n in walk(body) if n.get('kind') == 'DeclRefExpr' and n.get('referencedDecl', {}).get('id') == p['id']]
             for use in uses:
                 top = use
+                tested = False
                 while id(top) in parents and parents[id(top)].get('kind') in CASTISH:
                     top = parents[id(top)]
+                    tested = tested or top.get('castKind') == 'PointerToBoolean'
+                if tested:
+                    continue  # `p ? a : b`, `if (p)`: is the buffer given, as p != nullptr
                 above = parents.get(id(top))
                 if above is None:
                     continue

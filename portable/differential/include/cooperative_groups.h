@@ -50,6 +50,13 @@ template <unsigned int N, class Parent = void> struct thread_block_tile {
   thread_block_tile();
 };
 template <unsigned int N, class Parent> thread_block_tile<N, Parent> tiled_partition(const Parent&);
+struct coalesced_group {  // (declared only, as the tiles: gsplat's backward projections reduce over labeled groups)
+  unsigned int thread_rank() const; unsigned int size() const; unsigned int num_threads() const; unsigned int meta_group_rank() const;
+  void sync() const;
+  template <class T> T shfl(T, int) const;
+  template <class T> T shfl_down(T, unsigned int) const;
+};
+template <class Group, class Label> coalesced_group labeled_partition(const Group&, Label);
 template <class T = void> struct plus { T operator()(T a, T b) const { return a + b; } };
 template <class T = void> struct less { T operator()(T a, T b) const { return a < b ? a : b; } };
 template <class T = void> struct greater { T operator()(T a, T b) const { return a > b ? a : b; } };

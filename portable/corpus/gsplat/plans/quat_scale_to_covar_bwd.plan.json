@@ -1,0 +1,114 @@
+{
+ "schema": 2,
+ "module": "gsplat_quat_scale_to_covar_bwd",
+ "resources": [
+  {
+   "name": "offset",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "N",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "quats",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "N",
+   "scale": 4
+  },
+  {
+   "name": "scales",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "N",
+   "scale": 3
+  },
+  {
+   "name": "triu",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "v_covars",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "N",
+   "scale": 9,
+   "optional": true
+  },
+  {
+   "name": "v_precis",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "N",
+   "scale": 9,
+   "optional": true
+  },
+  {
+   "name": "v_quats",
+   "kind": "output",
+   "type": "buffer<f32, write>",
+   "extent": "N",
+   "scale": 4
+  },
+  {
+   "name": "v_scales",
+   "kind": "output",
+   "type": "buffer<f32, write>",
+   "extent": "N",
+   "scale": 3
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "quat_scale_to_covar_preci_bwd_kernel",
+   "grid": "N",
+   "blockSize": 256,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "offset",
+     "resource": "offset"
+    },
+    {
+     "parameter": "N",
+     "resource": "N"
+    },
+    {
+     "parameter": "quats",
+     "resource": "quats"
+    },
+    {
+     "parameter": "scales",
+     "resource": "scales"
+    },
+    {
+     "parameter": "triu",
+     "resource": "triu"
+    },
+    {
+     "parameter": "v_covars",
+     "resource": "v_covars"
+    },
+    {
+     "parameter": "v_precis",
+     "resource": "v_precis"
+    },
+    {
+     "parameter": "v_quats",
+     "resource": "v_quats"
+    },
+    {
+     "parameter": "v_scales",
+     "resource": "v_scales"
+    }
+   ]
+  }
+ ]
+}
