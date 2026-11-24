@@ -19,7 +19,7 @@ left as it is, and the importer reports it where it is read.
 import copy
 import re
 
-from .statics import walk, _body, _spelling, _plain
+from .statics import walk, _body, _spelling, _plain, _literal, _assigns
 from .functors import RECORDS, _unwrap, _type_key, _reference, _field_type
 
 BUILTIN_VECTOR = re.compile(r'(u?char|u?short|u?int|u?long|u?longlong|float|double|half|bfloat16|__half|__nv_bfloat16)[1-4]|dim3|__half2|__nv_bfloat162')
@@ -40,7 +40,7 @@ def glm_members(unit):
         if node.get('kind') != 'MemberExpr' or node.get('isArrow') or not node.get('inner'):
             continue
         inner = node['inner'][0]
-        if inner.get('kind') != 'MemberExpr' or inner.get('name') or inner.get('isArrow') or not inner.get('inner'):
+        if inner.get('kind') != 'MemberExpr' or inner.get('name') or not inner.get('inner'):
             continue
         if 'anonymous union' not in inner.get('type', {}).get('qualType', '') and \
                 'anonymous struct' not in inner.get('type', {}).get('qualType', ''):
@@ -50,6 +50,10 @@ def glm_members(unit):
         if 'vec<' not in spelled and not any(w in spelled.split() for w in ('vec2', 'vec3', 'vec4')) and \
                 not _plain(spelled).replace('const ', '').strip() in ('vec2', 'vec3', 'vec4', 'ivec2', 'ivec3', 'ivec4', 'uvec2', 'uvec4'):
             continue
+        if inner.get('isArrow'):  # v_dir->x of a `vec3 *v_dir`: (*v_dir).x
+            pointee = spelled.rsplit('*', 1)[0].strip()
+            base = {'kind': 'UnaryOperator', 'opcode': '*', 'valueCategory': 'lvalue', 'type': {'qualType': pointee},
+                    'inner': [base], **{k: base[k] for k in ('range', 'loc') if k in base}}
         node['inner'] = [base]
         node['name'] = GLM_NAMES.get(node.get('name'), node.get('name'))
 
@@ -425,6 +429,139 @@ def _array_of(node):
     return ref, found.group(1), int(found.group(2))
 
 
+STD_ARRAY = re.compile(r'(?:const )?(?:std::)?array<(.+), (\d+)>')
+
+
+def _std_array(node):
+    """(element, length) of a `std::array<T, N>` type as clang spells it in an instance, else None."""
+    spelled = node.get('type', {})
+    for text in (spelled.get('desugaredQualType', ''), spelled.get('qualType', '')):
+        found = STD_ARRAY.fullmatch(text.strip())
+        if found and '<' not in found.group(1):
+            return found.group(1), int(found.group(2))
+    return None
+
+
+def _zero_list(init):
+    """True for `{}` of a std::array: an empty list, or a list holding only its empty inner array's list."""
+    if init.get('kind') != 'InitListExpr':
+        return False
+    inner = [c for c in init.get('inner', ()) if isinstance(c, dict)]
+    fillers = init.get('array_filler', ())
+    return all(c.get('kind') == 'ImplicitValueInitExpr' or _zero_list(c) for c in inner + list(fillers))
+
+
+def std_arrays(unit):
+    """A local `std::array<T, N> acc{}` (gsplat's spherical-harmonics gradient) is the C array `T acc[N]` it
+    wraps: `{}` fills it with zeros, `acc[k]` (operator[]) is an element and `acc.data()` the array decayed to a
+    pointer, so a helper given it is given a local array (array_arguments). A list of values, its other
+    methods and passing it whole are left as they are, and the importer reports them."""
+    arrays = {}
+    for decl in walk(unit):
+        if decl.get('kind') != 'VarDecl' or decl.get('storageClass') == 'static':
+            continue
+        found = _std_array(decl)
+        if found is None or any(a.get('kind') == 'CUDASharedAttr' for a in decl.get('inner', ())):
+            continue
+        init = decl['inner'][0] if decl.get('init') and decl.get('inner') else None
+        while init is not None and init.get('kind') in ('ExprWithCleanups', 'ConstantExpr') and init.get('inner'):
+            init = init['inner'][0]
+        if init is not None and not _zero_list(init):
+            continue
+        element, length = found
+        decl['type'] = {'qualType': f'{element} [{length}]'}
+        if init is not None:
+            decl['inner'] = [{'kind': 'InitListExpr', 'type': {'qualType': f'{element} [{length}]'},
+                              'array_filler': [{'kind': 'ImplicitValueInitExpr', 'type': {'qualType': element}}]}]
+            decl['init'] = 'list'
+        arrays[decl['id']] = (element, length)
+
+    def ref_of(node):
+        while node.get('kind') in ('ImplicitCastExpr', 'ParenExpr') and node.get('castKind') in (None, 'NoOp') \
+                and node.get('inner'):
+            node = node['inner'][0]
+        if node.get('kind') == 'DeclRefExpr' and node.get('referencedDecl', {}).get('id') in arrays:
+            return node
+        return None
+
+    def decayed(ref):
+        element, length = arrays[ref['referencedDecl']['id']]
+        ref['type'] = {'qualType': f'{element} [{length}]'}
+        ref['referencedDecl'] = dict(ref['referencedDecl'], type={'qualType': f'{element} [{length}]'})
+        return {'kind': 'ImplicitCastExpr', 'castKind': 'ArrayToPointerDecay', 'type': {'qualType': f'{element} *'},
+                'inner': [ref], **{k: ref[k] for k in ('range', 'loc') if k in ref}}
+
+    for node in walk(unit):
+        kind = node.get('kind')
+        if kind == 'CXXOperatorCallExpr' and len(node.get('inner', ())) == 3:
+            callee = _peel_cast(node['inner'][0])
+            ref = ref_of(node['inner'][1])
+            if callee.get('referencedDecl', {}).get('name') == 'operator[]' and ref is not None:
+                element = arrays[ref['referencedDecl']['id']][0]
+                index = node['inner'][2]
+                node.clear()
+                node.update({'kind': 'ArraySubscriptExpr', 'type': {'qualType': element}, 'valueCategory': 'lvalue',
+                             'inner': [decayed(ref), index]})
+        elif kind == 'CXXMemberCallExpr' and len(node.get('inner', ())) == 1:
+            member = node['inner'][0]
+            ref = ref_of(member['inner'][0]) if member.get('kind') == 'MemberExpr' and member.get('inner') else None
+            if ref is not None and member.get('name') == 'data':
+                node.clear()
+                node.update(decayed(ref))
+    for node in walk(unit):  # what is left of a converted array: a plain reference, typed as the array
+        if node.get('kind') == 'DeclRefExpr' and node.get('referencedDecl', {}).get('id') in arrays:
+            element, length = arrays[node['referencedDecl']['id']]
+            node['type'] = {'qualType': f'{element} [{length}]'}
+
+
+_INTEGER_PARAM = re.compile(r'(?:const )?(?:unsigned |signed )?(?:int|long|long long|short|char|uint\d+_t|int\d+_t|size_t|unsigned)')
+
+
+def _constant_index_beyond(function, param_id, length):
+    """True when the function indexes parameter `param_id` with a constant of `length` or more."""
+    for node in walk(_body(function)):
+        if node.get('kind') == 'ArraySubscriptExpr' and len(node.get('inner', ())) == 2:
+            base = _peel_cast(node['inner'][0])
+            if base.get('kind') == 'DeclRefExpr' and base.get('referencedDecl', {}).get('id') == param_id:
+                index = _literal(node['inner'][1])
+                if index is not None and index >= length:
+                    return True
+    return False
+
+
+def _returns(statement):
+    """True when a statement always returns: `return ...;`, or a block whose last statement does."""
+    if statement.get('kind') == 'ReturnStmt':
+        return True
+    if statement.get('kind') == 'CompoundStmt' and statement.get('inner'):
+        return _returns(statement['inner'][-1])
+    return False
+
+
+def _prune_constant_branches(node):
+    """`if (c)` with c a constant (the copy's substituted arguments): the branch taken, in place; the
+    statements after a branch that always returns are dropped, as they never run."""
+    for child in node.get('inner', ()) if isinstance(node.get('inner'), list) else ():
+        if isinstance(child, dict):
+            _prune_constant_branches(child)
+    if node.get('kind') != 'CompoundStmt' or not node.get('inner'):
+        return
+    kept = []
+    for statement in node['inner']:
+        if statement.get('kind') == 'IfStmt' and not any(k in statement for k in ('hasInit', 'hasVar')):
+            parts = statement.get('inner', [])
+            value = _literal(parts[0]) if parts else None
+            if value is not None:
+                taken = parts[1] if value else (parts[2] if len(parts) > 2 else None)
+                if taken is None:
+                    continue
+                statement = taken
+        kept.append(statement)
+        if _returns(statement):
+            break
+    node['inner'] = kept
+
+
 def array_arguments(unit):
     """A helper whose pointer parameter is given a local array (gsplat's `sh_coeffs_to_color_fast(..., sh_coeffs,
     out_color)` of `float sh_coeffs[48]`, the same helper given buffers elsewhere) as a copy of the helper for those
@@ -459,9 +596,20 @@ def array_arguments(unit):
                         arrays[i] = found
             if not arrays:
                 continue
-            key = (callee['id'], tuple((i, arrays[i][2]) for i in sorted(arrays)))
+            # A copy for arrays too short for some constant index the helper has (sh_coeffs_to_color_fast_vjp's acc[15]
+            # given a std::array of (DEGREE + 1)^2 elements, under `if (degree < 3) return;`) is also a copy for the
+            # integer constants the call passes (degree given DEGREE), whose branches that cannot be taken it drops
+            constants = {}
+            if any(_constant_index_beyond(callee, params[i]['id'], length) for i, (_, _, length) in arrays.items()):
+                for i, arg in enumerate(call['inner'][1:]):
+                    if i < len(params) and i not in arrays and _INTEGER_PARAM.fullmatch(
+                            params[i].get('type', {}).get('desugaredQualType', params[i].get('type', {}).get('qualType', ''))) \
+                            and _literal(arg) is not None and not _assigns(_body(callee), params[i]['id']):
+                        constants[i] = _literal(arg)
+            key = (callee['id'], tuple((i, arrays[i][2]) for i in sorted(arrays)), tuple(sorted(constants.items())))
             if key not in made:
-                suffix = '_a' + '_'.join(str(arrays[i][2]) for i in sorted(arrays))
+                suffix = '_a' + '_'.join(str(arrays[i][2]) for i in sorted(arrays)) + \
+                    ''.join(f'_k{constants[i]}'.replace('-', 'm') for i in sorted(constants))
                 clone = copy.deepcopy(callee)
                 clone['id'] = f'{callee["id"]}{suffix}'
                 clone['_qpel_suffix'] = suffix
@@ -483,6 +631,15 @@ def array_arguments(unit):
                             above = parents.get(id(use))
                             if above is not None and above.get('kind') == 'ImplicitCastExpr' and above.get('castKind') == 'LValueToRValue':
                                 above['castKind'] = 'ArrayToPointerDecay'
+                for i, value in constants.items():
+                    p = cloned[i]
+                    for use in walk(_body(clone)):
+                        if use.get('kind') == 'DeclRefExpr' and use.get('referencedDecl', {}).get('id') == p['id']:
+                            spelled = use.get('type', {})
+                            use.clear()
+                            use.update({'kind': 'IntegerLiteral', 'type': spelled, 'valueCategory': 'prvalue',
+                                        'value': str(value)})
+                _prune_constant_branches(_body(clone))
                 owner = owners[callee['id']]
                 owner['inner'].insert(owner['inner'].index(callee) + 1, clone)
                 made[key] = clone

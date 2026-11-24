@@ -261,7 +261,9 @@ Pilot: Microsoft TRELLIS.2's `o-voxel` extension (13 kernels: Z-order and Hilber
 - **T4 results** (Tesla T4, 2026-11-23): every row passed, the library pipelines against NVIDIA's CUB (scans 63 cases, radix sorts 144, segmented 60, merge 20) and gsplat's intersection and spherical harmonics against the originals, besides the earlier rows and the CuPy host (32/32). Timings: 83 kernels, qpel/original geometric mean x1.01. 0.7.0 needs no fix release.
 - **gsplat's simple projection** and its gradient: coverage 373 of 2364.
 - **The library-mapping report** (frontends/library_map.py): 926 uses in the corpus; library 57, host 672, planned 156, unmapped 41.
-- Next: the backward pass (labeled warp partitions and their reductions, `gpuAtomicAdd`, doubles); the host-API IR.
+**Progress (2026-11-24): gsplat's spherical-harmonics gradients.**
+- **SH backward** (`spherical_harmonics_bwd_kernel` degrees 0–4, `spherical_harmonics_l1_plus_bwd_kernel` degrees 1–4, unmodified): cooperative groups of coalesced threads read as the calling thread alone, `std::array` locals, assignments through glm vector pointers, atomic adds through pointer locals, helper copies specialised to their callers' constants. Bit for bit on the CPU simulator; on the Apple GPU within 2·MATH_ULPS·(degree+1)·eps of each gradient's scale (worst measured 10 eps). The same changes import gsplat's `reduce_packed_view_direction_gradients` and two mmcv backward kernels. Coverage 385 of 2364.
+- Next: the rasterizer and projection backward kernels; the host-API IR.
 - A host-API IR and a library-mapping table: cuBLAS GEMM → MPSMatrixMultiplication/MPSGraph; CUB/Thrust reductions and scans → qpel library kernels; cuDNN convolution → MPSGraph. Unmappable calls are reported, not dropped.
 - Triton: first as an input to `qpel verify`; a Triton frontend only if Triton's own Apple backend does not land.
 

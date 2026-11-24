@@ -21,7 +21,9 @@ from . import clang_ast
 from .clang_ast import position
 from .facades import inline_facades
 from .views import dead_parameters, shared_views
-from .records import scalarize_struct_values, glm_members, flatten_local_matrices, pointer_offsets, wide_copies, array_arguments
+from .records import scalarize_struct_values, glm_members, flatten_local_matrices, pointer_offsets, wide_copies, array_arguments, \
+    std_arrays
+from .coalesced import coalesced_singletons
 from .functors import scalarize_functors
 from .demote import demote_unit
 from .statics import constant_values, desugar_aliases, flatten_argument_structs, instances_to_definitions, lift_statics, lower_switches, single_rows, read_enums, local_pointers_as_references
@@ -803,6 +805,8 @@ class Importer(GlmReader):
         lower_switches(unit)  # switch (DATA_TYPE): the case taken; switch (x): an if-else chain (statics.py)
         single_rows(unit)  # for (int r = 0; r < kNRows; ++r) with kNRows = 1, T a[1][N] (statics.py)
         flatten_local_matrices(unit)  # float pix_out[P][C]: pix_out[P * C], read at [p * C + c] (records.py)
+        groups = coalesced_singletons(unit)  # cg::reduce(labeled_partition(coalesced_threads(), id), v, op): v (coalesced.py)
+        std_arrays(unit)  # std::array<float, 16> acc{}: float acc[16], acc[k], acc.data() (records.py)
         array_arguments(unit)  # f(items) of float items[8] for a helper's `const float *p`: a copy taking `const float (&p)[8]` (records.py)
         wide_copies(unit)  # reinterpret_cast<uint4 *>(a)[0] = reinterpret_cast<const uint4 *>(p)[i]: element copies (records.py)
         pointer_offsets(unit)  # isect_offsets += n: an offset local, isect_offsets[offset + i] (records.py)
@@ -816,6 +820,7 @@ class Importer(GlmReader):
         removed = dead_parameters(unit)  # a TempStorage passed on and no longer read (views.py)
         view_notes = shared_views(unit)  # extern __shared__ char smem_[] carved into views: shared memory each (views.py)
         view_notes += [(i, f'unused parameter {r} (a TempStorage qpel\'s CUB subset does not read) was removed') for i, r in removed]
+        view_notes += groups
         self.view_notes = view_notes  # (function id, adaptation): reported for the functions imported (run)
         self.lifted = lifted
         demote_unit(unit)  # T hy = 1. - ly; and the like: float arithmetic in double's clothes (demote.py)
@@ -1150,6 +1155,15 @@ class Importer(GlmReader):
                     union((fname, i), ('resource', group))
         for decl in self.decls:
             fname = decl['name']
+            # a pointer local into a parameter's buffer (`float *v_mean = v_means + k;`) is that buffer
+            aliases = {}
+            for node in walk(body_of(decl)):
+                if node.get('kind') == 'VarDecl' and node.get('inner') and 'init' in node and \
+                        describe(node.get('type', {}).get('qualType', ''))[0] == 'pointer':
+                    base = atomic_address_base(node['inner'][0])
+                    base = aliases.get(base, base)
+                    if (fname, base) in index:
+                        aliases[node['name']] = base
             for node in walk(body_of(decl)):
                 if node['kind'] != 'CallExpr':
                     continue
@@ -1157,11 +1171,15 @@ class Importer(GlmReader):
                 args = node['inner'][1:]
                 if callee in self.dialect.atomics and args:
                     base = atomic_address_base(args[0])
+                    base = aliases.get(base, base)
                     if (fname, base) in index:
                         atomic.add(index[(fname, base)])
                 elif callee in self.functions:
                     for j, arg in enumerate(args):
                         name = decl_name(arg)
+                        if name is None and describe(arg.get('type', {}).get('qualType', ''))[0] == 'pointer':
+                            name = atomic_address_base(arg)  # (p + k passes p's buffer)
+                        name = aliases.get(name, name)
                         if (fname, name) in index:
                             union(index[(fname, name)], (callee, j))
         atomic_groups = {find(slot) for slot in atomic}
@@ -3554,6 +3572,17 @@ class Importer(GlmReader):
         self.vector_params[decl['id']] = length
         return [ir]
 
+    def pointer_base_id(self, node):
+        """The clang id of the variable behind a pointer p, p + i, p - i or &p[i], else None."""
+        node = peel(node)
+        while node.get('kind') == 'BinaryOperator' and node.get('opcode') in ('+', '-') and node.get('inner'):
+            node = peel(node['inner'][0])
+        if node.get('kind') == 'UnaryOperator' and node.get('opcode') == '&' and node.get('inner'):
+            node = peel(node['inner'][0])
+            if node.get('kind') == 'ArraySubscriptExpr':
+                node = peel(node['inner'][0])
+        return node.get('referencedDecl', {}).get('id') if node.get('kind') == 'DeclRefExpr' else None
+
     def buffer_local(self, decl, name, kind):
         """A pointer local into a device buffer (a view): `device float* row = (device float*)(dst + off)`."""
         if 'init' in decl and any(x.get('qpelUnaligned') for x in walk(decl['inner'][0])):
@@ -3570,6 +3599,24 @@ class Importer(GlmReader):
             if message not in self.adaptations:
                 self.adaptations.append(message)
             return []
+        if 'init' in decl and type_is_buffer(kind) and access(kind) != 'atomic':
+            source = self.scope.get(self.pointer_base_id(decl['inner'][0]))
+            if source and source[0] in ('param', 'local') and type_is_buffer(source[2]) and access(source[2]) == 'atomic' \
+                    and element_of(source[2]) == element_of(kind):
+                # float *v_mean = v_means + k of an atomic buffer (gsplat's gpuAtomicAdd(v_mean, ...)): qpel has no
+                # atomic view locals, so each use reads the initializer again, as for an unaligned view
+                init = decl['inner'][0]
+                changed = [x['referencedDecl'].get('name', '?') for x in walk(init) if x.get('kind') == 'DeclRefExpr'
+                           and x.get('referencedDecl', {}).get('id') in self.assigned]
+                if decl['id'] in self.assigned or changed:
+                    raise Unsupported(decl, 'pointer', f'{name} is a view of an atomic buffer; qpel reads it again at '
+                                                       f'each use, so neither it nor what it is made of '
+                                                       f'({", ".join(changed) or name}) may change')
+                self.scope[decl['id']] = ('view-alias', init, source[2])
+                message = f'{self.current}: {name} is a view of an atomic buffer, its initializer read again at each use'
+                if message not in self.adaptations:
+                    self.adaptations.append(message)
+                return []
         children = {'type': self.type_node(kind)}
         null = 'init' in decl and is_null_pointer(decl['inner'][0])
         if 'init' in decl and not null:
@@ -3742,6 +3789,13 @@ class Importer(GlmReader):
             # *p = v is p[0] = v (a buffer or shared view; atomics keep their own calls)
             return self.graph.add('Index', children={'base': self.expr(core['inner'][0], address=True),
                                                      'index': self.int_value('u32', 0)})
+        if core['kind'] == 'MemberExpr' and core.get('inner') and peel(core['inner'][0]).get('kind') == 'UnaryOperator' \
+                and peel(core['inner'][0])['opcode'] == '*':
+            pointer = peel(peel(core['inner'][0])['inner'][0])
+            if pointer.get('kind') == 'DeclRefExpr' and pointer['referencedDecl'].get('id') in self.glm_pointer_params:
+                # v_dir->x = ... of a helper's `vec3 *v_dir`: a component of the caller's vector (glm.py)
+                pointee = dict(pointer, type=core['inner'][0]['type'])
+                return self.lvalue(dict(core, inner=[pointee]))
         if core['kind'] in ('MemberExpr', 'ExtVectorElementExpr') and is_vector(scalar_of(core['inner'][0])):
             ref = self.vector_element_ref(core['inner'][0])
             if ref and member_name(core, self.source) in VECTOR_FIELDS:  # ranges[t].x = ...

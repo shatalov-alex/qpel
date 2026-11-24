@@ -4,6 +4,19 @@ Notable changes to qpel, by milestone. Dates are when the milestone was reached 
 The IR has its own version (currently 23), recorded in every program and launch plan;
 older programs keep building.
 
+## [Unreleased]
+
+### Added
+- **gsplat's spherical-harmonics gradients** (`spherical_harmonics_bwd_kernel`, `spherical_harmonics_l1_plus_bwd_kernel`,
+  unmodified): `std::array` locals, cooperative groups of coalesced threads read as the calling thread alone (one
+  of the executions CUDA allows), assignments through pointers to glm vectors, atomic adds through pointer locals,
+  and helper copies specialised to the constants their callers pass. Bit for bit with the original on the CPU
+  simulator; on the Apple GPU within a stated bound (tests/test_gsplat_sh_backward.py).
+  The same changes import gsplat's `reduce_packed_view_direction_gradients` and mmcv's `roi_pool_backward_cuda_kernel`
+  and `rotated_feature_align_backward_kernel`. Coverage 385 of 2364.
+- `differential.simulate.Program(sequential=True)`: an original whose file has barriers in other kernels runs its
+  threads one after another, so its atomic additions come in the order qpel's do.
+
 ## [0.7.0] — 2026-11-23
 
 The first release on PyPI (`pip install qpel`). It contains Phases 3–6 and the Phase 7 work so far.

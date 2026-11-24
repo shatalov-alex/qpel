@@ -178,11 +178,14 @@ def included_text(source, include):
 class Program:
     """A compiled simulator program for one source and one launch plan."""
 
-    def __init__(self, source, plan, work, original=None, include=(), grids=None, located=None):
+    def __init__(self, source, plan, work, original=None, include=(), grids=None, located=None, sequential=False):
         """original: the import report when `source` is the original (not qpel-generated) source.
         grids: {kernel: [x, y, z]} grid expressions transcribed from the original host code.
         located: the folder `source` stands in for, when it is a copy made elsewhere (an original with
-        qpel's library kernels appended, frontends/library.py): its quoted includes resolve there."""
+        qpel's library kernels appended, frontends/library.py): its quoted includes resolve there.
+        sequential: run a block's threads one after another even when the source has barriers (in kernels
+        not launched): atomics then add in thread order, as in a source without them; a barrier the
+        launched kernels do reach stops the run with an error."""
         plan = normalize_plan(plan)
         self.plan, self.work, self.original, self.grids = plan, Path(work), original, grids or {}
         self.resources = {r['name']: r for r in plan['resources']}
@@ -248,7 +251,8 @@ class Program:
             include = [source.parent] + include
             source = sized
         self.source, self.include = source, include
-        self.threaded = needs_threads(included_text(source, include) if original else source.read_text(errors='replace'))
+        self.threaded = not sequential and needs_threads(included_text(source, include) if original else
+                                                         source.read_text(errors='replace'))
         self.main = self.work/self.MAIN
         self.main.write_text(self.program(source))
         self.binary = self.work/'simulate'

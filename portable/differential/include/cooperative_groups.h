@@ -50,14 +50,23 @@ template <unsigned int N, class Parent = void> struct thread_block_tile {
   thread_block_tile();
 };
 template <unsigned int N, class Parent> thread_block_tile<N, Parent> tiled_partition(const Parent&);
-struct coalesced_group {  // (declared only, as the tiles: gsplat's backward projections reduce over labeled groups)
-  unsigned int thread_rank() const; unsigned int size() const; unsigned int num_threads() const; unsigned int meta_group_rank() const;
-  void sync() const;
-  template <class T> T shfl(T, int) const;
-  template <class T> T shfl_down(T, unsigned int) const;
+// A coalesced group is the threads that happen to run together; CUDA promises none but the caller,
+// and here, as in qpel's reading of them (frontends/coalesced.py), it is the calling thread alone.
+struct coalesced_group {
+  unsigned int thread_rank() const { return 0; }
+  unsigned int size() const { return 1; }
+  unsigned int num_threads() const { return 1; }
+  unsigned int meta_group_rank() const { return 0; }
+  void sync() const {}
+  template <class T> T shfl(T v, int) const { return v; }
+  template <class T> T shfl_down(T v, unsigned int) const { return v; }
 };
-template <class Group, class Label> coalesced_group labeled_partition(const Group&, Label);
-coalesced_group coalesced_threads();  // (declared only)
+inline coalesced_group coalesced_threads() { return coalesced_group(); }
+template <class Label> coalesced_group labeled_partition(const coalesced_group&, Label) { return coalesced_group(); }
+inline coalesced_group binary_partition(const coalesced_group&, bool) { return coalesced_group(); }
+template <class Group, class Label> coalesced_group labeled_partition(const Group&, Label);  // (other groups: declared only)
+template <class T, class Op> T reduce(const coalesced_group&, T v, Op) { return v; }
+template <class T, class Op> T inclusive_scan(const coalesced_group&, T v, Op) { return v; }
 template <class T = void> struct plus { T operator()(T a, T b) const { return a + b; } };
 template <class T = void> struct less { T operator()(T a, T b) const { return a < b ? a : b; } };
 template <class T = void> struct greater { T operator()(T a, T b) const { return a > b ? a : b; } };
