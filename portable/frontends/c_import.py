@@ -647,7 +647,7 @@ class Cuda(Dialect):
                # IR version 6
                'atomicMax': ('AtomicMax', True, False), 'atomicAnd': ('AtomicAnd', True, False),
                'atomicOr': ('AtomicOr', True, False), 'atomicXor': ('AtomicXor', True, False),
-               'atomicSub': ('AtomicSub', True, False), 'qpel_load_f32': ('AtomicLoad', False, False)}
+               'atomicSub': ('AtomicSub', True, False), 'atomicAdd_system': ('AtomicAdd', True, False), 'qpel_load_f32': ('AtomicLoad', False, False)}
 
     def is_kernel(self, decl):
         return 'CUDAGlobalAttr' in attributes(decl)

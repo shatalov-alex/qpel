@@ -225,6 +225,18 @@ inline unsigned __ballot_sync(unsigned, int p) {
   qpel_warp_sync([](QpelWarp&) {});
   return found;
 }
+// Every present lane's value (lanes that have exited are absent): the mask of present lanes.
+template <class T> inline unsigned int qpel_warp_gather(T v, T out[32]) {
+  static_assert(sizeof(T) <= 8, "the simulator gathers values of up to 8 bytes");
+  unsigned long long bits = 0; std::memcpy(&bits, &v, sizeof v);
+  unsigned int lane = qpel_linear() & 31u, present = 0;
+  qpel_warp_sync([&](QpelWarp& w) { if (w.waiting == 0) w.ballot = 0; w.slot[lane] = bits; w.ballot |= 1u << lane; });
+  QpelWarp& w = qpel_warps[qpel_linear() >> 5];
+  present = w.ballot;
+  for (int k = 0; k < 32; ++k) if (present >> k & 1u) std::memcpy(&out[k], &w.slot[k], sizeof(T));
+  qpel_warp_sync([](QpelWarp&) {});  // nobody overwrites a slot before every thread has read
+  return present;
+}
 inline int __any_sync(unsigned m, int p) { return __ballot_sync(m, p) != 0; }
 inline int __all_sync(unsigned m, int p) { return __ballot_sync(m, !p) == 0; }
 inline void __syncwarp(unsigned = 0xffffffffu) { qpel_warp_sync([](QpelWarp&) {}); }

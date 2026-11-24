@@ -137,7 +137,7 @@ def geometry(stage, shape):
 BARRIERS = ('__syncthreads', '.sync()', 'QPEL_BARRIER', 'QPEL_GROUP_SUM_F32(', 'threadgroup_barrier', '__shfl', '__ballot_sync',
             '__any_sync', '__all_sync', '__syncwarp', '__activemask', 'qpel_shuffle_', 'qpel_subgroup_', 'simd_', 'simdgroup_barrier',
             'QPEL_MATRIX_LOAD_', 'QPEL_MATRIX_MMA_', 'QPEL_MATRIX_STORE_', 'QPEL_MATRIX_FILL_', 'simdgroup_load',
-            'QPEL_SUBGROUP_BARRIER')
+            'QPEL_SUBGROUP_BARRIER', 'tiled_partition<')
 GENERATED = '// Generated from qpel IR. Do not edit.'
 
 

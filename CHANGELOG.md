@@ -14,6 +14,13 @@ older programs keep building.
   simulator; on the Apple GPU within a stated bound (tests/test_gsplat_sh_backward.py).
   The same changes import gsplat's `reduce_packed_view_direction_gradients` and mmcv's `roi_pool_backward_cuda_kernel`
   and `rotated_feature_align_backward_kernel`. Coverage 385 of 2364.
+- **Labeled partitions of a warp** (`cg::labeled_partition(cg::tiled_partition<32>(cg::this_thread_block()), label)`,
+  gsplat's camera-id groups): a kernel that only sums values over such a group, directly or through helpers such as
+  `warpSum`, and lets the group's rank-0 thread add the sums atomically is read with each thread adding its own values:
+  the same sums, their float additions in another order (an adaptation; every other use is refused). The simulator's
+  cooperative groups now build real tiles and labeled partitions for originals (tests/test_labeled_partition.py: bit
+  for bit on the CPU simulator and the Apple GPU with exact inputs, within the float error of the sums otherwise).
+  `atomicAdd_system` is an atomic add, which imports gsplat's `add_counts_kernel`. Coverage 386 of 2364.
 - `differential.simulate.Program(sequential=True)`: an original whose file has barriers in other kernels runs its
   threads one after another, so its atomic additions come in the order qpel's do.
 

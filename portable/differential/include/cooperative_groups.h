@@ -37,40 +37,77 @@ struct grid_group {
 inline thread_block this_thread_block() { return thread_block(); }
 inline grid_group this_grid() { return grid_group(); }
 inline void sync(const thread_block& block) { block.sync(); }
-// Declared only, so that library headers which define warp helpers with them compile (gsplat's
-// Utils.cuh): a program that runs one fails to link, rather than computing something else.
+// A tile of N threads: consecutive linear thread indices, as on NVIDIA. Its exchanges need the
+// threads to run together (QPEL_SIM_THREADED); outside that they are refused.
 template <unsigned int N, class Parent = void> struct thread_block_tile {
-  unsigned int thread_rank() const; unsigned int size() const; unsigned int meta_group_rank() const;
-  void sync() const;
-  template <class T> T shfl(T, int) const;
-  template <class T> T shfl_down(T, unsigned int) const;
-  template <class T> T shfl_up(T, unsigned int) const;
-  template <class T> T shfl_xor(T, unsigned int) const;
-  template <class P> thread_block_tile(const thread_block_tile<N, P>&);
-  thread_block_tile();
+  thread_block_tile() {}
+  template <class P> thread_block_tile(const thread_block_tile<N, P>&) {}
+  unsigned int thread_rank() const { return qpel_rank() % N; }
+  unsigned int size() const { return N; }
+  unsigned int num_threads() const { return N; }
+  unsigned int meta_group_rank() const { return qpel_rank() / N; }
+  void sync() const { ::__syncwarp(); }
+  template <class T> T shfl(T v, int lane) const { return ::__shfl_sync(0xffffffffu, v, lane, (int)N); }
+  template <class T> T shfl_down(T v, unsigned int d) const { return ::__shfl_down_sync(0xffffffffu, v, d, (int)N); }
+  template <class T> T shfl_up(T v, unsigned int d) const { return ::__shfl_up_sync(0xffffffffu, v, d, (int)N); }
+  template <class T> T shfl_xor(T v, unsigned int m) const { return ::__shfl_xor_sync(0xffffffffu, v, (int)m, (int)N); }
+ private:
+  static unsigned int qpel_rank() { return threadIdx.x + blockDim.x * (threadIdx.y + blockDim.y * threadIdx.z); }
 };
-template <unsigned int N, class Parent> thread_block_tile<N, Parent> tiled_partition(const Parent&);
-// A coalesced group is the threads that happen to run together; CUDA promises none but the caller,
-// and here, as in qpel's reading of them (frontends/coalesced.py), it is the calling thread alone.
+template <unsigned int N, class Parent> thread_block_tile<N, Parent> tiled_partition(const Parent&) { return thread_block_tile<N, Parent>(); }
+// A coalesced group: the lanes of one warp in `mask`. One that coalesced_threads() makes is the
+// threads that happen to run together; CUDA promises none but the caller, and here, as in qpel's
+// reading of them (frontends/coalesced.py), it is the calling thread alone. One that
+// labeled_partition makes of a 32-thread tile is every present lane of the warp with the caller's
+// label, as CUDA defines it, and its reductions exchange values across the warp (threads only).
 struct coalesced_group {
-  unsigned int thread_rank() const { return 0; }
-  unsigned int size() const { return 1; }
-  unsigned int num_threads() const { return 1; }
+  unsigned int mask = 0;      // the group's lanes; 0 for the calling thread alone
+  bool collective = false;    // made of a tile: every lane of the warp takes part in its operations
+  unsigned int thread_rank() const { return mask ? (unsigned int)__builtin_popcount(mask & ((1u << qpel_lane()) - 1u)) : 0u; }
+  unsigned int size() const { return mask ? (unsigned int)__builtin_popcount(mask) : 1u; }
+  unsigned int num_threads() const { return size(); }
   unsigned int meta_group_rank() const { return 0; }
-  void sync() const {}
-  template <class T> T shfl(T v, int) const { return v; }
-  template <class T> T shfl_down(T v, unsigned int) const { return v; }
+  void sync() const { if (collective) ::__syncwarp(); }
+  template <class T> T shfl(T v, int) const { if (collective) qpel_simulator_needs_threads("coalesced_group::shfl of a labeled partition"); return v; }
+  template <class T> T shfl_down(T v, unsigned int) const { if (collective) qpel_simulator_needs_threads("coalesced_group::shfl_down of a labeled partition"); return v; }
+  static unsigned int qpel_lane() { return (threadIdx.x + blockDim.x * (threadIdx.y + blockDim.y * threadIdx.z)) & 31u; }
 };
 inline coalesced_group coalesced_threads() { return coalesced_group(); }
-template <class Label> coalesced_group labeled_partition(const coalesced_group&, Label) { return coalesced_group(); }
-inline coalesced_group binary_partition(const coalesced_group&, bool) { return coalesced_group(); }
-template <class Group, class Label> coalesced_group labeled_partition(const Group&, Label);  // (other groups: declared only)
-template <class T, class Op> T reduce(const coalesced_group&, T v, Op) { return v; }
-template <class T, class Op> T inclusive_scan(const coalesced_group&, T v, Op) { return v; }
+template <class Label> coalesced_group labeled_partition(const coalesced_group& g, Label) { return g.collective ? (qpel_simulator_needs_threads("labeled_partition of a labeled partition"), g) : coalesced_group(); }
+inline coalesced_group binary_partition(const coalesced_group& g, bool) { return g.collective ? (qpel_simulator_needs_threads("binary_partition of a labeled partition"), g) : coalesced_group(); }
+#ifdef QPEL_SIM_THREADED
+template <class Parent, class Label> coalesced_group labeled_partition(const thread_block_tile<32, Parent>&, Label label) {
+  Label labels[32];
+  unsigned int present = qpel_warp_gather(label, labels), mask = 0;
+  for (int k = 0; k < 32; ++k) if ((present >> k & 1u) && labels[k] == label) mask |= 1u << k;
+  coalesced_group g; g.mask = mask; g.collective = true; return g;
+}
+// The group's values combined in lane order (CUDA leaves the order open).
+template <class T, class Op> T reduce(const coalesced_group& g, T v, Op op) {
+  if (!g.collective) return v;
+  T values[32];
+  qpel_warp_gather(v, values);
+  bool first = true; T r = v;
+  for (int k = 0; k < 32; ++k) if (g.mask >> k & 1u) { r = first ? values[k] : op(r, values[k]); first = false; }
+  return r;
+}
+#else
+template <class Parent, class Label> coalesced_group labeled_partition(const thread_block_tile<32, Parent>&, Label) {
+  qpel_simulator_needs_threads("labeled_partition of a tile"); return coalesced_group();
+}
+template <class T, class Op> T reduce(const coalesced_group& g, T v, Op) {
+  if (g.collective) qpel_simulator_needs_threads("reduce over a labeled partition");
+  return v;
+}
+#endif
+template <class T, class Op> T inclusive_scan(const coalesced_group& g, T v, Op) {
+  if (g.collective) qpel_simulator_needs_threads("inclusive_scan over a labeled partition (not in the simulator)");
+  return v;
+}
 template <class T = void> struct plus { T operator()(T a, T b) const { return a + b; } };
 template <class T = void> struct less { T operator()(T a, T b) const { return a < b ? a : b; } };
 template <class T = void> struct greater { T operator()(T a, T b) const { return a > b ? a : b; } };
-template <class Group, class T, class Op> T reduce(const Group&, T, Op);
+template <class Group, class T, class Op> T reduce(const Group&, T, Op);  // (other groups: declared only)
 template <class Group, class T, class Op> T inclusive_scan(const Group&, T, Op);
 template <class Group, class T, class Op> T exclusive_scan(const Group&, T, Op);
 }  // namespace cooperative_groups

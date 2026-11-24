@@ -263,7 +263,8 @@ Pilot: Microsoft TRELLIS.2's `o-voxel` extension (13 kernels: Z-order and Hilber
 - **The library-mapping report** (frontends/library_map.py): 926 uses in the corpus; library 57, host 672, planned 156, unmapped 41.
 **Progress (2026-11-24): gsplat's spherical-harmonics gradients.**
 - **SH backward** (`spherical_harmonics_bwd_kernel` degrees 0–4, `spherical_harmonics_l1_plus_bwd_kernel` degrees 1–4, unmodified): cooperative groups of coalesced threads read as the calling thread alone, `std::array` locals, assignments through glm vector pointers, atomic adds through pointer locals, helper copies specialised to their callers' constants. Bit for bit on the CPU simulator; on the Apple GPU within 2·MATH_ULPS·(degree+1)·eps of each gradient's scale (worst measured 10 eps). The same changes import gsplat's `reduce_packed_view_direction_gradients` and two mmcv backward kernels. Coverage 385 of 2364.
-- Next: the rasterizer and projection backward kernels; the host-API IR.
+- **Labeled warp partitions:** a group of a warp's threads with the same label, used only for sums that its rank-0 thread adds atomically, is read as the calling thread alone (the same sums in another order; frontends/coalesced.py checks that nothing else reads them). The simulator builds real tiles and labeled partitions for originals. `atomicAdd_system` imports gsplat's `add_counts_kernel`. Coverage 386 of 2364.
+- Next: exact software doubles (the EWA projection gradients compute `v * 0.5 / (c + 1e-6)` in double), then the rasterizer backward kernels and the host-API IR.
 - A host-API IR and a library-mapping table: cuBLAS GEMM → MPSMatrixMultiplication/MPSGraph; CUB/Thrust reductions and scans → qpel library kernels; cuDNN convolution → MPSGraph. Unmappable calls are reported, not dropped.
 - Triton: first as an input to `qpel verify`; a Triton frontend only if Triton's own Apple backend does not land.
 
