@@ -38,6 +38,12 @@ older programs keep building.
 - A Metal kernel whose parameters and presence flags would pass Metal's 31 buffers gets its presence flags packed
   in one buffer after its parameters (the generated host binds them the same way).
 - An atomic address through nested `+`/`-` (`v_viewmats + i * 4 + j`). Coverage 402 of 2364.
+- **gsplat's 2DGS projection and its gradient** (`projection_2dgs_fused_fwd_kernel`, `projection_2dgs_fused_bwd_kernel`
+  and the packed ones, unmodified; tests/test_gsplat_projection_2dgs.py): glm's converting constructors given double
+  constants (`mat3(scale[0], 0.0, 0.0, ...)`) convert each constant to float at import, exactly as glm does, so no
+  double code is left. The forward kernel is bit for bit with the original on the CPU simulator and within
+  MATH_ULPS on the Apple GPU; the gradient within the float error of its sums (compared one batch at a time, as
+  the EWA gradient is). Coverage 406 of 2364.
 
 ### Fixed
 - The wheel now ships frontends/coalesced.py and frontends/soft_double.py.

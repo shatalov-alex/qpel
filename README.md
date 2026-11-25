@@ -131,7 +131,7 @@ qpel is in active development. Phases 0 to 6 of the [roadmap](portable/ROADMAP.m
 | 6 | Matrix tiles and performance | done |
 | 7 | Library mapping (device-wide CUB first), Triton | in progress |
 
-The corpus coverage report (`python3 -m frontends.corpus`) currently counts 402 of 2364
+The corpus coverage report (`python3 -m frontends.corpus`) currently counts 406 of 2364
 kernels (llama.cpp, SAM 2, TRELLIS.2 and the extensions corpus: mamba, pytorch_sparse, mmcv, gsplat,
 bitsandbytes) whose import validates.
 

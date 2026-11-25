@@ -718,6 +718,8 @@ class GlmReader:
             c = self.glm_const(node)
             if c is not None:
                 return Const(c, term)
+        if term == 'f64':  # a double argument of glm's converting constructors (mat3(s, 0.0, ...)): its 64 bits
+            return self.glm_atom(self.expr(node, double=True), term, node)  # (frontends/soft_double.py)
         return self.glm_atom(self.expr(node), term, node)
 
     @guarded

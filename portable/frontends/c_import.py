@@ -870,7 +870,6 @@ class Importer(GlmReader):
         self.grid3d = False
         self.adaptations = []
         self.doubles = {}  # software-double functions copied into the program (soft_double.py): name -> id
-        self.double_literals = {}  # id of a double literal's bits -> its value
         self.instances = {}  # clang id of a template instantiation -> its qpel function name
         self.bool_params = set()  # clang ids of bool kernel arguments, passed as u32
         self.records = records(unit)  # struct name -> its clang record, for argument structs
@@ -4040,9 +4039,11 @@ class Importer(GlmReader):
             if source in ('bool', 'u8', 'u16', 'u32'):
                 return self.double_call('double_from_u32', self.convert_types(value, source, 'u32', outer))
         if source == 'f64' and target == 'f32':
-            if value in self.double_literals:
+            node = self.graph.nodes.get(value, {})
+            if node.get('kind') == 'Constant' and node['attributes'].get('scalar') == 'u64':  # a double's bits (a literal,
+                exact = struct.unpack('<d', struct.pack('<Q', int(node['attributes']['value'])))[0]  # or glm's copy of one)
                 with contextlib.suppress(OverflowError):
-                    rounded = struct.unpack('<f', struct.pack('<f', self.double_literals[value]))[0]
+                    rounded = struct.unpack('<f', struct.pack('<f', exact))[0]
                     if math.isfinite(rounded):
                         return self.graph.add('F32Literal', {'value': repr(rounded)})
             return self.double_call('double_to_f32', value)
@@ -4069,6 +4070,9 @@ class Importer(GlmReader):
         add = self.graph.add
         kind = n['kind']
         if scalar_of(n) == 'f64' and kind not in ('FloatingLiteral', 'BinaryOperator', 'UnaryOperator'):
+            found = self.glm_core(n) if self.glm_frame() is not None else None  # a double bound in glm's code
+            if found is not None:
+                return found
             raise Unsupported(n, 'double', 'double precision is in qpel only as arithmetic, comparisons and conversions '
                                            'of double expressions (frontends/soft_double.py)')
         if '_facade_error' in n:
@@ -4183,9 +4187,7 @@ class Importer(GlmReader):
             return self.convert_types(add('F32Literal', {'value': n['value']}), 'f32', 'f16', n)
         if kind == 'FloatingLiteral' and scalar_of(n) == 'f64':
             value = float(n['value'])
-            ident = self.graph.add('Constant', {'scalar': 'u64', 'value': str(struct.unpack('<Q', struct.pack('<d', value))[0])})
-            self.double_literals[ident] = value
-            return ident
+            return self.graph.add('Constant', {'scalar': 'u64', 'value': str(struct.unpack('<Q', struct.pack('<d', value))[0])})
         if kind == 'FloatingLiteral':
             if scalar_of(n) != 'f32':
                 raise Unsupported(n, 'double', 'double precision is not in qpel; write a float literal such as 0.5f')
