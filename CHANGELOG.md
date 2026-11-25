@@ -23,6 +23,24 @@ older programs keep building.
   `atomicAdd_system` is an atomic add, which imports gsplat's `add_counts_kernel`. Coverage 386 of 2364.
 - `differential.simulate.Program(sequential=True)`: an original whose file has barriers in other kernels runs its
   threads one after another, so its atomic additions come in the order qpel's do.
+- **Exact software doubles** (frontends/soft_double.py, NUMERICS.md): double arithmetic in an imported kernel
+  (`+ - * /`, comparisons, negation, conversions from and to float and the integer types up to 32 bits) is
+  computed in qpel functions on the double's 64 bits held in a `u64`, rounded to nearest even with subnormals kept,
+  so both platforms give IEEE double's results bit for bit (tests/test_soft_double.py, against numpy on the CPU
+  simulator and the Apple GPU). Double locals, buffers and math functions, and doubles made integers, are still
+  refused. With it 14 more mmcv kernels import (11 of them gradients: RoI align and pooling, bezier align).
+- **gsplat's EWA projection gradients** (`projection_ewa_3dgs_fused_bwd_kernel` and the packed one, unmodified;
+  tests/test_gsplat_projection_backward.py): the compensation's gradient in software doubles, the gaussians' and
+  cameras' sums over labeled partitions. Its labels leave out the batch, so with more than one batch a warp
+  spanning two adds one batch's gradients into the other's (shown by the test); qpel gives each batch its own,
+  compared with the original run one batch at a time. On the CPU simulator the gaussians' gradients are bit for
+  bit and the cameras' within the float error of their sums; on the Apple GPU within 2 MATH_ULPS times that.
+- A Metal kernel whose parameters and presence flags would pass Metal's 31 buffers gets its presence flags packed
+  in one buffer after its parameters (the generated host binds them the same way).
+- An atomic address through nested `+`/`-` (`v_viewmats + i * 4 + j`). Coverage 402 of 2364.
+
+### Fixed
+- The wheel now ships frontends/coalesced.py and frontends/soft_double.py.
 
 ## [0.7.0] — 2026-11-23
 

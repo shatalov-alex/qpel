@@ -6,6 +6,7 @@ tables. Anything without a qpel equivalent fails with a source location and a
 short reason code, never by guessing. The finished program then goes through
 the normal qpel checks, which decide types, scopes and pipeline effects.
 """
+import contextlib
 from pathlib import Path
 import math
 import re
@@ -608,10 +609,14 @@ def own_continue(body):
 
 
 def atomic_address_base(node):
-    """Parameter name behind an atomic address p, p + i or &p[i]."""
+    """Parameter name behind an atomic address p, p + i (also p + i + j) or &p[i]."""
     node = peel(node)
-    if node['kind'] == 'BinaryOperator' and node['opcode'] == '+':
-        return decl_name(node['inner'][0])
+    while node['kind'] == 'BinaryOperator' and node['opcode'] in ('+', '-'):
+        left, right = node['inner']
+        pointer = right if node['opcode'] == '+' and scalar_of(right) == 'pointer' and scalar_of(left) != 'pointer' else left
+        if peel(pointer)['kind'] != 'BinaryOperator':
+            return decl_name(pointer)
+        node = peel(pointer)
     if node['kind'] == 'UnaryOperator' and node['opcode'] == '&':
         inner = peel(node['inner'][0])
         if inner['kind'] == 'ArraySubscriptExpr':
@@ -722,6 +727,10 @@ MAXIMUM = {'max', 'umax'}
 FMA = {'__fmaf_rn', 'fmaf', 'fma'}
 TO_F16 = {'__float2half_rn', '__float2half'}
 TO_BF16 = {'__float2bfloat16_rn', '__float2bfloat16'}
+# Math functions CUDA also declares for double, which frontends/include declares for float only (soft_double.py)
+DOUBLE_OVERLOADS = {'fabs', 'fmin', 'fmax', 'floor', 'ceil', 'trunc', 'round', 'copysign', 'sqrt', 'exp', 'exp2', 'log',
+                    'log2', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'sinh', 'cosh', 'tanh', 'erf', 'expm1', 'log1p',
+                    'pow', 'atan2', 'hypot', 'abs', 'rsqrt', 'min', 'max', 'isnan', 'isinf', 'isfinite', 'fma'}
 # C, CUDA and Metal spellings of qpel's math functions (on float arguments).
 MATH_CALLS = {name: f for f in ('fabs', 'fmin', 'fmax', 'floor', 'ceil', 'trunc', 'round', 'copysign', 'sqrt',
                                 'exp', 'exp2', 'log', 'log2', 'sin', 'cos', 'tanh', 'erf', 'expm1', 'log1p', 'pow', 'atan2')
@@ -738,6 +747,7 @@ ROUNDED = {'__fadd_rn': '+', '__fsub_rn': '-', '__fmul_rn': '*', '__fdiv_rn': '/
 SATURATE = {f'qpel_f32_to_{t}': t for t in ('u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64')}
 TO_F32 = {'__half2float'}
 COMPARISONS = {'==', '!=', '<', '>', '<=', '>='}
+SOFT_SIGN = 2**63  # a software double's sign bit (soft_double.py)
 BINARY = {'+', '-', '*', '/', '%', '&', '|', '^', '&&', '||', '<<', '>>'} | COMPARISONS
 
 
@@ -859,6 +869,8 @@ class Importer(GlmReader):
         self.domains = {}  # kernel name -> 'grid1d' | 'grid3d'
         self.grid3d = False
         self.adaptations = []
+        self.doubles = {}  # software-double functions copied into the program (soft_double.py): name -> id
+        self.double_literals = {}  # id of a double literal's bits -> its value
         self.instances = {}  # clang id of a template instantiation -> its qpel function name
         self.bool_params = set()  # clang ids of bool kernel arguments, passed as u32
         self.records = records(unit)  # struct name -> its clang record, for argument structs
@@ -1494,6 +1506,11 @@ class Importer(GlmReader):
         for decl in self.decls:
             self.current = decl['name']
             function_ids.append(self.function(decl, types))
+        if self.doubles:
+            from .soft_double import ordered
+            function_ids = ordered(self.doubles) + function_ids
+            self.adaptations.append('double-precision arithmetic was computed exactly in software, each double held '
+                                    'as its 64 bits in a u64 (frontends/soft_double.py)')
         structs = [self.graph.add('StructDecl', {'name': name},
                                   {'fields': [self.graph.add('Field', {'name': f}, {'type': self.type_node(t)}) for f, t in fields]})
                    for name, fields in self.structs.items()]
@@ -3806,7 +3823,10 @@ class Importer(GlmReader):
 
     # -- expressions --
 
-    def expr(self, node, statement=False, address=False):
+    def expr(self, node, statement=False, address=False, double=False):
+        if scalar_of(node) == 'f64' and not double:
+            raise Unsupported(node, 'double', 'a double value is supported only inside an expression whose result '
+                                             'is converted to float or compared (frontends/soft_double.py)')
         reused = self.reused_load(node)
         if reused is not None:
             return self.expr(reused, statement, address)
@@ -3924,6 +3944,8 @@ class Importer(GlmReader):
         add = self.graph.add
         if source == target or 'pointer' in (source, target):
             return value
+        if 'f64' in (source, target):
+            return self.double_conversion(value, source, target, outer)
         if self.unsigned and (source, target) in (('u8', 'i32'), ('i32', 'u32'), ('u32', 'i32')):
             return value
         if target == 'bool':
@@ -3982,6 +4004,51 @@ class Importer(GlmReader):
             return add('Cast', {'to': 'bf16'}, {'operand': value})
         raise Unsupported(outer, 'conversion', f'conversion from {source} to {target} is not in qpel')
 
+    def double_call(self, name, *arguments):
+        from .soft_double import copy
+        if name in self.functions:
+            raise Unsupported({}, 'double', f'the program defines {name}, a name qpel\'s software doubles use')
+        return self.graph.add('Call', children={'arguments': list(arguments)},
+                              links={'function': copy(self.graph, name, self.doubles)})
+
+    def double_binary(self, n, op, left, right):
+        """A double operation as a call to the software-double function (soft_double.py); a comparison's
+        call gives 1 or 0."""
+        a, b = self.expr(left, double=True), self.expr(right, double=True)
+        arithmetic = {'+': 'double_add', '-': 'double_sub', '*': 'double_mul', '/': 'double_div'}
+        if op in arithmetic:
+            return self.double_call(arithmetic[op], a, b)
+        comparison = {'<': ('double_less', False), '>': ('double_less', True), '<=': ('double_less_equal', False),
+                      '>=': ('double_less_equal', True), '==': ('double_equal', False), '!=': ('double_equal', False)}
+        if op not in comparison:
+            raise Unsupported(n, 'double', f'operator {op} of doubles')
+        name, swap = comparison[op]
+        call = self.double_call(name, *((b, a) if swap else (a, b)))
+        return self.graph.add('Binary', {'operator': '==' if op == '!=' else '!='},
+                              {'left': call, 'right': self.graph.add('Literal', {'value': '0u'})})
+
+    def double_conversion(self, value, source, target, outer):
+        """Conversions to and from double, exactly (soft_double.py). A double literal converted to float is
+        folded: its value rounded to the nearest float, as C converts it."""
+        if target == 'f64':
+            if source in ('f16', 'bf16'):  # exact in f32
+                return self.double_call('double_from_f32', self.convert_types(value, source, 'f32', outer))
+            if source == 'f32':
+                return self.double_call('double_from_f32', value)
+            if source in ('i8', 'i16', 'i32'):
+                return self.double_call('double_from_i32', self.convert_types(value, source, 'i32', outer))
+            if source in ('bool', 'u8', 'u16', 'u32'):
+                return self.double_call('double_from_u32', self.convert_types(value, source, 'u32', outer))
+        if source == 'f64' and target == 'f32':
+            if value in self.double_literals:
+                with contextlib.suppress(OverflowError):
+                    rounded = struct.unpack('<f', struct.pack('<f', self.double_literals[value]))[0]
+                    if math.isfinite(rounded):
+                        return self.graph.add('F32Literal', {'value': repr(rounded)})
+            return self.double_call('double_to_f32', value)
+        raise Unsupported(outer, 'double', f'conversion from {source} to {target} (only from integers of 32 bits or '
+                                           'less and floats to double, and from double to float)')
+
     def type_node(self, t):
         kind, attributes = node_spec(t)
         return self.graph.add(kind, attributes)
@@ -4001,6 +4068,9 @@ class Importer(GlmReader):
             return self.expr(reused, statement, address)
         add = self.graph.add
         kind = n['kind']
+        if scalar_of(n) == 'f64' and kind not in ('FloatingLiteral', 'BinaryOperator', 'UnaryOperator'):
+            raise Unsupported(n, 'double', 'double precision is in qpel only as arithmetic, comparisons and conversions '
+                                           'of double expressions (frontends/soft_double.py)')
         if '_facade_error' in n:
             raise Unsupported(n, 'library', n['_facade_error'])
         found = self.glm_core(n)  # glm's operators and functions, and the source's glm matrices (glm.py)
@@ -4111,6 +4181,11 @@ class Importer(GlmReader):
         if kind == 'FloatingLiteral' and scalar_of(n) == 'f16' and exact_half(n['value']):
             # Metal's 16.h: a half literal of a value half holds exactly, as the f32 literal converted (exact)
             return self.convert_types(add('F32Literal', {'value': n['value']}), 'f32', 'f16', n)
+        if kind == 'FloatingLiteral' and scalar_of(n) == 'f64':
+            value = float(n['value'])
+            ident = self.graph.add('Constant', {'scalar': 'u64', 'value': str(struct.unpack('<Q', struct.pack('<d', value))[0])})
+            self.double_literals[ident] = value
+            return ident
         if kind == 'FloatingLiteral':
             if scalar_of(n) != 'f32':
                 raise Unsupported(n, 'double', 'double precision is not in qpel; write a float literal such as 0.5f')
@@ -4156,6 +4231,8 @@ class Importer(GlmReader):
             if op in COMPARISONS and not self.unsigned and all(
                     scalar_of(x) == 'i32' and nonnegative_int(x) for x in (left, right)):
                 return self.as_unsigned(n)  # e.g. two unsigned chars compared after promotion to int
+            if scalar_of(n) == 'f64' or op in COMPARISONS and scalar_of(left) == 'f64':
+                return self.double_binary(n, op, left, right)
             if op in ('<<', '>>'):
                 return add('Binary', {'operator': op}, {'left': self.expr(left), 'right': self.shift_count(right)})
             if scalar_of(n) == 'pointer':
@@ -4175,6 +4252,12 @@ class Importer(GlmReader):
         if kind == 'UnaryOperator':
             op = n['opcode']
             operand = n['inner'][0]
+            if scalar_of(n) == 'f64':
+                if op not in ('-', '+'):
+                    raise Unsupported(n, 'double', f'operator {op} of a double')
+                value = self.expr(operand, double=True)
+                return value if op == '+' else add('Binary', {'operator': '^'}, {'left': value, 'right': add(
+                    'Constant', {'scalar': 'u64', 'value': str(SOFT_SIGN)})})
             if op == '-' and scalar_of(operand) in ('f16', 'bf16'):  # -x of a half: exact, through f32
                 negated = add('Unary', {'operator': '-'}, {'operand': self.convert_types(self.expr(operand), scalar_of(operand), 'f32', n)})
                 return self.convert_types(negated, 'f32', scalar_of(operand), n)
@@ -4209,6 +4292,8 @@ class Importer(GlmReader):
             allowed = INTEGER_TERMS | {'f32', 'f16', 'bf16'} if scalar_of(n) == 'f32' else {'f32'}
             if source == scalar_of(n) == 'f16':
                 return self.core(operand, False, False)  # (half)h is h
+            if source == 'f64' and scalar_of(n) == 'f32':  # (float)(a double expression)
+                return self.convert_types(self.core(operand, False, False), 'f64', 'f32', n)
             if source == 'bool':  # (float)(x > 0): 1 or 0
                 return self.convert_types(self.expr(operand), 'bool', scalar_of(n), n)
             if scalar_of(n) == 'f16' and source in INTEGER_TERMS and not has_explicit_cast(n['inner'][0]):
@@ -4597,6 +4682,10 @@ class Importer(GlmReader):
             value = {'max': 2**(size - signed) - 1, 'min': -2**(size - 1) if signed else 0,
                      'lowest': -2**(size - 1) if signed else 0}[callee]
             return self.constant(n, limit, value)
+        if callee in DOUBLE_OVERLOADS and any(a.get('kind') == 'ImplicitCastExpr' and a.get('castKind') == 'FloatingCast'
+                                              and scalar_of(a['inner'][0]) == 'f64' for a in args):
+            # frontends/include declares these for float only; CUDA's double overload would compute in double
+            raise Unsupported(n, 'double', f'{callee} of a double')
         if callee in MINIMUM or callee in MAXIMUM:
             need(2)
             result = scalar_of(n)

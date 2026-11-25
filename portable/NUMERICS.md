@@ -202,8 +202,30 @@ result is the same bits:
   to double and then to float is innocuous (Figueroa 1995);
 - `x op= c` with float x and such a constant is the float operation.
 
-A double intermediate used by a second operation, or a double kernel argument or buffer, stays
-an error (`double`).
+Any other double expression is computed exactly in software (below).
+
+## Software doubles (import)
+
+A double expression whose result is converted to float or compared (gsplat's
+`v_compensation * 0.5 / (compensation + 1e-6)`) is imported exactly
+(`frontends/soft_double.py`). Each double value is its IEEE 754 binary64 bit pattern in a `u64`.
+Each operation is a call to a qpel function that the importer copies into the program:
+`double_add`, `double_sub`, `double_mul`, `double_div`, `double_less`, `double_less_equal` and
+`double_equal`, conversions from float and from 32-bit integers, and `double_to_f32`. They round
+to nearest even and keep subnormals, infinities and signed zeros. A NaN operand or invalid
+operation gives a NaN (CUDA leaves the payload open). Negation flips the sign bit. A double
+constant is its bits; converted straight to float, it is folded to the nearest float, as C
+converts it.
+
+`tests/test_soft_double.py` checks every function against numpy bit for bit (any NaN for a NaN):
+random bit patterns, cancellation, promoted floats, subnormals, specials and values near
+overflow, on the CPU simulator and the Apple GPU. An imported kernel matches the original, which
+computes in hardware doubles, bit for bit on both.
+
+Still an error (`double`, or `local-type` for a local): a double kept in a local, parameter or
+buffer; a double converted to an integer; a math function of a double. The importer's stub
+headers declare those functions for float only, so CUDA's double overloads are refused rather
+than narrowed.
 
 ## Features
 

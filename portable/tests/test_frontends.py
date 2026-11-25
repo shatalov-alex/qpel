@@ -150,7 +150,7 @@ class CudaIdioms(Sources):
             'atomic-update': THRESHOLD_CU.replace('binary[i] =', 'atomicAdd(binary, 1u); binary[i] +='),
             'conversion': THRESHOLD_CU.replace('1u :', '(unsigned int)(unsigned long long)binary :'),
             'for-init': THRESHOLD_CU.replace('binary[i] =', 'for (unsigned j = 0, k = 1; j < 2u; ++j) {} binary[i] ='),
-            'double': THRESHOLD_CU.replace('intensity[i] >= cutoff[i]', '0.1 * 3.0 > 0.25'),  # double arithmetic (0.5 > 0.25 is float)
+            'double': THRESHOLD_CU.replace('intensity[i] >= cutoff[i]', '(int)(intensity[i] * 3.0) > 0'),  # a double made an integer (double arithmetic is software)
             # (a helper reading threadIdx.x is passed it; the whole builtin as a value is not portable)
             'thread-builtin': '__device__ unsigned int lane(uint3 t) { return t.x; }\n' +
                               THRESHOLD_CU.replace('binary[i] =', 'lane(threadIdx); binary[i] ='),

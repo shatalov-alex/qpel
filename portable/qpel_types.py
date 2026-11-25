@@ -946,3 +946,12 @@ def pack_struct(fields, value):
     for name, t, offset in layout:
         struct.pack_into('<' + PACK[t], data, offset, value[name])
     return bytes(data)
+
+
+METAL_BUFFERS = 31  # a Metal kernel's buffer argument table
+
+
+def packed_presence(parameters, optional):
+    """True when a kernel's parameters and one presence flag per optional parameter would pass Metal's buffer
+    table: its flags are then packed in one buffer after its parameters (hosts bind it the same way)."""
+    return optional > 0 and parameters + optional > METAL_BUFFERS

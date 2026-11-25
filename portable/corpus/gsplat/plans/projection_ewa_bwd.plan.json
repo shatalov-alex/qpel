@@ -1,0 +1,328 @@
+{
+ "schema": 2,
+ "module": "gsplat_projection_ewa_bwd",
+ "resources": [
+  {
+   "name": "gaussian_offset",
+   "kind": "value",
+   "type": "i64",
+   "extent": null
+  },
+  {
+   "name": "gaussian_count",
+   "kind": "value",
+   "type": "i64",
+   "extent": null
+  },
+  {
+   "name": "B",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "C",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "N",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "means",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "gaussians",
+   "scale": 3
+  },
+  {
+   "name": "covars",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "gaussians",
+   "scale": 6,
+   "optional": true
+  },
+  {
+   "name": "quats",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "gaussians",
+   "scale": 4
+  },
+  {
+   "name": "scales",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "gaussians",
+   "scale": 3
+  },
+  {
+   "name": "viewmats",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "cameras",
+   "scale": 16
+  },
+  {
+   "name": "Ks",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "cameras",
+   "scale": 9
+  },
+  {
+   "name": "image_width",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "image_height",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "eps2d",
+   "kind": "value",
+   "type": "f32",
+   "extent": null
+  },
+  {
+   "name": "camera_model",
+   "kind": "value",
+   "type": "i32",
+   "extent": null
+  },
+  {
+   "name": "radii",
+   "kind": "input",
+   "type": "buffer<i32, read>",
+   "extent": "elements",
+   "scale": 2
+  },
+  {
+   "name": "conics",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "elements",
+   "scale": 3
+  },
+  {
+   "name": "compensations",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "elements"
+  },
+  {
+   "name": "v_means2d",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "elements",
+   "scale": 2
+  },
+  {
+   "name": "v_depths",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "elements"
+  },
+  {
+   "name": "v_conics",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "elements",
+   "scale": 3
+  },
+  {
+   "name": "v_compensations",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "elements",
+   "optional": true
+  },
+  {
+   "name": "v_means",
+   "kind": "inout",
+   "type": "buffer<f32, atomic>",
+   "extent": "gaussians",
+   "scale": 3,
+   "optional": true
+  },
+  {
+   "name": "v_covars",
+   "kind": "inout",
+   "type": "buffer<f32, atomic>",
+   "extent": "gaussians",
+   "scale": 6,
+   "optional": true
+  },
+  {
+   "name": "v_quats",
+   "kind": "inout",
+   "type": "buffer<f32, atomic>",
+   "extent": "gaussians",
+   "scale": 4
+  },
+  {
+   "name": "v_scales",
+   "kind": "inout",
+   "type": "buffer<f32, atomic>",
+   "extent": "gaussians",
+   "scale": 3
+  },
+  {
+   "name": "v_viewmats",
+   "kind": "inout",
+   "type": "buffer<f32, atomic>",
+   "extent": "cameras",
+   "scale": 16,
+   "optional": true
+  },
+  {
+   "name": "elements",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "gaussians",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "cameras",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "projection_ewa_3dgs_fused_bwd_kernel",
+   "grid": "elements",
+   "blockSize": 256,
+   "completionBarrier": true,
+   "bindings": [
+    {
+     "parameter": "gaussian_offset",
+     "resource": "gaussian_offset"
+    },
+    {
+     "parameter": "gaussian_count",
+     "resource": "gaussian_count"
+    },
+    {
+     "parameter": "B",
+     "resource": "B"
+    },
+    {
+     "parameter": "C",
+     "resource": "C"
+    },
+    {
+     "parameter": "N",
+     "resource": "N"
+    },
+    {
+     "parameter": "means",
+     "resource": "means"
+    },
+    {
+     "parameter": "covars",
+     "resource": "covars"
+    },
+    {
+     "parameter": "quats",
+     "resource": "quats"
+    },
+    {
+     "parameter": "scales",
+     "resource": "scales"
+    },
+    {
+     "parameter": "viewmats",
+     "resource": "viewmats"
+    },
+    {
+     "parameter": "Ks",
+     "resource": "Ks"
+    },
+    {
+     "parameter": "image_width",
+     "resource": "image_width"
+    },
+    {
+     "parameter": "image_height",
+     "resource": "image_height"
+    },
+    {
+     "parameter": "eps2d",
+     "resource": "eps2d"
+    },
+    {
+     "parameter": "camera_model",
+     "resource": "camera_model"
+    },
+    {
+     "parameter": "radii",
+     "resource": "radii"
+    },
+    {
+     "parameter": "conics",
+     "resource": "conics"
+    },
+    {
+     "parameter": "compensations",
+     "resource": "compensations"
+    },
+    {
+     "parameter": "v_means2d",
+     "resource": "v_means2d"
+    },
+    {
+     "parameter": "v_depths",
+     "resource": "v_depths"
+    },
+    {
+     "parameter": "v_conics",
+     "resource": "v_conics"
+    },
+    {
+     "parameter": "v_compensations",
+     "resource": "v_compensations"
+    },
+    {
+     "parameter": "v_means",
+     "resource": "v_means"
+    },
+    {
+     "parameter": "v_covars",
+     "resource": "v_covars"
+    },
+    {
+     "parameter": "v_quats",
+     "resource": "v_quats"
+    },
+    {
+     "parameter": "v_scales",
+     "resource": "v_scales"
+    },
+    {
+     "parameter": "v_viewmats",
+     "resource": "v_viewmats"
+    },
+    {
+     "parameter": "elements",
+     "resource": "elements"
+    }
+   ]
+  }
+ ]
+}

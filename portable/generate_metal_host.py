@@ -2,7 +2,7 @@
 import hashlib
 import keyword
 
-from qpel_types import TORCH_DTYPES, VALUE_TERMS, access, element, is_buffer, is_struct, normalize_plan, struct_layout
+from qpel_types import TORCH_DTYPES, VALUE_TERMS, access, element, is_buffer, is_struct, normalize_plan, packed_presence, struct_layout
 
 # Buffer element type -> torch dtype of the tensors the CuPy host historically shared (u32 as int32).
 BUFFER_TYPES = {'u8': 'uint8', 'i8': 'int8', 'u16': 'int16', 'i16': 'int16', 'u32': 'int32', 'i32': 'int32',
@@ -184,7 +184,10 @@ def generate(plan, shader):
             lines.append(f"    buffers[{('present', r['name'])!r}] = torch.tensor([1 if present[{r['name']!r}] else 0], device=device, dtype=torch.int32)")
     for s in plan['stages']:
         flags = [b['resource'] for b in s['bindings'] if b['resource'] in optional]
-        args = ', '.join([f"buffers[{b['resource']!r}]" for b in s['bindings']] + [f"buffers[{('present', f)!r}]" for f in flags])
+        presence = [f"buffers[{('present', f)!r}]" for f in flags]
+        if packed_presence(len(s['bindings']), len(flags)):  # one buffer of the flags (qpel_ir packed_presence)
+            presence = ['torch.cat([' + ', '.join(presence) + '])']
+        args = ', '.join([f"buffers[{b['resource']!r}]" for b in s['bindings']] + presence)
         if s.get('domain') == 'groups':  # whole threadgroups, as CUDA launches whole blocks
             lines.append(f"    _, threads = _groups({tuple(s['groups'])!r}, dims[{s['grid']!r}], {tuple(s['blockShape'])!r})")
             lines.append(f"    getattr(lib, {s['kernel']!r})({args}, threads=threads, group_size={tuple(s['blockShape'])!r})")

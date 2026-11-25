@@ -22,6 +22,12 @@ using namespace metal;
 #define QPEL_OPTIONAL_PARAM(type, name, binding, presence) type name [[buffer(binding)]], constant uint& qpel_present_##name [[buffer(presence)]]
 #define QPEL_OPTIONAL_READ_PARAM(type, name, binding, presence) QPEL_OPTIONAL_PARAM(type, name, binding, presence)
 #define QPEL_PRESENT(name) (qpel_present_##name != 0u)
+// A kernel whose parameters and presence flags would pass Metal's 31 buffers receives the flags packed in one
+// buffer after its parameters, each optional parameter reading its own at the kernel's start.
+#define QPEL_OPTIONAL_PARAM_PACKED(type, name, binding, slot) type name [[buffer(binding)]]
+#define QPEL_OPTIONAL_READ_PARAM_PACKED(type, name, binding, slot) QPEL_OPTIONAL_PARAM_PACKED(type, name, binding, slot)
+#define QPEL_PRESENCE_PARAM(binding) , constant uint* qpel_presence [[buffer(binding)]]
+#define QPEL_PRESENCE_LOCAL(name, slot) const uint qpel_present_##name = qpel_presence[slot];
 // IR version 12: module-level constant tables, and the leading zero bits of an integer.
 #define QPEL_CONSTANT_ARRAY(T, name, length) constant T name[length]
 #define QPEL_CONSTANT(T, name) constant T name

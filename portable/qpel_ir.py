@@ -7,6 +7,7 @@ import json
 from qpel_schema import validate_envelope, validate_structure
 from qpel_types import is_shared_view, view_element, V8_MATH, is_matrix, matrix_element
 from qpel_types import is_shared, shared_element, shared_length, is_vector, vector_element, vector_length, EXACT_MATH, validate_types, TypeChecker, LEGACY, term, is_buffer, element, access, is_signed, bits, unsigned_of, arithmetic, INTEGER_TERMS, is_array, array_element, array_length
+from qpel_types import packed_presence
 from qpel_pipeline import validate_pipeline
 from qpel_bounds import validate_static_bounds
 
@@ -340,13 +341,27 @@ class Lowering:
     def link(self,n,role):return self.nodes[n['links'][role]]
     def presence_binding(self,param):
         """The Metal buffer index of an optional parameter's presence flag: after all of its kernel's
-        parameters, in the order of the optional ones (hosts bind them the same way)."""
+        parameters, in the order of the optional ones (hosts bind them the same way). With packed flags
+        (packed_presence), the flag's index in the one buffer that holds them."""
         for f in self.nodes.values():
             if f['kind']=='Function' and param['id'] in f['children'].get('parameters',[]):
                 params=[self.nodes[i] for i in f['children']['parameters']]
                 optional=[q['id'] for q in params if q['attributes'].get('optional')]
-                return len(params)+optional.index(param['id'])
+                return optional.index(param['id'])+(0 if packed_presence(len(params),len(optional)) else len(params))
         raise ValueError('optional parameter outside a function')
+    def packed_suffix(self,param):
+        for f in self.nodes.values():
+            if f['kind']=='Function' and param['id'] in f['children'].get('parameters',[]):
+                params=[self.nodes[i] for i in f['children']['parameters']]
+                return '_PACKED' if packed_presence(len(params),sum(1 for q in params if q['attributes'].get('optional'))) else ''
+        return ''
+    def presence_locals(self,f):
+        """A kernel with packed presence flags: its parameter of them and each optional parameter's flag."""
+        params=[self.nodes[i] for i in f['children'].get('parameters',[])]
+        optional=[q for q in params if q['attributes'].get('optional')]
+        if not packed_presence(len(params),len(optional)):return '',''
+        return (' QPEL_PRESENCE_PARAM('+str(len(params))+')',
+                ''.join('QPEL_PRESENCE_LOCAL('+q['attributes']['name']+', '+str(k)+')\n' for k,q in enumerate(optional)))
     def shape_volume(self,n):
         """True for (s.x * s.y) * s.z of one shape parameter or local (the volume a kernel compares with)."""
         if n['kind']!='Binary' or n['attributes'].get('operator')!='*':return False
@@ -399,16 +414,18 @@ class Lowering:
             return 'struct '+a['name']+' {\n'+''.join('  '+self.emit(self.child(f,'type'))+' '+f['attributes']['name']+';\n' for f in self.children(n,'fields'))+'};\n'
         if k=='Function':
             kernel=a.get('isKernel',False);args=joined('parameters',', ')
+            packed,flags=self.presence_locals(n) if kernel else ('','')
+            args+=packed
             if kernel and self.child(n,'domain')['kind']=='Grid3D':
-                return 'QPEL_KERNEL '+e('resultType')+' '+a['name']+'('+args+' QPEL_GRID3D_PARAM) {\n'+e('body')+'\n}\n'
+                return 'QPEL_KERNEL '+e('resultType')+' '+a['name']+'('+args+' QPEL_GRID3D_PARAM) {\n'+flags+e('body')+'\n}\n'
             if kernel and self.child(n,'domain')['kind']=='Groups':
                 # Shared memory and the barrier counter live at the kernel's own scope (Metal's threadgroup rule).
                 body=self.child(n,'body')
                 shared=[v for v in self.children(body,'statements') if v['kind']=='Variable' and is_shared(term(self.child(v,'type')))]
                 top=''.join('QPEL_SHARED('+type_macro(shared_element(term(self.child(v,'type'))))+', '+v['attributes']['name']+', '+str(shared_length(term(self.child(v,'type'))))+');\n' for v in shared)
                 if self.contains(n,'BarrierCount'):top+='QPEL_BARRIER_COUNT_SCRATCH\n'
-                return 'QPEL_KERNEL '+e('resultType')+' '+a['name']+'('+args+' QPEL_GROUPS_PARAM) {\n'+top+e('body')+'\n}\n'
-            return ('QPEL_KERNEL ' if kernel else 'QPEL_DEVICE ')+e('resultType')+' '+a['name']+'('+args+(' QPEL_GRID_PARAM(qpel_index)' if kernel else '')+') {\n'+('QPEL_GRID_LOCAL(qpel_index)\n' if kernel else '')+e('body')+'\n}\n'
+                return 'QPEL_KERNEL '+e('resultType')+' '+a['name']+'('+args+' QPEL_GROUPS_PARAM) {\n'+flags+top+e('body')+'\n}\n'
+            return ('QPEL_KERNEL ' if kernel else 'QPEL_DEVICE ')+e('resultType')+' '+a['name']+'('+args+(' QPEL_GRID_PARAM(qpel_index)' if kernel else '')+') {\n'+flags+('QPEL_GRID_LOCAL(qpel_index)\n' if kernel else '')+e('body')+'\n}\n'
         if k=='Parameter':
             if a.get('reference') and is_array(term(self.child(n,'type'))):  # T (&a)[N] (IR version 10)
                 t=term(self.child(n,'type'))
@@ -419,8 +436,8 @@ class Lowering:
             macro='QPEL_PARAM(' if is_buffer(declared) or declared=='shape3' else 'QPEL_VALUE('  # structs travel as values
             if a.get('optional'):  # CUDA: the pointer (null when left out); Metal: the buffer and a presence flag
                 if is_buffer(declared) and access(declared)=='read':  # (see QPEL_READ_PARAM below)
-                    return 'QPEL_OPTIONAL_READ_PARAM('+e('type')+', '+a['name']+', '+str(a.get('binding',0))+', '+str(self.presence_binding(n))+')'
-                return 'QPEL_OPTIONAL_PARAM('+e('type')+', '+a['name']+', '+str(a.get('binding',0))+', '+str(self.presence_binding(n))+')'
+                    return 'QPEL_OPTIONAL_READ_PARAM'+self.packed_suffix(n)+'('+e('type')+', '+a['name']+', '+str(a.get('binding',0))+', '+str(self.presence_binding(n))+')'
+                return 'QPEL_OPTIONAL_PARAM'+self.packed_suffix(n)+'('+e('type')+', '+a['name']+', '+str(a.get('binding',0))+', '+str(self.presence_binding(n))+')'
             if is_buffer(declared) and access(declared)=='read':
                 # no other parameter of the dispatch is the same resource (qpel_pipeline: ALIAS), and nothing writes
                 # a read buffer, so CUDA may read it through the read-only cache, as originals' const __restrict__

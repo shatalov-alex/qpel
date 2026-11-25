@@ -18,6 +18,10 @@ static_assert(sizeof(QpelShape) == 16, "qpel shape ABI must be 16 bytes");
 // An optional buffer (IR version 9): the pointer, null when the caller leaves the buffer out.
 #define QPEL_OPTIONAL_PARAM(type, name, binding, presence) type name
 #define QPEL_OPTIONAL_READ_PARAM(type, name, binding, presence) type __restrict__ name
+#define QPEL_OPTIONAL_PARAM_PACKED(type, name, binding, slot) type name
+#define QPEL_OPTIONAL_READ_PARAM_PACKED(type, name, binding, slot) type __restrict__ name
+#define QPEL_PRESENCE_PARAM(binding)
+#define QPEL_PRESENCE_LOCAL(name, slot)
 #define QPEL_PRESENT(name) ((name) != nullptr)
 // IR version 12: module-level constant tables, and the leading zero bits of an integer.
 #define QPEL_CONSTANT_ARRAY(T, name, length) __device__ const T name[length]
