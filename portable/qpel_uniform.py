@@ -293,13 +293,24 @@ class Uniformity(TypeChecker):
                                                              'under a condition or in a loop that differs between threads')
 
 
+def subgroup_block(attributes):
+    """A block whose subgroups are all full and in which a thread's x index divided by a multiple of 32
+    is the same for a whole subgroup: x a multiple of 32 (x / 32 names one subgroup of a row), or x
+    dividing 32 with all its threads a multiple of 32 (gsplat's 16 x 16 tiles: x / 32 is 0)."""
+    x = attributes['blockSize']
+    total = x * attributes.get('blockHeight', 1) * attributes.get('blockDepth', 1)
+    return x % 32 == 0 or 32 % x == 0 and total % 32 == 0
+
+
 def check_subgroup_dispatch(program, using):
-    """A kernel with subgroup operations runs in groups whose x size is a multiple of 32: every
-    subgroup is then full, and x / 32 names one subgroup."""
+    """A kernel with subgroup operations runs in groups whose subgroups are full (subgroup_block)."""
     for n in program['nodes']:
-        if n['kind'] == 'Dispatch' and n['links'].get('kernel') in using and n['attributes']['blockSize'] % 32:
+        if n['kind'] == 'Dispatch' and n['links'].get('kernel') in using and not subgroup_block(n['attributes']):
+            a = n['attributes']
+            shape = f"{a['blockSize']} x {a.get('blockHeight', 1)} x {a.get('blockDepth', 1)}"
             raise ValueError(f"{n['id']} (Dispatch) SUBGROUP_BLOCK: a kernel with subgroup operations needs a block "
-                             f"whose x size is a multiple of 32, not {n['attributes']['blockSize']}")
+                             f"whose x size is a multiple of 32, or divides 32 with a multiple of 32 threads in all, "
+                             f"not {shape}")
 
 
 def check_barriers(program):

@@ -44,6 +44,16 @@ older programs keep building.
   double code is left. The forward kernel is bit for bit with the original on the CPU simulator and within
   MATH_ULPS on the Apple GPU; the gradient within the float error of its sums (compared one batch at a time, as
   the EWA gradient is). Coverage 406 of 2364.
+- **gsplat's rasterizer gradient** (`rasterize_to_pixels_3dgs_bwd_kernel` for 3 channels, unmodified;
+  tests/test_gsplat_rasterize_backward.py): a warp of the whole thread block (`cg::tiled_partition<32>(block)`) is
+  qpel's subgroup (frontends/warps.py): `cg::reduce` over it a subgroup reduction, `any`/`all` a subgroup or/and,
+  `thread_rank()` the lane, and a helper's warp parameter (`warpSum(v, warp)`) is dropped. Dynamic shared memory
+  carved at an offset known only at launch (`&id_batch[block_size]`) is one shared array per view, each length
+  given at import. `dim3` locals are three unsigned locals; `bool b = 0` is `false`; a glm vector buffer added to
+  atomically through `(float *)(v)` is an atomic buffer of floats. Subgroup operations now accept a block whose x
+  size divides 32 (a 16 x 16 tile) as well as multiples of 32: its warps are full on both platforms. The simulator's
+  warp tiles gained `any`, `all`, `ballot` and a real `reduce`, and `Program.background` runs a simulation at
+  background priority. Within the float error of the gradients' sums on the CPU simulator and the Apple GPU.
 
 ### Fixed
 - The wheel now ships frontends/coalesced.py and frontends/soft_double.py.

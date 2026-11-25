@@ -32,7 +32,7 @@ VERSION = re.search(r"^VERSION = '([^']+)'", (PORTABLE/'qpel.py').read_text(), r
 
 MODULES = ['qpel_bounds', 'qpel_ir', 'qpel_opt', 'qpel_pipeline', 'qpel_schema', 'qpel_text', 'qpel_types',
            'qpel_uniform', 'build_backends', 'generate_cuda_host', 'generate_metal_host', 'qpel_mcp']
-FRONTENDS = ['__init__', 'c_import', 'clang_ast', 'coalesced', 'demote', 'facades', 'functors', 'glm', 'records', 'soft_double', 'statics',
+FRONTENDS = ['__init__', 'c_import', 'clang_ast', 'coalesced', 'demote', 'facades', 'functors', 'glm', 'records', 'soft_double', 'statics', 'warps',
              'torch_op', 'views']  # roundtrip and corpus need the repository's corpus
 DIFFERENTIAL = ['__init__', 'cases', 'compare', 'metal', 'metal_cpu', 'metal_text', 'simulate', 'verify']  # what `qpel verify` runs
 FLAT = '|'.join(MODULES)

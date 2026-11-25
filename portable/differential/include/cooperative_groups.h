@@ -51,7 +51,13 @@ template <unsigned int N, class Parent = void> struct thread_block_tile {
   template <class T> T shfl_down(T v, unsigned int d) const { return ::__shfl_down_sync(0xffffffffu, v, d, (int)N); }
   template <class T> T shfl_up(T v, unsigned int d) const { return ::__shfl_up_sync(0xffffffffu, v, d, (int)N); }
   template <class T> T shfl_xor(T v, unsigned int m) const { return ::__shfl_xor_sync(0xffffffffu, v, (int)m, (int)N); }
+  // votes over the tile's lanes: the warp's ballot, of this tile's N lanes
+  unsigned int ballot(int p) const { return (::__ballot_sync(0xffffffffu, p) & qpel_lanes()) >> qpel_first(); }
+  bool any(int p) const { return (::__ballot_sync(0xffffffffu, p) & qpel_lanes()) != 0u; }
+  bool all(int p) const { return (::__ballot_sync(0xffffffffu, p) & qpel_lanes()) == qpel_lanes(); }
  private:
+  static unsigned int qpel_first() { return (qpel_rank() % 32u) / N * N; }
+  static unsigned int qpel_lanes() { return N >= 32 ? 0xffffffffu : ((1u << N) - 1u) << qpel_first(); }
   static unsigned int qpel_rank() { return threadIdx.x + blockDim.x * (threadIdx.y + blockDim.y * threadIdx.z); }
 };
 template <unsigned int N, class Parent> thread_block_tile<N, Parent> tiled_partition(const Parent&) { return thread_block_tile<N, Parent>(); }
@@ -107,6 +113,12 @@ template <class T, class Op> T inclusive_scan(const coalesced_group& g, T v, Op)
 template <class T = void> struct plus { T operator()(T a, T b) const { return a + b; } };
 template <class T = void> struct less { T operator()(T a, T b) const { return a < b ? a : b; } };
 template <class T = void> struct greater { T operator()(T a, T b) const { return a > b ? a : b; } };
+// A tile's reduction: an xor butterfly over its lanes (16, 8, 4, 2, 1 for a warp), as CUDA's tiles
+// reduce, every lane getting the result
+template <unsigned int N, class Parent, class T, class Op> T reduce(const thread_block_tile<N, Parent>& g, T v, Op op) {
+  for (unsigned int m = N / 2; m > 0; m /= 2) v = op(v, g.shfl_xor(v, m));
+  return v;
+}
 template <class Group, class T, class Op> T reduce(const Group&, T, Op);  // (other groups: declared only)
 template <class Group, class T, class Op> T inclusive_scan(const Group&, T, Op);
 template <class Group, class T, class Op> T exclusive_scan(const Group&, T, Op);

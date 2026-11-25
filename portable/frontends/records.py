@@ -720,3 +720,59 @@ def pointer_offsets(unit):
                     top.clear()
                     top.update(moved)
             body['inner'].insert(0, {'kind': 'DeclStmt', 'inner': [offset]})
+
+
+def _dim3_arguments(init):
+    """The x, y, z a dim3 local is made of (`dim3 b(x, y, z)`, `dim3 b{x, y}`), missing ones 1; else None."""
+    node = init
+    while node.get('kind') in ('ExprWithCleanups', 'ImplicitCastExpr', 'MaterializeTemporaryExpr', 'ParenExpr',
+                               'CXXFunctionalCastExpr') and node.get('inner'):
+        node = node['inner'][0]
+    if node.get('kind') not in ('CXXConstructExpr', 'InitListExpr', 'CXXTemporaryObjectExpr'):
+        return None
+    args = [a for a in node.get('inner', ()) if a.get('kind') != 'CXXDefaultArgExpr']
+    if not 1 <= len(args) <= 3 or len(node.get('inner', ())) == 1 and _spelling(args[0].get('type', {})).endswith('dim3'):
+        return None  # (a copy of another dim3)
+    one = {'kind': 'IntegerLiteral', 'type': {'qualType': 'unsigned int'}, 'valueCategory': 'prvalue', 'value': '1'}
+    return args + [dict(one) for _ in range(3 - len(args))]
+
+
+def dim3_locals(unit):
+    """`dim3 block_index(a, b, c)`, a local used only through its components: three unsigned locals
+    block_index_x, _y and _z (gsplat's rasterizer gradients). Returns the names split."""
+    split = []
+    for function in walk(unit):
+        if function.get('kind') not in ('FunctionDecl', 'CXXMethodDecl') or _body(function) is None:
+            continue
+        body = _body(function)
+        for statement in walk(body):
+            if statement.get('kind') != 'DeclStmt' or len(statement.get('inner', ())) != 1:
+                continue
+            decl = statement['inner'][0]
+            if decl.get('kind') != 'VarDecl' or _spelling(decl.get('type', {})).replace('const ', '').strip() != 'dim3' \
+                    or not decl.get('inner'):
+                continue
+            args = _dim3_arguments(decl['inner'][0])
+            if args is None:
+                continue
+            uses = [n for n in walk(body) if n.get('kind') == 'DeclRefExpr' and n.get('referencedDecl', {}).get('id') == decl['id']]
+            members = [n for n in walk(body) if n.get('kind') == 'MemberExpr' and n.get('name') in ('x', 'y', 'z')
+                       and n.get('inner') and n['inner'][0].get('kind') == 'DeclRefExpr'
+                       and n['inner'][0].get('referencedDecl', {}).get('id') == decl['id']]
+            if len(members) != len(uses):
+                continue  # the whole dim3 is used: it stays, and the importer reports it
+            unsigned = {'qualType': 'unsigned int'}
+            made = {}
+            for axis, value in zip('xyz', args):
+                made[axis] = {'kind': 'VarDecl', 'id': f'{decl["id"]}-{axis}', 'name': f'{decl["name"]}_{axis}',
+                              'type': dict(unsigned), 'init': 'c', 'inner': [value],
+                              **{k: decl[k] for k in ('range', 'loc') if k in decl}}
+            statement['inner'] = list(made.values())
+            for member in members:
+                local = made[member['name']]
+                member.clear()
+                member.update({'kind': 'DeclRefExpr', 'type': dict(unsigned), 'valueCategory': 'lvalue',
+                               'referencedDecl': {'id': local['id'], 'kind': 'VarDecl', 'name': local['name'],
+                                                  'type': dict(unsigned)}})
+            split.append(decl['name'])
+    return split

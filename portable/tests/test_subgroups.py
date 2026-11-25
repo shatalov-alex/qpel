@@ -114,6 +114,9 @@ class Rules(unittest.TestCase):
     def test_where_subgroup_operations_go(self):
         with self.assertRaisesRegex(ValueError, 'SUBGROUP_BLOCK'):
             validate(parse_program(PROGRAM.replace('block (64, 1, 1)', 'block (48, 1, 1)')))
+        with self.assertRaisesRegex(ValueError, 'SUBGROUP_BLOCK'):  # 16 lanes: a subgroup not full
+            validate(parse_program(PROGRAM.replace('block (64, 1, 1)', 'block (16, 1, 1)')))
+        validate(parse_program(PROGRAM.replace('block (64, 1, 1)', 'block (16, 16, 1)')))  # x divides 32, full subgroups
         with self.assertRaisesRegex(ValueError, 'SUBGROUP_TYPE'):
             validate(parse_program(PROGRAM.replace('qpel.subgroup_or(qpel.subgroup_lane * 3u)',
                                                    'cast<u32>(qpel.subgroup_xor(cast<f32>(qpel.subgroup_lane)))')))

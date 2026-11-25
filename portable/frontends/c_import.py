@@ -22,9 +22,10 @@ from . import clang_ast
 from .clang_ast import position
 from .facades import inline_facades
 from .views import dead_parameters, shared_views
-from .records import scalarize_struct_values, glm_members, flatten_local_matrices, pointer_offsets, wide_copies, array_arguments, \
+from .records import scalarize_struct_values, dim3_locals, glm_members, flatten_local_matrices, pointer_offsets, wide_copies, array_arguments, \
     std_arrays
 from .coalesced import coalesced_singletons
+from .warps import warp_tiles
 from .functors import scalarize_functors
 from .demote import demote_unit
 from .statics import constant_values, desugar_aliases, flatten_argument_structs, instances_to_definitions, lift_statics, lower_switches, single_rows, read_enums, local_pointers_as_references
@@ -608,20 +609,28 @@ def own_continue(body):
     return any(own_continue(child) for child in body.get('inner', ()))
 
 
+def through_pointer_casts(node):
+    """node without casts of any kind (`(float *)(v_conics)` of a `vec3 *v_conics` is v_conics)."""
+    while node.get('kind') in PASSTHROUGH and node.get('inner'):
+        node = node['inner'][0]
+    return node
+
+
 def atomic_address_base(node):
-    """Parameter name behind an atomic address p, p + i (also p + i + j) or &p[i]."""
+    """Parameter name behind an atomic address p, p + i (also p + i + j) or &p[i], also through a
+    reinterpretation of p (`(float *)(v_conics) + 3 * g`, gsplat's rasterizer gradients)."""
     node = peel(node)
     while node['kind'] == 'BinaryOperator' and node['opcode'] in ('+', '-'):
         left, right = node['inner']
         pointer = right if node['opcode'] == '+' and scalar_of(right) == 'pointer' and scalar_of(left) != 'pointer' else left
         if peel(pointer)['kind'] != 'BinaryOperator':
-            return decl_name(pointer)
+            return decl_name(pointer) or decl_name(through_pointer_casts(pointer))
         node = peel(pointer)
     if node['kind'] == 'UnaryOperator' and node['opcode'] == '&':
         inner = peel(node['inner'][0])
         if inner['kind'] == 'ArraySubscriptExpr':
             return decl_name(inner['inner'][0])
-    return decl_name(node)
+    return decl_name(node) or decl_name(through_pointer_casts(node))
 
 
 # --- dialects --------------------------------------------------------------
@@ -815,7 +824,9 @@ class Importer(GlmReader):
         lower_switches(unit)  # switch (DATA_TYPE): the case taken; switch (x): an if-else chain (statics.py)
         single_rows(unit)  # for (int r = 0; r < kNRows; ++r) with kNRows = 1, T a[1][N] (statics.py)
         flatten_local_matrices(unit)  # float pix_out[P][C]: pix_out[P * C], read at [p * C + c] (records.py)
+        dim3_locals(unit)  # dim3 b(x, y, z) used through b.x, b.y, b.z: locals b_x, b_y, b_z (records.py)
         groups = coalesced_singletons(unit)  # cg::reduce(labeled_partition(coalesced_threads(), id), v, op): v (coalesced.py)
+        groups += warp_tiles(unit)  # cg::reduce(tiled_partition<32>(block), v, op): qpel_subgroup_op(v) (warps.py)
         std_arrays(unit)  # std::array<float, 16> acc{}: float acc[16], acc[k], acc.data() (records.py)
         array_arguments(unit)  # f(items) of float items[8] for a helper's `const float *p`: a copy taking `const float (&p)[8]` (records.py)
         wide_copies(unit)  # reinterpret_cast<uint4 *>(a)[0] = reinterpret_cast<const uint4 *>(p)[i]: element copies (records.py)
@@ -1281,6 +1292,14 @@ class Importer(GlmReader):
         if t[0] == 'pointer':
             if find((decl['name'], i)) in atomic_groups or t[2] in ATOMIC_ELEMENTS.values():
                 scalar = t[2] if t[2] in ATOMIC_ELEMENTS else ATOMIC_SCALARS.get(t[2])
+                if is_vector(t[2]) and vector_element(t[2]) in ATOMIC_ELEMENTS and self.dialect.is_kernel(decl) and not t[1]:
+                    # vec3 *v_conics added to through `(float *)(v_conics) + 3 * g` (gsplat's rasterizer gradients):
+                    # an atomic buffer of the vector's scalars, N per element of its extent
+                    self.vector_params[p['id']] = vector_length(t[2])
+                    if self.views.setdefault(decl['name'], {}).setdefault(self.safe_name(p['name']), vector_length(t[2])) \
+                            != vector_length(t[2]):
+                        raise Unsupported(p, 'buffer-type', f'{p["name"]} is read as vectors of two lengths')
+                    return type_buffer(vector_element(t[2]), 'atomic')
                 if scalar is None:
                     if t[2] == 'i64':
                         raise Unsupported(p, 'atomic-type', f'atomics on {p["type"]["qualType"]} are not portable: Metal\'s '
@@ -3597,6 +3616,10 @@ class Importer(GlmReader):
             node = peel(node['inner'][0])
             if node.get('kind') == 'ArraySubscriptExpr':
                 node = peel(node['inner'][0])
+        if node.get('castKind') == 'BitCast':  # (float *)(v_conics) of a vector buffer read as its scalars
+            inner = through_pointer_casts(node)
+            if inner.get('referencedDecl', {}).get('id') in self.vector_params:
+                node = inner
         return node.get('referencedDecl', {}).get('id') if node.get('kind') == 'DeclRefExpr' else None
 
     def buffer_local(self, decl, name, kind):
@@ -3725,6 +3748,14 @@ class Importer(GlmReader):
                 add('Assign', children={'target': self.name(flag), 'value': self.int_value('u32', 1)})]})
         if kind == 'BinaryOperator' and node['opcode'] == '=':
             target, value = node['inner']
+            source = scalar_of(peel(value))
+            if scalar_of(target) == 'bool' and source in INTEGER_TERMS:  # `valid = 0;` of a bool: C's value != 0
+                folded = integer_constant(value)
+                if folded is not None:
+                    return add('Assign', children={'target': self.lvalue(target),
+                                                   'value': add('Literal', {'value': 'true' if folded else 'false'})})
+                return add('Assign', children={'target': self.lvalue(target), 'value': add(
+                    'Binary', {'operator': '!='}, {'left': self.expr(value), 'right': self.int_value(source, 0)})})
             # (a pointer: its offset read as a buffer offset, as in an initializer: `Bvar = Bvar + n`)
             return add('Assign', children={'target': self.lvalue(target),
                                            'value': self.expr(value, address=scalar_of(value) == 'pointer')})
@@ -4284,6 +4315,10 @@ class Importer(GlmReader):
             if entry and entry[0] in ('local', 'param') and (is_shared(entry[2]) or is_shared_view(entry[2])) \
                     and target[0] == 'pointer' and target[2] == view_element(entry[2]):
                 return self.expr(n['inner'][0], address=True)  # (threadgroup T*) of memory already of T
+            if entry and entry[0] == 'param' and root['referencedDecl']['id'] in self.vector_params and \
+                    type_is_buffer(entry[2]) and access(entry[2]) == 'atomic' and target[0] == 'pointer' and \
+                    target[2] == element_of(entry[2]) and not n.get('qpelUnaligned'):
+                return self.expr(n['inner'][0], address=True)  # (float *)(v_conics): already its buffer of floats
             if target[0] != 'pointer' or target[2] not in SCALAR_TERMS - {'bool'}:
                 raise Unsupported(n, 'conversion', f'reinterpreting as {n["type"]["qualType"]} is not in qpel')
             return add('View', {'element': target[2]} | ({'unaligned': True} if n.get('qpelUnaligned') else {}),

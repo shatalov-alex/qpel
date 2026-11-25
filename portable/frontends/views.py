@@ -10,8 +10,10 @@ A library kernel often declares one block of dynamic shared memory and carves it
 (mamba's selective scan). qpel's shared memory is typed, so each view becomes shared memory of its
 own: a reference to an array type (a CUB TempStorage, `T[N]` in qpel's CUB subset) a `__shared__
 T name[N]`, and a pointer `T *name` an `extern __shared__ T name[]`, whose length the import is
-given like any dynamic shared memory (import_source(shared={'smem_running_prefix': 256})). The
-byte block itself goes. This keeps a program's results when its views are used as separate
+given like any dynamic shared memory (import_source(shared={'smem_running_prefix': 256})). A view
+another starts inside (`reinterpret_cast<vec3 *>(&id_batch[N])`) holds N elements: N when N is a
+constant, else (gsplat's `block.size()`) the length the import is given for it. The byte block
+itself goes. This keeps a program's results when its views are used as separate
 memories, which CUB's reuse rules require (a TempStorage is reused only after a barrier, and each
 use writes what it then reads); a program that wrote through one view and read the same bytes
 through another would not be read correctly, and is not recognised: every use of the block must be
@@ -154,8 +156,10 @@ def shared_views(unit):
                 if not more:
                     break
                 views.extend(more)
-            if any(v is None or v <= 0 for v in lengths.values()):
-                continue  # a view ends where nothing says: the kernel stays as it is
+            if any(v is not None and v <= 0 for v in lengths.values()):
+                continue  # two views start at one place: the kernel stays as it is
+            # a view whose end is known only at run time (`&id_batch[block_size]`, block_size = block.size())
+            # is dynamic shared memory of its own, its length given at import like any other's
             plans = []  # (view, None when unused | (spelling, pointer?))
             for view in views:
                 spelled = _spelling(view['type']).replace('&', ' & ').strip()
@@ -167,7 +171,7 @@ def shared_views(unit):
                     plans.append((view, None))
                 elif array:
                     plans.append((view, (f'{array.group(1)}[{array.group(2)}]', False)))
-                elif pointer and view['id'] in lengths:
+                elif pointer and lengths.get(view['id']) is not None:
                     plans.append((view, (f'{pointer.group(1)}[{lengths[view["id"]]}]', False)))
                 elif pointer:
                     plans.append((view, (f'{pointer.group(1)}[]', True)))

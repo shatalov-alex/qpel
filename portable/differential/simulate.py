@@ -428,8 +428,13 @@ class Program:
             folder = Path(folder)
             self.write_case(case, folder)
             seconds = getattr(self, 'timeout', 300)
+            command = [str(self.binary), str(folder)]
+            if getattr(self, 'background', False) and shutil.which('taskpolicy'):
+                # macOS background QoS (efficiency cores): a block of hundreds of threads exchanging values through
+                # warps wakes them many times over, and would otherwise take every core for minutes
+                command = ['taskpolicy', '-b'] + command
             try:
-                result = subprocess.run([str(self.binary), str(folder)], capture_output=True, text=True, timeout=seconds)
+                result = subprocess.run(command, capture_output=True, text=True, timeout=seconds)
             except subprocess.TimeoutExpired:
                 raise RuntimeError(f'simulator failed on {case.label}: it did not finish within {seconds} s '
                                    '(a loop that never ends?)') from None
