@@ -1,0 +1,317 @@
+{
+ "schema": 2,
+ "module": "gsplat_rasterize_2dgs_fwd",
+ "resources": [
+  {
+   "name": "gaussians",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "images",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "tiles",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "isects",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "pixels",
+   "kind": "shape",
+   "type": "shape3",
+   "extent": null
+  },
+  {
+   "name": "I",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "N",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "n_isects",
+   "kind": "value",
+   "type": "i64",
+   "extent": null
+  },
+  {
+   "name": "packed",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "means2d",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "gaussians",
+   "scale": 2
+  },
+  {
+   "name": "ray_transforms",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "gaussians",
+   "scale": 9
+  },
+  {
+   "name": "colors",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "gaussians",
+   "scale": 3
+  },
+  {
+   "name": "opacities",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "gaussians"
+  },
+  {
+   "name": "normals",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "gaussians",
+   "scale": 3
+  },
+  {
+   "name": "backgrounds",
+   "kind": "input",
+   "type": "buffer<f32, read>",
+   "extent": "images",
+   "scale": 3,
+   "optional": true
+  },
+  {
+   "name": "masks",
+   "kind": "input",
+   "type": "buffer<u8, read>",
+   "extent": "tiles",
+   "optional": true
+  },
+  {
+   "name": "image_width",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "image_height",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "tile_size",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "tile_width",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "tile_height",
+   "kind": "value",
+   "type": "u32",
+   "extent": null
+  },
+  {
+   "name": "tile_offsets",
+   "kind": "input",
+   "type": "buffer<i64, read>",
+   "extent": "tiles"
+  },
+  {
+   "name": "flatten_ids",
+   "kind": "input",
+   "type": "buffer<i32, read>",
+   "extent": "isects"
+  },
+  {
+   "name": "render_colors",
+   "kind": "output",
+   "type": "buffer<f32, write>",
+   "extent": "pixels",
+   "scale": 3
+  },
+  {
+   "name": "render_alphas",
+   "kind": "output",
+   "type": "buffer<f32, write>",
+   "extent": "pixels"
+  },
+  {
+   "name": "render_normals",
+   "kind": "output",
+   "type": "buffer<f32, write>",
+   "extent": "pixels",
+   "scale": 3
+  },
+  {
+   "name": "render_distort",
+   "kind": "output",
+   "type": "buffer<f32, write>",
+   "extent": "pixels",
+   "optional": true
+  },
+  {
+   "name": "render_median",
+   "kind": "output",
+   "type": "buffer<f32, write>",
+   "extent": "pixels"
+  },
+  {
+   "name": "last_ids",
+   "kind": "output",
+   "type": "buffer<i32, write>",
+   "extent": "pixels"
+  },
+  {
+   "name": "median_ids",
+   "kind": "output",
+   "type": "buffer<i32, write>",
+   "extent": "pixels"
+  }
+ ],
+ "stages": [
+  {
+   "kernel": "rasterize_to_pixels_2dgs_fwd_kernel_3_f32",
+   "grid": "tiles",
+   "blockSize": 16,
+   "completionBarrier": true,
+   "domain": "groups",
+   "blockShape": [
+    16,
+    16,
+    1
+   ],
+   "groups": [
+    "W",
+    "H",
+    "N"
+   ],
+   "bindings": [
+    {
+     "parameter": "I",
+     "resource": "I"
+    },
+    {
+     "parameter": "N",
+     "resource": "N"
+    },
+    {
+     "parameter": "n_isects",
+     "resource": "n_isects"
+    },
+    {
+     "parameter": "packed",
+     "resource": "packed"
+    },
+    {
+     "parameter": "means2d",
+     "resource": "means2d"
+    },
+    {
+     "parameter": "ray_transforms",
+     "resource": "ray_transforms"
+    },
+    {
+     "parameter": "colors",
+     "resource": "colors"
+    },
+    {
+     "parameter": "opacities",
+     "resource": "opacities"
+    },
+    {
+     "parameter": "normals",
+     "resource": "normals"
+    },
+    {
+     "parameter": "backgrounds",
+     "resource": "backgrounds"
+    },
+    {
+     "parameter": "masks",
+     "resource": "masks"
+    },
+    {
+     "parameter": "image_width",
+     "resource": "image_width"
+    },
+    {
+     "parameter": "image_height",
+     "resource": "image_height"
+    },
+    {
+     "parameter": "tile_size",
+     "resource": "tile_size"
+    },
+    {
+     "parameter": "tile_width",
+     "resource": "tile_width"
+    },
+    {
+     "parameter": "tile_height",
+     "resource": "tile_height"
+    },
+    {
+     "parameter": "tile_offsets",
+     "resource": "tile_offsets"
+    },
+    {
+     "parameter": "flatten_ids",
+     "resource": "flatten_ids"
+    },
+    {
+     "parameter": "render_colors",
+     "resource": "render_colors"
+    },
+    {
+     "parameter": "render_alphas",
+     "resource": "render_alphas"
+    },
+    {
+     "parameter": "render_normals",
+     "resource": "render_normals"
+    },
+    {
+     "parameter": "render_distort",
+     "resource": "render_distort"
+    },
+    {
+     "parameter": "render_median",
+     "resource": "render_median"
+    },
+    {
+     "parameter": "last_ids",
+     "resource": "last_ids"
+    },
+    {
+     "parameter": "median_ids",
+     "resource": "median_ids"
+    }
+   ]
+  }
+ ]
+}

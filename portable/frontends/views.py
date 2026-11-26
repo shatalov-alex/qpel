@@ -80,6 +80,13 @@ def _view_of(init):
     node = _peel(init)
     if node.get('kind') == 'UnaryOperator' and node.get('opcode') == '*' and node.get('inner'):
         node = _peel(node['inner'][0])
+    if node.get('kind') == 'UnaryOperator' and node.get('opcode') == '&' and node.get('inner') and \
+            _peel(node['inner'][0]).get('kind') == 'ArraySubscriptExpr':  # `&rgbs_batch[N]` of its own type
+        subscript = _peel(node['inner'][0])
+        operand = _peel(subscript['inner'][0])
+        if operand.get('kind') == 'DeclRefExpr':
+            return node, operand.get('referencedDecl', {}).get('id'), subscript['inner'][1]
+        return None
     if node.get('kind') not in CASTS or not node.get('inner'):
         return None
     operand, offset = _peel(node['inner'][0]), None

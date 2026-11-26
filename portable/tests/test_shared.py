@@ -96,7 +96,7 @@ class Rules(unittest.TestCase):
             validate(parse_program(PROGRAM.replace(
                 '    let total: f32 = 0.0f;', '    if (true) {\n      let other: shared<f32, 64>;\n    }\n    let total: f32 = 0.0f;')))
         with self.assertRaisesRegex(ValueError, 'Invalid shared type'):
-            validate(parse_program(PROGRAM.replace('shared<f32, 64>', 'shared<f32, 5000>')))
+            validate(parse_program(PROGRAM.replace('shared<f32, 64>', 'shared<f32, 8000>')))
         with self.assertRaisesRegex(ValueError, 'SHARED_PLACE|BARRIER_CONTEXT'):  # both belong to Groups kernels
             validate(parse_program(PROGRAM.replace(') groups {', ') grid1d {').replace(
                 'block (64, 1, 1) groups ("(W*H*N + 63)/64", "1", "1")', 'block (64)')))
