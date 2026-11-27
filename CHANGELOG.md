@@ -56,14 +56,15 @@ older programs keep building.
   background priority. Within the float error of the gradients' sums on the CPU simulator and the Apple GPU.
 - **gsplat's 2DGS rasterizer and its gradient** (`rasterize_to_pixels_2dgs_fwd_kernel` and `..._bwd_kernel` for 3
   channels, unmodified; tests/test_gsplat_rasterize_2dgs.py): the forward bit for bit with the original on the CPU
-  simulator and within 4 MATH_ULPS eps of each output on the Apple GPU, the gradient within the float error of its
-  sums on both. A shared view carved from another of its own type (`&rgbs_batch[block_size * CDIM]`) is shared
-  memory of its own as a cast one is. A kernel may now have 28 KiB of shared memory (16 KiB before): the forward's
-  five views of 256 `vec3` take 17 KiB on Metal, whose `float3` is 16 bytes. A kernel past Metal's 31 buffers even
-  with its presence flags packed takes its scalar values as the words of one buffer (CORE.md, optional buffers):
-  the gradient has 25 buffers and 9 values. The larger shared memory also imports bitsandbytes' 4-bit
-  `kQuantizeBlockwise` kernels of 2048 and 4096 elements and mmcv's `chamfer_distance_forward_cuda_kernel`.
-  Coverage 414 of 2364.
+  simulator and within 4 MATH_ULPS eps of each output on the Apple GPU, the gradient within the float error of its sums
+  on both. A shared view carved from another of its own type (`&rgbs_batch[block_size * CDIM]`) is shared memory of its
+  own as a cast one is, when declared in the kernel's body at an offset the same in every thread (`&tile[threadIdx.x]`
+  stays a pointer into tile; tests/test_shared_views.py). A kernel may now have 28 KiB of shared memory (16 KiB before):
+  the forward's views of 256 ids and 4 x 256 `vec3` take 17 KiB on Metal, whose `float3` is 16 bytes. A kernel past
+  Metal's 31 buffers even with its presence flags packed takes its scalar values as the words of one buffer (CORE.md,
+  optional buffers): the gradient has 25 buffers and 9 values. The larger shared memory also imports bitsandbytes' 4-bit
+  `kQuantizeBlockwise` kernels of 2048 and 4096 elements and mmcv's `chamfer_distance_forward_cuda_kernel`. Coverage 414
+  of 2364.
 
 ### Fixed
 - The wheel now ships frontends/coalesced.py and frontends/soft_double.py.

@@ -76,9 +76,10 @@ def _words(values, device):
         if kind in ('u64', 'i64'):
             out += struct.pack('<Q', value & (2**64 - 1))
         elif kind == 'f32':
-            out += struct.pack('<f', value)
+            # through torch, so a value out of range becomes inf as an unpacked one does
+            out += struct.pack('<i', torch.tensor([value], dtype=torch.float32).view(torch.int32).item())
         elif kind == 'f16':
-            out += struct.pack('<eH', value, 0)
+            out += struct.pack('<I', torch.tensor([value], dtype=torch.float16).view(torch.int16).item() & 0xffff)
         else:
             out += struct.pack('<I', value & 0xffffffff)
     return torch.frombuffer(out, dtype=torch.int32).to(device)

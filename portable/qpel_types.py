@@ -819,6 +819,8 @@ class TypeChecker:
                 self.require(function, metal_buffers(len(params), values, optional) <= METAL_BUFFERS, 'BINDING_INDEX',
                              'A kernel takes at most 31 Metal buffers (its buffers, shapes and structs, one buffer of its '
                              'values when they are packed, its presence flags)')
+                self.require(function, not packing or values < len(params), 'BINDING_INDEX',
+                             'A kernel packing its values needs a buffer, shape or struct parameter besides them')
             for param in params:
                 self.unique(param, names)
                 t, a = self.declared(param), param['attributes']
