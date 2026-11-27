@@ -22,6 +22,15 @@ static_assert(sizeof(QpelShape) == 16, "qpel shape ABI must be 16 bytes");
 #define QPEL_OPTIONAL_READ_PARAM_PACKED(type, name, binding, slot) type __restrict__ name
 #define QPEL_PRESENCE_PARAM(binding)
 #define QPEL_PRESENCE_LOCAL(name, slot)
+// A kernel past Metal's 31 buffers even with packed flags packs its scalar values in one Metal buffer: on CUDA
+// each stays an ordinary parameter, in its place (the _FIRST form before the kernel's first other parameter).
+#define QPEL_PACKED_VALUE(type, name) , type name
+#define QPEL_PACKED_VALUE_FIRST(type, name) type name,
+#define QPEL_VALUES_PARAM(binding)
+#define QPEL_VALUE_WORD(type, name, slot)
+#define QPEL_VALUE_WIDE(type, name, slot)
+#define QPEL_VALUE_NARROW(type, name, slot)
+#define QPEL_VALUE_HALF(type, name, slot)
 #define QPEL_PRESENT(name) ((name) != nullptr)
 // IR version 12: module-level constant tables, and the leading zero bits of an integer.
 #define QPEL_CONSTANT_ARRAY(T, name, length) __device__ const T name[length]

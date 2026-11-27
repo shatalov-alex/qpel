@@ -2,7 +2,7 @@
 import hashlib
 import keyword
 
-from qpel_types import TORCH_DTYPES, VALUE_TERMS, access, element, is_buffer, is_struct, normalize_plan, packed_presence, struct_layout
+from qpel_types import TORCH_DTYPES, VALUE_TERMS, access, element, is_buffer, is_struct, normalize_plan, packed_presence, packed_values, struct_layout
 
 # Buffer element type -> torch dtype of the tensors the CuPy host historically shared (u32 as int32).
 BUFFER_TYPES = {'u8': 'uint8', 'i8': 'int8', 'u16': 'int16', 'i16': 'int16', 'u32': 'int32', 'i32': 'int32',
@@ -105,6 +105,23 @@ def _input(value, dtype, count, device):
         raise ValueError("Input device, dtype or element count does not match Pipeline")
     return value.contiguous().view(-1)
 
+def _words(values, device):
+    """Scalar arguments ((value, kind), in parameter order) as the 32-bit words of a packed-values buffer:
+    a 64-bit value in two words, low first; a narrower integer extended to 32 bits; a half in the low 16."""
+    import struct
+    out = bytearray()
+    for value, kind in values:
+        if kind in ('u64', 'i64'):
+            out += struct.pack('<Q', value & (2**64 - 1))
+        elif kind == 'f32':
+            # through torch, so a value out of range becomes inf as an unpacked one does
+            out += struct.pack('<i', torch.tensor([value], dtype=torch.float32).view(torch.int32).item())
+        elif kind == 'f16':
+            out += struct.pack('<I', torch.tensor([value], dtype=torch.float16).view(torch.int16).item() & 0xffff)
+        else:
+            out += struct.pack('<I', value & 0xffffffff)
+    return torch.frombuffer(out, dtype=torch.int32).to(device)
+
 '''
 
 
@@ -187,7 +204,15 @@ def generate(plan, shader):
         presence = [f"buffers[{('present', f)!r}]" for f in flags]
         if packed_presence(len(s['bindings']), len(flags)):  # one buffer of the flags (qpel_ir packed_presence)
             presence = ['torch.cat([' + ', '.join(presence) + '])']
-        args = ', '.join([f"buffers[{b['resource']!r}]" for b in s['bindings']] + presence)
+        kinds = {r['name']: r for r in resources}
+        scalars = [b['resource'] for b in s['bindings'] if kinds[b['resource']]['kind'] == 'value'
+                   and not is_struct(kinds[b['resource']]['type'])]
+        if packed_values(len(s['bindings']), len(scalars), len(flags)):  # one buffer of the values' words (qpel_ir value_table)
+            words = '_words([' + ', '.join(f"(scalar_{v}, {kinds[v]['type']!r})" for v in scalars) + '], device)'
+            args = ', '.join([f"buffers[{b['resource']!r}]" for b in s['bindings'] if b['resource'] not in scalars]
+                             + [words] + presence)
+        else:
+            args = ', '.join([f"buffers[{b['resource']!r}]" for b in s['bindings']] + presence)
         if s.get('domain') == 'groups':  # whole threadgroups, as CUDA launches whole blocks
             lines.append(f"    _, threads = _groups({tuple(s['groups'])!r}, dims[{s['grid']!r}], {tuple(s['blockShape'])!r})")
             lines.append(f"    getattr(lib, {s['kernel']!r})({args}, threads=threads, group_size={tuple(s['blockShape'])!r})")

@@ -6,7 +6,7 @@ import re
 import math
 import struct
 
-from qpel_types import INTEGER_TERMS, INTEGERS_BITS, MATH, SCALAR_TERMS, array, buffer, is_valid, vector, shared, shared_view
+from qpel_types import INTEGER_TERMS, INTEGERS_BITS, MATH, MAX_SHARED_BYTES, SCALAR_TERMS, array, buffer, is_valid, vector, shared, shared_view
 
 TYPE_KINDS = set('VoidType BoolType U8Type U32Type I32Type ReadOnlyI32BufferType I32BufferType F32Type ReadOnlyF32BufferType F32BufferType F16Type ReadOnlyF16BufferType F16BufferType ReadOnlyU8BufferType U32BufferType AtomicU32BufferType AtomicI32BufferType Shape3DType ScalarType BufferType StructType ArrayType VectorType SharedType SharedViewType MatrixType'.split())
 EXPRESSIONS = set('ArrayValue VectorValue Barrier BarrierCount Name Literal I32Literal Constant Cast View Math GroupIndex LocalIndex GroupSize GroupCount I32Cast U32Cast U8Cast F32Literal F32Cast F16Cast F32Fma ReduceSumF32 WorkgroupSumF32 Binary Unary Index Member Call Select GridIndex ThreadIndex Minimum Maximum AtomicLoad AtomicStore AtomicAdd AtomicMin AtomicCompareExchange AtomicMax AtomicAnd AtomicOr AtomicXor AtomicExchange Bitcast SubgroupLane SubgroupIndex SubgroupSize SubgroupShuffle SubgroupReduce BufferPresent MatrixFill MatrixLoad MatrixStore MatrixMma SubgroupBarrier'.split())
@@ -307,7 +307,7 @@ def validate_structure(nodes):
             fail(f"Invalid array type array<{a['element']}, {a['length']}>: a scalar or vector element and 1 to 1024 of them "
                  f"(a module constant: scalars, at most {MAX_CONSTANT_BYTES} bytes)")
         if kind == 'SharedType' and not is_valid(shared(a['element'], a['length'])):
-            fail(f"Invalid shared type shared<{a['element']}, {a['length']}>: scalars or vectors, at most 16384 bytes")
+            fail(f"Invalid shared type shared<{a['element']}, {a['length']}>: scalars or vectors, at most {MAX_SHARED_BYTES} bytes")
         if kind == 'SharedViewType' and not is_valid(shared_view(a['element'])):
             fail(f"Invalid shared view shared<{a['element']}>: a scalar or vector element")
         if kind in ('VectorType', 'VectorValue') and not is_valid(vector(a['element'], a['length'])):

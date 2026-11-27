@@ -56,7 +56,7 @@ VECTOR_FIELDS = 'xyzw'
 # IR version 4: memory shared by the threads of one group (CUDA __shared__, Metal threadgroup),
 # declared at the top of a Groups kernel; its elements are scalars or vectors.
 SHARED = re.compile(r'shared<(\w+|vec<\w+, [234]>), ([1-9][0-9]{0,4})>')
-MAX_SHARED_BYTES = 16384  # within Metal's 32 KiB and CUDA's 48 KiB, with room for the backends' own
+MAX_SHARED_BYTES = 28672  # within Metal's 32 KiB and CUDA's 48 KiB, with room for the backends' own (at most 1 KiB)
 # IR version 5: a thread's view into its group's shared memory (CUDA T*, Metal threadgroup T*): a
 # shared array or another view, offset by an integer. It is indexed like the array it points into.
 SHARED_VIEW = re.compile(r'shared<(\w+|vec<\w+, [234]>)>')
@@ -811,6 +811,16 @@ class TypeChecker:
                          'Result must be a scalar, a vector or void')
             self.require(function, (result == 'void' and bool(domain) and bool(params)) if kernel else not domain, 'FUNCTION_ABI', 'Kernel needs void result, Grid1D and parameters; helpers cannot have domains')
             names, bindings, env = set(), set(), set(self.constant_ids)
+            if kernel:  # (a kernel past Metal's buffer table packs its values, then its presence flags)
+                declared = [self.declared(p) for p in params]
+                values = sum(1 for t in declared if t in VALUE_TERMS)
+                optional = sum(1 for p in params if p['attributes'].get('optional'))
+                packing = packed_values(len(params), values, optional)
+                self.require(function, metal_buffers(len(params), values, optional) <= METAL_BUFFERS, 'BINDING_INDEX',
+                             'A kernel takes at most 31 Metal buffers (its buffers, shapes and structs, one buffer of its '
+                             'values when they are packed, its presence flags)')
+                self.require(function, not packing or values < len(params), 'BINDING_INDEX',
+                             'A kernel packing its values needs a buffer, shape or struct parameter besides them')
             for param in params:
                 self.unique(param, names)
                 t, a = self.declared(param), param['attributes']
@@ -821,7 +831,8 @@ class TypeChecker:
                 if kernel:
                     self.require(param, (is_buffer(t) or t in VALUE_TERMS or t == 'shape3' or is_struct(t)) and a.get('isBuffer', False), 'KERNEL_ABI', 'Kernel parameter must be a bound buffer, shape, struct, or integer/f32 value')
                     binding = a.get('binding', 0)
-                    self.require(param, 0 <= binding <= 30, 'BINDING_INDEX', 'Binding must be between 0 and 30')
+                    self.require(param, 0 <= binding <= 30 or packing and 0 <= binding < len(params), 'BINDING_INDEX',
+                                 'Binding must be between 0 and 30 (below the parameter count in a kernel packing its values)')
                     self.require(param, binding not in bindings, 'BINDING_DUPLICATE', 'Duplicate binding')
                     bindings.add(binding)
                 else:
@@ -955,3 +966,22 @@ def packed_presence(parameters, optional):
     """True when a kernel's parameters and one presence flag per optional parameter would pass Metal's buffer
     table: its flags are then packed in one buffer after its parameters (hosts bind it the same way)."""
     return optional > 0 and parameters + optional > METAL_BUFFERS
+
+
+WIDE_VALUES = ('u64', 'i64')  # two 32-bit words in a packed-values buffer
+
+
+def packed_values(parameters, values, optional):
+    """True when a kernel's parameters would pass Metal's buffer table even with its presence flags packed
+    in one buffer: its scalar values then travel in one buffer of 32-bit words after its other parameters
+    (in parameter order, a 64-bit value in two words, low first; hosts pack them the same way), and so do
+    its flags, after that."""
+    return values > 0 and parameters + (1 if optional else 0) > METAL_BUFFERS
+
+
+def metal_buffers(parameters, values, optional):
+    """The Metal buffers a kernel takes: its parameters, or with packed values its other parameters and the
+    values' buffer, then its presence flags (one buffer of them when packed)."""
+    if packed_values(parameters, values, optional):
+        return parameters - values + 1 + (1 if optional else 0)
+    return parameters + (1 if packed_presence(parameters, optional) else optional)

@@ -17,7 +17,8 @@ itself goes. This keeps a program's results when its views are used as separate
 memories, which CUB's reuse rules require (a TempStorage is reused only after a barrier, and each
 use writes what it then reads); a program that wrote through one view and read the same bytes
 through another would not be read correctly, and is not recognised: every use of the block must be
-the initializer of one view.
+the initializer of one view, each view declared in the kernel's body (not in a branch or loop) at an offset
+the same in every thread: `float *mine = &tile[threadIdx.x]` is a pointer into tile, and leaves the kernel as it is.
 
 After the facades of qpel's CUB subset are inlined (facades.py), a load or store no longer touches
 its TempStorage, so a helper that only passed it on (`load_input(..., smem_load, ...)`) has a
@@ -80,6 +81,13 @@ def _view_of(init):
     node = _peel(init)
     if node.get('kind') == 'UnaryOperator' and node.get('opcode') == '*' and node.get('inner'):
         node = _peel(node['inner'][0])
+    if node.get('kind') == 'UnaryOperator' and node.get('opcode') == '&' and node.get('inner') and \
+            _peel(node['inner'][0]).get('kind') == 'ArraySubscriptExpr':  # `&rgbs_batch[N]` of its own type
+        subscript = _peel(node['inner'][0])
+        operand = _peel(subscript['inner'][0])
+        if operand.get('kind') == 'DeclRefExpr':
+            return node, operand.get('referencedDecl', {}).get('id'), subscript['inner'][1]
+        return None
     if node.get('kind') not in CASTS or not node.get('inner'):
         return None
     operand, offset = _peel(node['inner'][0]), None
@@ -91,6 +99,54 @@ def _view_of(init):
     if operand.get('kind') == 'DeclRefExpr':
         return node, operand.get('referencedDecl', {}).get('id'), offset
     return None
+
+
+THREAD = {'threadIdx', 'laneid', '__lane_id'}  # what differs between a block's threads
+THREAD_MEMBERS = {'thread_rank', 'thread_index', 'meta_group_rank'}
+UNIFORM_CALLS = {'this_thread_block', 'tiled_partition', 'size', 'num_threads', 'dim_threads', 'group_dim'}
+
+
+def _top_level(body):
+    """The ids of the declarations made directly in the kernel's body (not inside a branch or loop)."""
+    return {d.get('id') for s in body.get('inner', ()) if s.get('kind') == 'DeclStmt' for d in s.get('inner', ())}
+
+
+def _uniform(node, body, top, seen=()):
+    """Whether an offset is the same in every thread of the block: built from constants, the kernel's
+    parameters, blockDim/blockIdx/gridDim and top-level locals of such values never assigned again
+    (gsplat's `block_size = block.size()`); a thread index, an unknown call or a changing local is not."""
+    if node is None:
+        return True
+    for n in walk(node):
+        kind = n.get('kind')
+        if kind == 'MemberExpr' and n.get('name') in THREAD_MEMBERS:
+            return False
+        if kind in ('CallExpr', 'CXXMemberCallExpr'):
+            callee = next((c for c in walk(n['inner'][0]) if c.get('kind') in ('DeclRefExpr', 'MemberExpr')), {}) \
+                if n.get('inner') else {}
+            name = callee.get('name') or callee.get('referencedDecl', {}).get('name')
+            if name not in UNIFORM_CALLS:
+                return False
+        if kind != 'DeclRefExpr':
+            continue
+        target = n.get('referencedDecl', {})
+        if target.get('name') in THREAD:
+            return False
+        if target.get('kind') != 'VarDecl' or target.get('id') in seen:
+            continue  # parameters, template arguments, enumerators, blockDim and the like
+        decl = next((d for d in walk(body) if d.get('kind') == 'VarDecl' and d.get('id') == target.get('id')), None)
+        if decl is None:
+            continue  # not a local of the kernel
+        if decl['id'] not in top or not decl.get('inner') or 'init' not in decl:
+            return False
+        if any(m.get('kind') in ('BinaryOperator', 'CompoundAssignOperator', 'UnaryOperator')
+               and m.get('opcode') in ('=', '+=', '-=', '*=', '/=', '++', '--') and m.get('inner')
+               and _peel(m['inner'][0]).get('kind') == 'DeclRefExpr'
+               and _peel(m['inner'][0]).get('referencedDecl', {}).get('id') == decl['id'] for m in walk(body)):
+            return False
+        if not _uniform(decl['inner'][-1], body, top, seen + (decl['id'],)):
+            return False
+    return True
 
 
 def _constant(node, body):
@@ -132,8 +188,11 @@ def shared_views(unit):
                   and UNSIZED.fullmatch(d.get('type', {}).get('qualType', '').strip())]
         for block in blocks:
             uses = [n for n in walk(body) if n.get('kind') == 'DeclRefExpr' and n.get('referencedDecl', {}).get('id') == block['id']]
+            top = _top_level(body)
             views = [d for d in walk(body) if d.get('kind') == 'VarDecl' and d is not block and d.get('inner')
                      and 'init' in d and _view_source(d['inner'][-1], block['id']) is not None]
+            if any(v['id'] not in top or not _uniform(_view_of(v['inner'][-1])[2], body, top) for v in views):
+                continue  # a view made in a branch or at a thread's own offset is a pointer, not a view
             if len(views) != len(uses):
                 continue  # the block is used other than as the start of a view
             # views of views: `T *b = reinterpret_cast<T *>(&a[N])` starts b where a's N elements end, so a
@@ -147,6 +206,9 @@ def shared_views(unit):
                         continue
                     found = _view_of(d['inner'][-1])
                     if found and found[1] in known and '*' in _spelling(d['type']):
+                        if d['id'] not in top or not _uniform(found[2], body, top):
+                            more = None  # `&tile[threadIdx.x]`: a thread's pointer into a view, not a view
+                            break
                         more.append(d)
                         if found[1] in lengths:
                             break  # two views start inside one: not a chain
@@ -156,6 +218,8 @@ def shared_views(unit):
                 if not more:
                     break
                 views.extend(more)
+            if more is None:
+                continue  # the kernel stays as it is
             if any(v is not None and v <= 0 for v in lengths.values()):
                 continue  # two views start at one place: the kernel stays as it is
             # a view whose end is known only at run time (`&id_batch[block_size]`, block_size = block.size())

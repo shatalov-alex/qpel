@@ -90,6 +90,14 @@ class TypeTests(unittest.TestCase):
         self.c.children(fn, 'parameters')[0]['attributes']['binding'] = 31
         self.reject('BINDING_INDEX')
 
+    def test_metal_buffer_table(self):
+        from qpel_types import metal_buffers, packed_presence, packed_values
+        self.assertFalse(packed_values(31, 5, 0))  # 31 parameters fill the table
+        self.assertTrue(packed_presence(30, 2) and not packed_values(30, 5, 2))  # 30 and one buffer of flags
+        self.assertTrue(packed_values(34, 9, 3))  # gsplat's 2DGS gradient: 25 buffers, 9 values, 3 optional
+        self.assertEqual(metal_buffers(34, 9, 3), 25 + 1 + 1)
+        self.assertEqual(metal_buffers(40, 0, 0), 40)  # nothing to pack: refused (BINDING_INDEX)
+
     def test_duplicate_name(self):
         self.c.functions[1]['attributes']['name'] = self.c.functions[0]['attributes']['name']
         self.reject('DUPLICATE')

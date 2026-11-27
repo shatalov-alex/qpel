@@ -27,6 +27,16 @@ using namespace metal;
 #define QPEL_OPTIONAL_READ_PARAM_PACKED(type, name, binding, slot) QPEL_OPTIONAL_PARAM_PACKED(type, name, binding, slot)
 #define QPEL_PRESENCE_PARAM(binding) , constant uint* qpel_presence [[buffer(binding)]]
 #define QPEL_PRESENCE_LOCAL(name, slot) const uint qpel_present_##name = qpel_presence[slot];
+// A kernel past Metal's 31 buffers even with packed flags receives its scalar values as 32-bit words of one
+// buffer after its other parameters (a 64-bit value in two, low first; a narrower integer extended to 32 bits,
+// a half in the low 16), each read into a local of its name at the kernel's start.
+#define QPEL_PACKED_VALUE(type, name)
+#define QPEL_PACKED_VALUE_FIRST(type, name)
+#define QPEL_VALUES_PARAM(binding) , constant uint* qpel_values [[buffer(binding)]]
+#define QPEL_VALUE_WORD(type, name, slot) const type name = as_type<type>(qpel_values[slot]);
+#define QPEL_VALUE_WIDE(type, name, slot) const type name = as_type<type>(uint2(qpel_values[slot], qpel_values[(slot) + 1]));
+#define QPEL_VALUE_NARROW(type, name, slot) const type name = static_cast<type>(qpel_values[slot]);
+#define QPEL_VALUE_HALF(type, name, slot) const type name = as_type<type>(static_cast<ushort>(qpel_values[slot]));
 // IR version 12: module-level constant tables, and the leading zero bits of an integer.
 #define QPEL_CONSTANT_ARRAY(T, name, length) constant T name[length]
 #define QPEL_CONSTANT(T, name) constant T name

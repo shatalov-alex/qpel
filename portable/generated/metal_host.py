@@ -67,9 +67,26 @@ def _input(value, dtype, count, device):
         raise ValueError("Input device, dtype or element count does not match Pipeline")
     return value.contiguous().view(-1)
 
+def _words(values, device):
+    """Scalar arguments ((value, kind), in parameter order) as the 32-bit words of a packed-values buffer:
+    a 64-bit value in two words, low first; a narrower integer extended to 32 bits; a half in the low 16."""
+    import struct
+    out = bytearray()
+    for value, kind in values:
+        if kind in ('u64', 'i64'):
+            out += struct.pack('<Q', value & (2**64 - 1))
+        elif kind == 'f32':
+            # through torch, so a value out of range becomes inf as an unpacked one does
+            out += struct.pack('<i', torch.tensor([value], dtype=torch.float32).view(torch.int32).item())
+        elif kind == 'f16':
+            out += struct.pack('<I', torch.tensor([value], dtype=torch.float16).view(torch.int16).item() & 0xffff)
+        else:
+            out += struct.pack('<I', value & 0xffffffff)
+    return torch.frombuffer(out, dtype=torch.int32).to(device)
+
 
 SHADER_FILE = 'components.metal'
-SHADER_SHA256 = '5b98a7c87ce00c3c2dc62ee578de503c033f6fc0f8c625536e07c8a23739ca9a'
+SHADER_SHA256 = 'ddba1187230e7cbceeafd928dd7bfd649d90db355d5de9f0c4212ec50a55eaab'
 
 def run(inputs, shapes, values=None, *, device="mps", omit=()):
     """Inputs are tensors; shapes map names to (W,H,N); values are scalars; outputs are flat tensors.

@@ -7,7 +7,7 @@ import json
 from qpel_schema import validate_envelope, validate_structure
 from qpel_types import is_shared_view, view_element, V8_MATH, is_matrix, matrix_element
 from qpel_types import is_shared, shared_element, shared_length, is_vector, vector_element, vector_length, EXACT_MATH, validate_types, TypeChecker, LEGACY, term, is_buffer, element, access, is_signed, bits, unsigned_of, arithmetic, INTEGER_TERMS, is_array, array_element, array_length
-from qpel_types import packed_presence
+from qpel_types import packed_presence, packed_values, WIDE_VALUES, VALUE_TERMS as PACKABLE
 from qpel_pipeline import validate_pipeline
 from qpel_bounds import validate_static_bounds
 
@@ -339,6 +339,32 @@ class Lowering:
         if len(values)!=1:raise ValueError('Required single child: '+n['kind']+'.'+role)
         return values[0]
     def link(self,n,role):return self.nodes[n['links'][role]]
+    def function_of(self,param):
+        return next(f for f in self.nodes.values() if f['kind']=='Function' and param['id'] in f['children'].get('parameters',[]))
+    def value_table(self,f):
+        """A kernel's Metal layout when its values are packed (qpel_types.packed_values), else None:
+        {'index': Metal buffer of each other parameter, 'slot': first word of each value, 'values': the
+        values' buffer, 'presence': the presence flags' buffer}."""
+        params=[self.nodes[i] for i in f['children'].get('parameters',[])]
+        values=[q for q in params if term(self.child(q,'type')) in PACKABLE]
+        optional=sum(1 for q in params if q['attributes'].get('optional'))
+        if not f['attributes'].get('isKernel') or not packed_values(len(params),len(values),optional):return None
+        index,slot,word={},{},0
+        for q in params:
+            if q in values:
+                slot[q['id']]=word;word+=2 if term(self.child(q,'type')) in WIDE_VALUES else 1
+            else:
+                index[q['id']]=len(index)
+        return {'index':index,'slot':slot,'values':len(index),'presence':len(index)+1}
+    def value_locals(self,f,table):
+        """Each packed value read from its words at the kernel's start (Metal; nothing on CUDA)."""
+        out=''
+        for q in self.children(f,'parameters'):
+            if q['id'] in table['slot']:
+                t=term(self.child(q,'type'))
+                form='WIDE' if t in WIDE_VALUES else 'HALF' if t=='f16' else 'WORD' if t in ('u32','i32','f32') else 'NARROW'
+                out+='QPEL_VALUE_'+form+'('+type_macro(t)+', '+q['attributes']['name']+', '+str(table['slot'][q['id']])+')\n'
+        return out
     def presence_binding(self,param):
         """The Metal buffer index of an optional parameter's presence flag: after all of its kernel's
         parameters, in the order of the optional ones (hosts bind them the same way). With packed flags
@@ -360,7 +386,8 @@ class Lowering:
         params=[self.nodes[i] for i in f['children'].get('parameters',[])]
         optional=[q for q in params if q['attributes'].get('optional')]
         if not packed_presence(len(params),len(optional)):return '',''
-        return (' QPEL_PRESENCE_PARAM('+str(len(params))+')',
+        table=self.value_table(f)
+        return (' QPEL_PRESENCE_PARAM('+str(table['presence'] if table else len(params))+')',
                 ''.join('QPEL_PRESENCE_LOCAL('+q['attributes']['name']+', '+str(k)+')\n' for k,q in enumerate(optional)))
     def shape_volume(self,n):
         """True for (s.x * s.y) * s.z of one shape parameter or local (the volume a kernel compares with)."""
@@ -415,6 +442,17 @@ class Lowering:
         if k=='Function':
             kernel=a.get('isKernel',False);args=joined('parameters',', ')
             packed,flags=self.presence_locals(n) if kernel else ('','')
+            table=self.value_table(n) if kernel else None
+            if table:  # values packed: each is a CUDA parameter, on Metal a word of one buffer (backends/*.h)
+                args,leading='',True
+                for q in self.children(n,'parameters'):
+                    text=self.emit(q)
+                    if q['id'] in table['slot']:
+                        args+=(text.replace('QPEL_PACKED_VALUE(','QPEL_PACKED_VALUE_FIRST(',1)+' ') if leading else ' '+text
+                    else:
+                        args+=('' if leading else ', ')+text;leading=False
+                packed=' QPEL_VALUES_PARAM('+str(table['values'])+')'+packed
+                flags=self.value_locals(n,table)+flags
             args+=packed
             if kernel and self.child(n,'domain')['kind']=='Grid3D':
                 return 'QPEL_KERNEL '+e('resultType')+' '+a['name']+'('+args+' QPEL_GRID3D_PARAM) {\n'+flags+e('body')+'\n}\n'
@@ -433,6 +471,9 @@ class Lowering:
             if a.get('reference'):return 'QPEL_REF('+e('type')+') '+a['name']  # T& (CUDA), thread T& (Metal)
             if not a.get('isBuffer',False):return e('type')+' '+a['name']
             declared=term(self.child(n,'type'))
+            table=self.value_table(self.function_of(n))
+            if table and n['id'] in table['slot']:return 'QPEL_PACKED_VALUE('+e('type')+', '+a['name']+')'
+            if table:a=dict(a,binding=table['index'][n['id']])  # its Metal buffer among the unpacked ones
             macro='QPEL_PARAM(' if is_buffer(declared) or declared=='shape3' else 'QPEL_VALUE('  # structs travel as values
             if a.get('optional'):  # CUDA: the pointer (null when left out); Metal: the buffer and a presence flag
                 if is_buffer(declared) and access(declared)=='read':  # (see QPEL_READ_PARAM below)
