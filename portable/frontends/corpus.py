@@ -109,12 +109,49 @@ def source_coverage(entry, details=False):
     if entry.get('shared'):  # lengths for shared memory the launch sizes: such a kernel counts when it validates with them
         for kernel in [k for k, blockers in found.items() if blockers and k != UNPARSED
                        and {b.split(' ')[0] for b in blockers} == {'dynamic-shared'}]:
-            problem = validation_problem(entry, kernel, shared=entry['shared'])
+            lengths = survey_lengths(entry, kernel)
+            if lengths is None:
+                continue
+            problem = validation_problem(entry, kernel, shared=lengths)
             if problem != 'dynamic-shared':  # (a length the entry does not give: it stays as it is)
                 found[kernel] = [f'invalid at {kernel}:0 ({problem})'] if problem else []
     if details:
         return found
     return {k: sorted({b.split(' ')[0] for b in blockers}) for k, blockers in found.items()}
+
+
+def _arithmetic(text, names):
+    """The value of an integer expression of + - * // and parentheses over `names`, or None."""
+    import ast
+
+    def value(node):
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            return node.value
+        if isinstance(node, ast.Name) and node.id in names:
+            return names[node.id]
+        if isinstance(node, ast.BinOp) and type(node.op) in (ast.Add, ast.Sub, ast.Mult, ast.FloorDiv):
+            left, right = value(node.left), value(node.right)
+            if left is None or right is None or isinstance(node.op, ast.FloorDiv) and right == 0:
+                return None
+            return {ast.Add: left + right, ast.Sub: left - right, ast.Mult: left * right,
+                    ast.FloorDiv: left // (right or 1)}[type(node.op)]
+        return None
+    return value(ast.parse(text, mode='eval').body)
+
+
+def survey_lengths(entry, kernel):
+    """The lengths an entry gives (`shared`) for one kernel's launch-sized shared memory, or None. A length
+    is a number or an expression in the template arguments `kernel_args` (a regular expression with named
+    groups) reads from the kernel's name (gsplat's `"rgbs_batch": "256*CDIM"`), the length the original's
+    host passes at that instantiation; a name whose expression needs arguments the name lacks is left out."""
+    found = re.search(entry['kernel_args'], kernel) if entry.get('kernel_args') else None
+    names = {k: int(v) for k, v in found.groupdict().items()} if found else {}
+    out = {}
+    for name, length in entry['shared'].items():
+        value = length if isinstance(length, int) else _arithmetic(length, names)
+        if value is not None:
+            out[name] = value
+    return out or None
 
 
 def validation_problem(entry, kernel, shared=None):

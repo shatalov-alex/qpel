@@ -66,11 +66,13 @@ older programs keep building.
   `kQuantizeBlockwise` kernels of 2048 and 4096 elements and mmcv's `chamfer_distance_forward_cuda_kernel`. Coverage 414
   of 2364.
 
-- **Survey lengths for launch-sized shared memory** (`shared` in a corpus.json entry, one length per name for the
-  source's kernels): a kernel whose only blocker is shared memory the launch sizes counts when it validates with them.
-  It adds gsplat's rasterizers in every channel count and tile size (3DGS and 2DGS, forward and gradient), both
-  `rasterize_to_indices` kernels, llama.cpp's `cumsum_kernel` and 16 Metal kernels (sums, norms, argsort, conv
-  transpose, `mul_mm_id_map0`). Coverage 548 of 2364.
+- **Survey lengths for launch-sized shared memory** (`shared` in a corpus.json entry): a kernel whose only blocker is
+  shared memory the launch sizes counts when it validates with the lengths its host gives. A length is a number or an
+  expression in the kernel's template arguments, read from its name by the entry's `kernel_args` pattern (gsplat's
+  gradients: `rgbs_batch` is `256*CDIM`). It adds gsplat's forward rasterizers in every channel count and tile size,
+  their gradients up to the channel counts whose shared memory fits in 28 KiB (3DGS 10 of 23, 2DGS 7 of 23; the rest
+  are recorded invalid), both `rasterize_to_indices` kernels, llama.cpp's `cumsum_kernel` and 16 Metal kernels (sums,
+  norms, argsort, conv transpose, `mul_mm_id_map0`). Coverage 519 of 2364.
 
 ### Fixed
 - The wheel now ships frontends/coalesced.py and frontends/soft_double.py.

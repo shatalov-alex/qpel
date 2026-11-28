@@ -119,6 +119,24 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def("scale", &scale_cuda, py::call_
 
 
 @unittest.skipUnless(HAS_CLANG, 'clang required')
+class SurveyLengths(unittest.TestCase):
+    """Lengths of launch-sized shared memory for the survey: each kernel's own, from its template arguments."""
+    ENTRY = {'kernel_args': '_kernel_(?P<CDIM>\\d+)_f32$',
+             'shared': {'id_batch': 256, 'rgbs_batch': '256*CDIM', 's': '256*(28 + 4*CDIM)', 'w': 'CDIM // 0'}}
+
+    def test_lengths_follow_the_template_arguments(self):
+        self.assertEqual(corpus.survey_lengths(self.ENTRY, 'bwd_kernel_513_f32'),
+                         {'id_batch': 256, 'rgbs_batch': 256 * 513, 's': 256 * (28 + 4 * 513)})
+
+    def test_a_length_needing_missing_arguments_is_left_out(self):
+        self.assertEqual(corpus.survey_lengths(self.ENTRY, 'other_kernel'), {'id_batch': 256})
+        self.assertIsNone(corpus.survey_lengths({'shared': {'x': 'N'}}, 'k'))
+
+    def test_only_arithmetic(self):
+        self.assertIsNone(corpus._arithmetic('__import__("os")', {}))
+        self.assertEqual(corpus._arithmetic('(2 + 3) * N - 1', {'N': 4}), 19)
+
+
 class Coverage(unittest.TestCase):
     def test_coverage_matches_the_recorded_result(self):
         """The coverage floor: every corpus kernel imports, or is blocked, exactly as recorded in

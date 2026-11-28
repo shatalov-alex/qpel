@@ -378,7 +378,7 @@
   {
     "source": "llama.cpp/ggml/src/ggml-cuda/cumsum.cu",
     "shared": {
-      "smem": 256
+      "smem": 266
     },
     "include": [
       "include",
@@ -418,12 +418,13 @@
   },
   {
     "source": "llama.cpp/ggml/src/ggml-metal/ggml-metal.metal",
+    "kernel_args": "_ne20_(?P<NE20>\\d+)$",
     "shared": {
       "shmem_f32": 256,
       "buf": 256,
       "shared_sum": 256,
       "shmem_i32": 256,
-      "shmem": 256
+      "shmem": "8*NE20*2"
     },
     "include": [
       "llama.cpp/ggml/include",
@@ -3536,7 +3537,7 @@
       "u_Ms_batch": 256,
       "v_Ms_batch": 256,
       "w_Ms_batch": 256,
-      "s": 16384
+      "s": 13312
     },
     "standard": "c++20",
     "defines": ["__CUDACC__", "CUDA_VERSION=12060"],
@@ -3556,7 +3557,7 @@
       "id_batch": 256,
       "xy_opacity_batch": 256,
       "conic_batch": 256,
-      "s": 16384
+      "s": 7168
     },
     "standard": "c++20",
     "defines": ["__CUDACC__", "CUDA_VERSION=12060"],
@@ -3572,15 +3573,16 @@
   },
   {
     "source": "gsplat/gsplat/cuda/csrc/RasterizeToPixels2DGSSerialBatchBwd.cu",
+    "kernel_args": "_kernel_(?P<CDIM>\\d+)_f32$",
     "shared": {
       "id_batch": 256,
       "xy_opacity_batch": 256,
       "u_Ms_batch": 256,
       "v_Ms_batch": 256,
       "w_Ms_batch": 256,
-      "rgbs_batch": 768,
+      "rgbs_batch": "256*CDIM",
       "normals_batch": 768,
-      "s": 16384
+      "s": "256*(64 + 4*CDIM)"
     },
     "standard": "c++20",
     "defines": ["__CUDACC__", "CUDA_VERSION=12060"],
@@ -3602,7 +3604,7 @@
       "u_Ms_batch": 256,
       "v_Ms_batch": 256,
       "w_Ms_batch": 256,
-      "s": 16384
+      "s": 13312
     },
     "standard": "c++20",
     "defines": ["__CUDACC__", "CUDA_VERSION=12060"],
@@ -3618,12 +3620,13 @@
   },
   {
     "source": "gsplat/gsplat/cuda/csrc/RasterizeToPixels3DGSSerialBatchBwd.cu",
+    "kernel_args": "_kernel_(?P<CDIM>\\d+)_f32$",
     "shared": {
       "id_batch": 256,
       "xy_opacity_batch": 256,
       "conic_batch": 256,
-      "rgbs_batch": 768,
-      "s": 16384
+      "rgbs_batch": "256*CDIM",
+      "s": "256*(28 + 4*CDIM)"
     },
     "standard": "c++20",
     "defines": ["__CUDACC__", "CUDA_VERSION=12060"],
@@ -3639,9 +3642,10 @@
   },
   {
     "source": "gsplat/gsplat/cuda/csrc/RasterizeToPixels3DGSSerialBatchFwd.cu",
+    "kernel_args": "_kernel_(?P<CDIM>\\d+)_(?P<TILE>\\d+)_(?P<CTA>\\d+)$",
     "shared": {
-      "conic_batch": 256,
-      "s": 16384
+      "conic_batch": "CTA",
+      "s": "CTA*28"
     },
     "standard": "c++20",
     "defines": ["__CUDACC__", "CUDA_VERSION=12060"],
