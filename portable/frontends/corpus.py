@@ -134,22 +134,26 @@ def _arithmetic(text, names):
             if left is None or right is None or isinstance(node.op, ast.FloorDiv) and right == 0:
                 return None
             return {ast.Add: left + right, ast.Sub: left - right, ast.Mult: left * right,
-                    ast.FloorDiv: left // (right or 1)}[type(node.op)]
+                    ast.FloorDiv: left // right if right else None}[type(node.op)]
         return None
-    return value(ast.parse(text, mode='eval').body)
+    try:
+        return value(ast.parse(text, mode='eval').body)
+    except SyntaxError:
+        return None
 
 
 def survey_lengths(entry, kernel):
     """The lengths an entry gives (`shared`) for one kernel's launch-sized shared memory, or None. A length
     is a number or an expression in the template arguments `kernel_args` (a regular expression with named
     groups) reads from the kernel's name (gsplat's `"rgbs_batch": "256*CDIM"`), the length the original's
-    host passes at that instantiation; a name whose expression needs arguments the name lacks is left out."""
+    host passes at that instantiation, in elements of the array's declared type (a carved block's too: gsplat's
+    `int s[]`); a name whose expression needs arguments the name lacks, or gives no positive length, is left out."""
     found = re.search(entry['kernel_args'], kernel) if entry.get('kernel_args') else None
-    names = {k: int(v) for k, v in found.groupdict().items()} if found else {}
+    names = {k: int(v) for k, v in found.groupdict().items() if v is not None} if found else {}
     out = {}
     for name, length in entry['shared'].items():
         value = length if isinstance(length, int) else _arithmetic(length, names)
-        if value is not None:
+        if value is not None and value > 0:
             out[name] = value
     return out or None
 

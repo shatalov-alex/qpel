@@ -5862,8 +5862,8 @@ def constant_tables(unit):
 
 def original_shared(importer):
     """The lengths the original's own `extern __shared__` arrays are run with: the lengths given, without
-    those of views of a carved block (qpel's side only, views.py), and with each carved block's (its
-    bytes), which the import must be given to run the original."""
+    those of views of a carved block (qpel's side only, views.py), and with each carved block's (in
+    elements of its declared type), which the import must be given to run the original."""
     carved = importer.unit.get('_qpel_carved', {})
     views = {v for names in carved.values() for v in names}
     out = {k: v for k, v in importer.shared_lengths.items() if k not in views}
@@ -5872,7 +5872,7 @@ def original_shared(importer):
     missing = [block for block in carved if block not in out and (block not in where or where[block] & imported)]
     if missing:
         raise clang_ast.SourceError(f'{", ".join(missing)} is carved into views; to run the original, '
-                                    f'import with shared={{{missing[0]!r}: bytes}} too')
+                                    f'import with shared={{{missing[0]!r}: length}} too')
     return out
 
 

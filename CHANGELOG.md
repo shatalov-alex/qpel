@@ -70,7 +70,8 @@ older programs keep building.
   shared memory the launch sizes counts when it validates with the lengths its host gives. A length is a number or an
   expression in the kernel's template arguments, read from its name by the entry's `kernel_args` pattern (gsplat's
   gradients: `rgbs_batch` is `256*CDIM`). It adds gsplat's forward rasterizers in every channel count and tile size,
-  their gradients up to the channel counts whose shared memory fits in 28 KiB (3DGS 10 of 23, 2DGS 7 of 23; the rest
+  their gradients up to the channel counts whose shared memory fits in 28 KiB (in qpel's layout, where Metal's float3 takes
+  16 bytes) (3DGS 10 of 23, 2DGS 7 of 23; the rest
   are recorded invalid), both `rasterize_to_indices` kernels, llama.cpp's `cumsum_kernel` and 16 Metal kernels (sums,
   norms, argsort, conv transpose, `mul_mm_id_map0`). Coverage 519 of 2364.
 
