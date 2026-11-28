@@ -106,20 +106,27 @@ def source_coverage(entry, details=False):
         problem = validation_problem(entry, kernel)
         if problem:
             found[kernel] = [f'invalid at {kernel}:0 ({problem})']
+    if entry.get('shared'):  # lengths for shared memory the launch sizes: such a kernel counts when it validates with them
+        for kernel in [k for k, blockers in found.items() if blockers and k != UNPARSED
+                       and {b.split(' ')[0] for b in blockers} == {'dynamic-shared'}]:
+            problem = validation_problem(entry, kernel, shared=entry['shared'])
+            if problem != 'dynamic-shared':  # (a length the entry does not give: it stays as it is)
+                found[kernel] = [f'invalid at {kernel}:0 ({problem})'] if problem else []
     if details:
         return found
     return {k: sorted({b.split(' ')[0] for b in blockers}) for k, blockers in found.items()}
 
 
-def validation_problem(entry, kernel):
+def validation_problem(entry, kernel, shared=None):
     """None when the kernel, imported on its own with the plan qpel makes for it, validates as a whole program;
     else what stopped it (the import's blocker code, or the validator's). A kernel counts as importable only
-    then: the survey reads every function, validation checks the program they make."""
+    then: the survey reads every function, validation checks the program they make. `shared` gives the lengths
+    of shared memory the launch sizes (the entry's `shared`)."""
     from .c_import import import_source
     from qpel_ir import validate
     try:
         program, _ = import_source(CORPUS/entry['source'], include=[CORPUS/f for f in entry.get('include', ())],
-                                   kernels=[kernel], module='survey', defines=build_defines(entry))
+                                   kernels=[kernel], module='survey', shared=shared, defines=build_defines(entry))
         validate(program)
     except Unsupported as error:
         return error.code
